@@ -13,6 +13,7 @@
 #include "VulkanBuffer.h"
 #include "VulkanTexture.h"
 #include "VulkanRenderPass.h"
+#include "../RHICommandList.h"
 namespace FISIR {
     #include "ChangeImageFlagsToVulkanFlags.h"
 
@@ -149,6 +150,10 @@ namespace FISIR {
 
   RHIShader* VulkanRHI::RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) {
       Debug("Create Vulkan Shader");
+      if (!Data) {
+        Error("Shader Data is Empty!");
+        return nullptr;
+      }
       return new VulkanShader(mDevice, Data, size);
   }
 

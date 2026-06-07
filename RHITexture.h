@@ -5,38 +5,6 @@
 namespace FISIR {
 	using Texture_t = void*;
 
-	enum class TextureType {
-		TEXTURE1D,
-		TEXTURE2D,
-		TEXTURE3D,
-		TEXTUREARRAY = TEXTURE3D,
-	};
-	
-	enum class TextureCOLORType {
-		RGB_8,
-		RGB_16,
-		RGB_32,
-
-		RGBA_8,
-		RGBA_16,
-		RGBA_32,
-
-		R_8,
-
-		Depth24_Stencil8,
-	};
-
-	enum TextureUseFor {
-		TextureUseForColorAttachment = 1,
-		TextureUseForDepthStencilAttachment = 1<<1,
-		TextureUseForShaderReadOnly = 1<<2,
-		TextureUseForTransferSrc = 1<<3,
-		TextureUseForTransferDst = 1<<4,
-		TextureUseForStorage = 1<<5,
-		TextureUseForDefault = TextureUseForColorAttachment | TextureUseForDepthStencilAttachment | TextureUseForShaderReadOnly,
-		TextureUseForAll = TextureUseForColorAttachment | TextureUseForDepthStencilAttachment | TextureUseForShaderReadOnly | TextureUseForTransferSrc | TextureUseForTransferDst | TextureUseForStorage,
-	};
-
 	using TextureUseForFlags = uint32_t;
 
 
@@ -72,17 +40,6 @@ namespace FISIR {
 		TextureCOLORType colorType;
 	};
 
-	struct TextureInfo {
-		uint32_t			height;
-		uint32_t			width;
-		TextureCOLORType	colorType;
-		TextureType			type;
-		TextureUseForFlags  useFor{ TextureUseForStorage | TextureUseForShaderReadOnly };
-		uint16_t			mipLevels{ 1 };
-		uint16_t 			arrayLayers{ 1 };
-		uint32_t			sampleCount{ 1 };
-	};
-
 	class RHITexture : public RHIResource {
 	public:
 		virtual ~RHITexture() {}
@@ -102,10 +59,5 @@ namespace FISIR {
 		virtual TextureUseForFlags getTextureUseFor() const = 0;
 	};
 
-	struct TextureTransitionInfo {
-		RHITexture* texture;
-		ResourceAccess newAccess;
-		TextureLayout newLayout;
-	};
 
 }

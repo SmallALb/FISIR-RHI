@@ -7,7 +7,7 @@ namespace FISIR {
 	class VulkanDevice;
 	struct __VKViewportData;
 	
-	class VullkanViewport : public RHIVierport {
+	class VullkanViewport : public RHIViewport {
 	public:
 		VullkanViewport();
 

@@ -2,14 +2,6 @@
 #include "RHIResource.h"
 
 namespace FISIR {
-	
-	struct BufferInfo {
-		void* data_CPU;
-		uint64_t size;
-		uint64_t stride;
-		BufferLayout bufferlayout;
-		MemType memoryType;
-	};
 
 	class RHIBuffer : public RHIResource {
 	public:
@@ -27,8 +19,5 @@ namespace FISIR {
 
 
 	};
-	struct BufferTransitionInfo {
-		RHIBuffer* buffer;
-		ResourceAccess newAccess;
-	};
+
 }

@@ -1,8 +1,8 @@
 #pragma once
 #include <cstdint>
 #include <initializer_list>
-#include "RHIBuffer.h"
-#include "RHITexture.h"
+#include "RHITypes.h"
+
 #include "RHIRenderPass.h"
 #include "RHIPipeline.h"
 namespace FISIR {
@@ -12,13 +12,6 @@ namespace FISIR {
 	class RHIRenderPass;
 	class RHIPipeline;
 	class RHIResourcePack;
-
-	enum class CmdType {
-		None = 0,
-		Render,
-		Compute,
-		Transfer,
-	};
 
 
 	class RHIContext {

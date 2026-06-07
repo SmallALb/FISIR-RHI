@@ -114,7 +114,7 @@ namespace FISIR{
 
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 			// Combined 需要同时满足 image 和 sampler 的对齐要求
-			return std::max(sizes.imageAlignment, sizes.samplerAlignment);
+			return (std::max)(sizes.imageAlignment, sizes.samplerAlignment);
 		default:
 			return 16; // 安全兜底
 		}

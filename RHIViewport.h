@@ -26,7 +26,7 @@ namespace FISIR {
 	};
 
 
-	class RHIVierport : public RHIResource {
+	class RHIViewport : public RHIResource {
 	public:
 		
 		virtual void* getNativeSwapChain() const {return nullptr;}

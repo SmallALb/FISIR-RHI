@@ -4,7 +4,7 @@
 #include "RHIRenderPass.h"
 #include "RHIShader.h"
 #include <functional>
-#include "RHIPipelineUsingStage.h"
+#include "RHITypes.h"
 #include "../DataBase/HashCreate.h"
 namespace FISIR {
 	using Pipeline_t = void*;
@@ -16,14 +16,6 @@ namespace FISIR {
 		_Image2D = 9, _Sampler2D = 10, _SamplerCube = 11
 	};//need 4bits
 
-	enum class TopologyType {
-		Point,
-		Line,
-		LineStrip,
-		Triangle,
-		TriangleStrip,
-		TriangleFan,
-	};
 
 	enum ColorBit {
 		_R_PASS_ = 0x01,
@@ -31,31 +23,6 @@ namespace FISIR {
 		_B_PASS_ = 0x04,
 		_A_PASS = 0x08
 	};
-
-	enum class PolygonMode : uint8_t {
-		Fill,
-		Line,
-		Point,
-	};
-
-	enum class RHIDescriptorTyp : uint8_t {
-		Sampler = 0,
-		Image,
-		UniformBuffer
-	};
-
-
-	enum class FrontFace : uint8_t {
-		CCW = 0,
-		CW
-	};
-
-	enum class CullMode : uint8_t {
-		None = 0, 
-		FRONT,
-		BACK,
-	};
-
 
 	enum class ColorBlendOP {
 		None = 0,

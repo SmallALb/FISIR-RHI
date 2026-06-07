@@ -1,17 +1,9 @@
 #pragma once
+#include "RHITypes.h"
 #include <vector>
 #include <cstdint>
 #include "../Log/Logger.h"
-#include "RHIResource.h"
-#include "RHITexture.h"
-#include "RHIBuffer.h"
-#include "RHIViewport.h"
-#include "RHIContext.h"
-#include "RHIRenderPass.h"
-#include"RHIPipeline.h"
-#include "RHICommandList.h"
-#include "RHIShader.h"
-#include "RHIResourcePack.h"
+#include "../Base/DynamicLibLoader.h"
 
 enum class RHIAPI {
 	OpenGL,
@@ -19,7 +11,36 @@ enum class RHIAPI {
 };
 
 namespace FISIR {	
-	
+	class RHITexture;
+	class RHIBuffer;
+	class RHIViewport;
+	class RHIPipeline;
+	class RHIContext;
+	class RHIShader;
+	class RHICommandListBase;
+	class RHIResourcePack;
+	class RHIRenderPass;
+	class RHIResource;
+
+	struct RHIPipelineState;
+	struct RHIRenderPassInfo;
+
+	inline DLibHandle hDll = nullptr;
+	inline RHIAPI currentApi;
+
+	inline static std::string choicePath(RHIAPI api) {
+		std::string res = "../../RHI/";
+		switch (api) {
+		case RHIAPI::Vulkan:
+		#if defined(_DEBUG) && defined(_WIN32)
+			return res + "Vulkan/x64/Debug/RHIVK.dll";
+		#elif defined(_WIN32)
+			return res + "Vulkan/x64/Release/RHIVK.dll";
+		#endif
+		default:
+			return res;
+		}
+	}
 
 	class DynamicRHI {
 	public:
@@ -47,10 +68,39 @@ namespace FISIR {
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) = 0;
 	};
 
-	void setRHIAPI(RHIAPI api);
-	RHIAPI getCurrentRHIAPI();
-	void closeRHIAPI();
+	inline DynamicRHI* rhi = nullptr;
+	using FISIR_RHICREATE = DynamicRHI * (*)();
+	using FISIR_RHIDESTROY = void (*)(DynamicRHI*);
+	inline FISIR_RHICREATE RHICreate_PTR = nullptr;
+	inline FISIR_RHIDESTROY RHIDestroy_PTR = nullptr;
 
-	DynamicRHI* RHIGet();
-	void RHIDestroy();
+
+	inline void setRHIAPI(RHIAPI api) {
+		currentApi = api;
+		auto path = choicePath(currentApi);
+		hDll = DynamicLibLoader::loadDLib(path.c_str());
+		if (!hDll) {
+			Error("Error RHI API include {}!\n", path.c_str());
+			return;
+		}
+		DynamicLibLoader::getFunction(hDll, "RHICreate", &RHICreate_PTR);
+		DynamicLibLoader::getFunction(hDll, "RHIDestroy", &RHIDestroy_PTR);
+		if (!RHICreate_PTR) Error("RHICREATE FUNC NOT FOUND!\n");
+		if (!RHIDestroy_PTR) Error("RHIDESTROY FUNC NOT FOUND!\n");
+	}
+
+	inline RHIAPI getCurrentRHIAPI() { return currentApi; }
+
+	inline void closeRHIAPI() {
+		if (hDll) DynamicLibLoader::freeDLib(hDll);
+	}
+
+	inline DynamicRHI* RHIGet() {
+		if (!rhi) rhi = RHICreate_PTR();
+		return rhi;
+	}
+
+	inline void RHIDestroy() {
+		RHIDestroy_PTR(rhi);
+	}
 }

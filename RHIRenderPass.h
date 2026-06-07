@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ExclusiveDepthStencil.h"
-#include "RHIPipelineUsingStage.h"
+#include "RHITypes.h"
 #include "RHITexture.h"
 #include <vector>
 #include "../DataBase/HashCreate.h"

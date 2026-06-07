@@ -1,9 +1,12 @@
 #pragma once
 
-#include  "RHIContext.h"
-#include "RHIResource.h"
-#include "RHITexture.h"
-#include "RHIBuffer.h"
+#include "RHIContext.h"          
+#include "RHIPipeline.h"         
+#include "RHIResourcePack.h"     
+#include "RHIRenderPass.h"       
+#include "RHITexture.h"          
+#include "RHIBuffer.h"           
+#include "DynamicRHI.h"          
 #include "../Log/Logger.h"
 
 namespace FISIR {
@@ -31,9 +34,15 @@ namespace FISIR {
 
 	class RHICommandListBase {
 	public:
-		RHICommandListBase();
+		RHICommandListBase() { CommandLink = &Root; }
 
-		void* AllocaCommand(int AllocaSize, int Alignemnt);
+		void* AllocaCommand(int AllocaSize, int Alignemnt) {
+			void* ptr = malloc(AllocaSize);
+			RHICommand* res = (RHICommand*)ptr;
+			*CommandLink = res;
+			CommandLink = &res->nxt;
+			return res;
+		}
 
 		template <typename FUNC>
 		void PushFunc(FUNC&& func) {
@@ -47,7 +56,11 @@ namespace FISIR {
 
 		virtual CmdType getCommandListType() const = 0;
 
-		virtual void executeSubCommands();
+	virtual void executeSubCommands() {
+		PushFunc([this](RHICommandListBase& cmdList) {
+			cmdList.getContext()->RHIExecuteSubCommand();
+		});
+	}
 
 		RHICommand* Root{nullptr};
 		RHICommand** CommandLink;
@@ -56,7 +69,7 @@ namespace FISIR {
 
 	class RHIComputeCommandList : public RHICommandListBase {
 	public:
-		RHIComputeCommandList();
+		RHIComputeCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Compute); }
 		void dispatch(uint32_t GroupCountX, uint32_t GroupCountY, uint32_t GroupCountZ);
 		void setPipelineState(RHIPipeline* pipeline);
 		CmdType getCommandListType() const { return CmdType::Compute; }
@@ -64,33 +77,73 @@ namespace FISIR {
 
 	class RHITransferCommandList : public RHICommandListBase {
 	public:
-		RHITransferCommandList();
-		void TransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions);
+		RHITransferCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Transfer); }
 
-		void TransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions);
-		
-		void CopyBuffer(RHIBuffer* dst, RHIBuffer* src, uint64_t dstOffset, uint64_t srcOffset, uint64_t size);
-		
-		void CopyTexture(RHITexture* dst, RHITexture* src);
+		void TransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions) {
+			auto ctx = static_cast<RHITransferContext*>(getContext());
+			PushFunc([ctx, bufferTransitions](RHICommandListBase&) {
+				ctx->RHITransitionBuffers(bufferTransitions);
+			});
+		}
 
+		void TransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions) {
+			auto ctx = static_cast<RHITransferContext*>(getContext());
+			PushFunc([ctx, textureTransitions](RHICommandListBase&) {
+				ctx->RHITransitionTextures(textureTransitions);
+			});
+		}
+
+		void CopyBuffer(RHIBuffer* dst, RHIBuffer* src, uint64_t dstOffset, uint64_t srcOffset, uint64_t size) {
+		
+		}
+
+		void CopyTexture(RHITexture* dst, RHITexture* src) {
+
+		}
 
 		CmdType getCommandListType() const { return CmdType::Transfer; }
 	};
 
 	class RHIRenderCommandList : public RHICommandListBase {
 	public:
-		RHIRenderCommandList();
-		void BeginRenderPass(RHIRenderPass* pass, const char* name);
-		
-		void EndRenderPass();
-		
-		void DrawPrimitive(uint32_t BaseVertexIndex, uint32_t NumsPrimitives, uint32_t NumInstances);
-		
-		void setPipelineState(RHIPipeline* pipeline);
-
-		void BindResourcePack(RHIResourcePack* pack);
+		RHIRenderCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Render); }
 
 		CmdType getCommandListType() const {return CmdType::Render;}
+
+		void BeginRenderPass(RHIRenderPass* pass, const char* name) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, &pass, name](RHICommandListBase&) {
+				ctx->RHIBeginRenderPass(pass);
+			});
+		}
+
+		void EndRenderPass() {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx](RHICommandListBase&) {
+				ctx->RHIEndRenderPass();
+			});
+		}
+
+		void DrawPrimitive(uint32_t BaseVertexIndex, uint32_t NumsPrimitives, uint32_t NumInstances) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, BaseVertexIndex, NumsPrimitives, NumInstances](RHICommandListBase&) {
+				ctx->RHIDrawPrimitive(BaseVertexIndex, NumsPrimitives, NumInstances);
+			});
+		}
+
+		void setPipelineState(RHIPipeline* pipeline) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, pipeline, this](RHICommandListBase&) {
+				ctx->RHISetGraphicsPipelineState(pipeline);
+			});
+		}
+
+		void BindResourcePack(RHIResourcePack* pack) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, pack](RHICommandListBase&) {
+				ctx->RHIBindResourcePack(pack);
+			});
+		}
 	};
 
 	class RHICommandListImmediate : public RHICommandListBase {
@@ -102,9 +155,26 @@ namespace FISIR {
 	//
 	class CommandListExecutor {
 	public:
-		CommandListExecutor();
+		CommandListExecutor() {}
 
-		void ExecuteList(RHICommandListBase& CmdList);
-		void ExecuteList(RHICommandListImmediate& CmdList);
+		void ExecuteList(RHICommandListBase& CmdList) {
+			auto ctx = CmdList.getContext();
+			RHICommand* cmd = CmdList.Root;
+			ctx->RHIBegin();
+			while (cmd) {
+				cmd->Execute(CmdList);
+				RHICommand* next = cmd->nxt;
+				cmd->~RHICommand();
+				free(cmd);
+				cmd = next;
+			}
+			ctx->RHIEnd();
+			CmdList.CommandLink = &CmdList.Root;
+			CmdList.Root = nullptr;
+		}
+
+		void ExecuteList(RHICommandListImmediate& CmdList) {
+
+		}
 	};
 }
