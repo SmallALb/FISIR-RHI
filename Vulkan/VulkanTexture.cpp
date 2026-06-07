@@ -1,0 +1,231 @@
+#include "VulkanTexture.h"
+#include "VulkanDevice.h"
+#include "VulkanMemory.h"
+#include <vulkan/vulkan.h>
+#include "VulkanDebugNameSet.h"
+
+namespace FISIR {
+	struct __VkTextureData {
+		uint32_t width;
+		uint32_t height;
+		uint16_t mipLevels;
+		uint16_t arrayLayers;
+		VkImage image;
+		GpuBlock* mBlock;
+		TextureCOLORType colorType;
+		TextureType type;
+		VkImageLayout currentLayout;
+		TextureUseForFlags useFor;
+		uint32_t sampleCount;
+	};
+
+	static VkImageLayout getVulkanImageLayout(TextureLayout layout) {
+		switch (layout) {
+		case TextureLayout::Undefined:
+			return VK_IMAGE_LAYOUT_UNDEFINED;
+		case TextureLayout::ColorAttachmentOptimal:
+			return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		case TextureLayout::DepthStencilAttachmentOptimal:
+			return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		case TextureLayout::ShaderReadOnlyOptimal:
+			return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		case TextureLayout::TransferSrcOptimal:
+			return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		case TextureLayout::TransferDstOptimal:
+			return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		case TextureLayout::Storage:
+			return VK_IMAGE_LAYOUT_GENERAL;
+		default:
+			return VK_IMAGE_LAYOUT_UNDEFINED;
+		}
+	}
+
+	static VkImageUsageFlags getVulkanImageUsage(TextureUseForFlags	flags) {
+		VkImageUsageFlags usage = 0;
+		if (flags & TextureUseFor::TextureUseForColorAttachment) {
+			usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForDepthStencilAttachment) {
+			usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForShaderReadOnly) {
+			usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForTransferSrc) {
+			usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForTransferDst) {
+			usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForStorage) {
+			usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+		}
+		return usage;
+	}
+	
+	static TextureLayout getFormVulkanImageLayout(VkImageLayout layout) {
+		switch (layout) {
+		case VK_IMAGE_LAYOUT_UNDEFINED:
+			return TextureLayout::Undefined;
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+			return TextureLayout::ColorAttachmentOptimal;
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+			return TextureLayout::DepthStencilAttachmentOptimal;
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+			return TextureLayout::ShaderReadOnlyOptimal;
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+			return TextureLayout::TransferSrcOptimal;
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+			return TextureLayout::TransferDstOptimal;
+		case VK_IMAGE_LAYOUT_GENERAL:
+			return TextureLayout::Storage;
+		default:
+			return TextureLayout::Undefined;
+		}
+	}
+
+
+	static VkFormat getVulkanFormat(TextureCOLORType type) {
+		switch (type) {
+		case TextureCOLORType::RGB_8:
+			return VK_FORMAT_R8G8B8_UNORM;
+		case TextureCOLORType::RGB_16:
+			return VK_FORMAT_R16G16B16_UNORM;
+		case TextureCOLORType::RGB_32:
+			return VK_FORMAT_R32G32B32_SFLOAT;
+		case TextureCOLORType::RGBA_8:
+			return VK_FORMAT_R8G8B8A8_UNORM;
+		case TextureCOLORType::RGBA_16:
+			return VK_FORMAT_R16G16B16A16_UNORM;
+		case TextureCOLORType::RGBA_32:
+			return VK_FORMAT_R32G32B32A32_SFLOAT;
+		case TextureCOLORType::R_8:
+			return VK_FORMAT_R8_UNORM;
+		case TextureCOLORType::Depth24_Stencil8:
+			return VK_FORMAT_D24_UNORM_S8_UINT;
+		default:
+			return VK_FORMAT_UNDEFINED;
+		}
+	}
+
+	static VkSampleCountFlagBits getVulkanSampleCount(uint32_t sampleCount) {
+		switch (sampleCount) {
+		case 1:
+			return VK_SAMPLE_COUNT_1_BIT;
+		case 2:
+			return VK_SAMPLE_COUNT_2_BIT;
+		case 4:
+			return VK_SAMPLE_COUNT_4_BIT;
+		case 8:
+			return VK_SAMPLE_COUNT_8_BIT;
+		case 16:
+			return VK_SAMPLE_COUNT_16_BIT;
+		case 32:
+			return VK_SAMPLE_COUNT_32_BIT;
+		case 64:
+			return VK_SAMPLE_COUNT_64_BIT;
+		default:
+			return VK_SAMPLE_COUNT_1_BIT;
+		}
+	}
+
+	VulkanTexture::VulkanTexture(VulkanDevice* inDevice, const TextureInfo& info, uint32_t usage, const char* name):
+		mDevice(inDevice)
+	{
+		mData = new __VkTextureData();
+		mData->height = info.height;
+		mData->width = info.width;
+		mData->colorType = info.colorType;
+		mData->type = info.type;
+		mData->mipLevels = info.mipLevels;
+		mData->arrayLayers = info.arrayLayers;
+		mData->sampleCount = info.sampleCount;
+		mData->useFor = info.useFor;
+		auto Allocator = mDevice->getAllocator();
+		size_t imageSize = info.width * info.height * getTextureColorTypeSize(info.colorType);
+		VkImageCreateInfo imageInfo = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.flags = info.type == TextureType::TEXTUREARRAY ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags)0,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = getVulkanFormat(info.colorType),
+			.extent = {info.width, info.height, 1},
+			.mipLevels = mData->mipLevels,
+			.arrayLayers = mData->arrayLayers,
+			.samples = getVulkanSampleCount(mData->sampleCount),
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = usage != 0  
+						? usage 
+						: getVulkanImageUsage(info.useFor),
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		 };
+		 vkCreateImage(mDevice->getLogicalDevice(), &imageInfo, nullptr, &mData->image);
+		 mData->mBlock = Allocator->create(imageSize, MemType::MemTypeDeviceLocal, this);
+	
+		 setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name ? name : "VulkanTexture");
+	}
+
+	VulkanTexture::~VulkanTexture() {
+		vkDestroyImage(mDevice->getLogicalDevice(), mData->image, nullptr);
+		auto Allocator = mDevice->getAllocator();
+		Allocator->free(mData->mBlock);
+		delete mData;
+	}
+
+	void* VulkanTexture::getResourceAPIHandle() const {
+		return mData->image;
+	}
+
+	uint32_t VulkanTexture::getWidth() const {
+		return mData->height;
+	}
+
+	uint32_t VulkanTexture::getHeight() const {
+		return mData->width;
+	}
+
+	const char* VulkanTexture::outPutString() const {
+		return "Vulkan Texture";
+	}
+
+	TextureLayout VulkanTexture::getCurrentLayout() const {
+		return getFormVulkanImageLayout(mData->currentLayout);
+	}
+
+	void VulkanTexture::transitionLayout(TextureLayout newLayout) {
+		mData->currentLayout = getVulkanImageLayout(newLayout);
+	}
+
+	TextureCOLORType VulkanTexture::getColorType() const {
+		return mData->colorType;
+	}
+
+	uint32_t VulkanTexture::getVkDescriptorType() const {
+		switch (mData->currentLayout) {
+			case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+				return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			case VK_IMAGE_LAYOUT_GENERAL:
+				return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		default:
+			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+		}
+	}
+
+	TextureUseForFlags VulkanTexture::getTextureUseFor() const {
+		return mData->useFor;
+	}
+
+	uint32_t VulkanTexture::getVkColorType() const {
+		return getVulkanFormat(mData->colorType);
+	}
+
+	uint32_t VulkanTexture::getVkTextureLayout() const {
+		return mData->currentLayout;
+	}
+
+	uint32_t VulkanTexture::getSampleCount() const {
+		return mData->sampleCount;
+	}
+
+}
+ 

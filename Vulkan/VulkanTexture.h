@@ -1,0 +1,54 @@
+#pragma once
+
+#include "../RHITexture.h"
+#include "VulkanResourceInterface.h"
+namespace FISIR {
+	class VulkanDevice;
+	
+	struct __VkTextureData;
+	
+	
+
+	class VulkanTexture : public RHITexture, VulkanResource {
+	public:
+		VulkanTexture(VulkanDevice* inDevice, const TextureInfo& info, uint32_t usage = 0, const char* name = nullptr);
+
+		virtual ~VulkanTexture();
+
+		virtual void* getResourceAPIHandle() const override;
+
+		virtual uint32_t getWidth() const override;
+
+		virtual uint32_t getHeight() const override;
+
+		virtual const char* outPutString() const override;
+
+		virtual TextureLayout getCurrentLayout() const override;
+
+		virtual void transitionLayout(TextureLayout newLayout) override;
+
+		virtual TextureCOLORType getColorType() const override;
+
+		virtual Type getResourceType() const override { return Type::Texture; }
+
+		virtual uint32_t getVkDescriptorType() const override;
+
+		uint32_t getVkColorType() const;
+
+		uint32_t getVkTextureLayout() const;
+
+		virtual uint32_t getSampleCount() const override;
+
+		virtual TextureUseForFlags getTextureUseFor() const override;
+
+		virtual void* changeOtherHandle(const std::type_info& typ) override {
+			if (typ == typeid(VulkanResource)) return static_cast<VulkanResource*>(this);
+			else return static_cast<RHIResource*>(this);
+		}
+
+		__VkTextureData* mData;
+	private:
+		VulkanDevice* mDevice;
+	};
+}
+

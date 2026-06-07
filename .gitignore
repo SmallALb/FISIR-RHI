@@ -1,0 +1,13 @@
+# Visual Studio build output directory
+x64/
+
+# Visual Studio user settings folder
+.vs/
+
+# Visual Studio project files
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Specific RHI Vulkan folder
+RHIVK/

@@ -1,0 +1,359 @@
+
+#include "VulkanDevice.h"
+#include "VulkanRHI.h"
+#include "VulkanMemory.h"
+#include <vector>
+#include <vulkan/vulkan.h>
+#include "../../Log/Logger.h"
+#include "VulkanCommandPool.h"
+
+namespace FISIR{
+	extern VkInstance GetGlobalInstance();
+#ifdef _DEBUG
+	static PFN_vkSetDebugUtilsObjectNameEXT    __SetDebugUtilsObjectName = nullptr;
+#endif // _DEBUG
+
+
+
+	struct __VkDeviceData {
+		VulkanDeviceExtensions Externsions;
+		VkPhysicalDevice mPhysicalDevice;
+		VkPhysicalDeviceIDProperties mGpuID;
+		VkPhysicalDeviceDescriptorHeapPropertiesEXT mDescriptorHeapProperties;
+		VkPhysicalDeviceProperties2 mPhysicalDeviceProperties;
+		std::vector<VkQueueFamilyProperties> mQueueFamilyVkQueueFamilyProperties;
+		std::vector<VkQueueFamilyProperties> mQueueFamilyProperties;
+		VkDevice mLogicalDevice = nullptr;
+		std::unordered_map<RHIResource*, VkAccessFlagBits> ResourceAccessMap;
+		std::unordered_map<RHITexture*, VkImageLayout> TextureLayoutMap;
+		bool DescriptorHeapSupport = false;
+
+	};
+
+
+	void setVkObjectName(VkDevice device, uint64_t objectHandle, VkObjectType objectType, const char* name) {
+	#ifdef _DEBUG
+
+		if (__SetDebugUtilsObjectName) {
+			VkDebugUtilsObjectNameInfoEXT nameInfo{
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+				.pNext = nullptr,
+				.objectType = objectType,
+				.objectHandle = objectHandle,
+				.pObjectName = name
+			};
+			__SetDebugUtilsObjectName(device, &nameInfo);
+		}
+	#endif // _DEBUG
+	}
+
+	static ResourceAccess getResourceAccessFromVK(VkAccessFlagBits Access) {
+		switch (Access)
+		{
+		case VK_ACCESS_SHADER_READ_BIT:
+			return ResourceAccess::ReadOnly;
+		case VK_ACCESS_SHADER_WRITE_BIT:
+			return ResourceAccess::WriteOnly;
+		case (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT):
+			return ResourceAccess::ReadWrite;
+		case VK_ACCESS_TRANSFER_READ_BIT:
+			return ResourceAccess::TransferSrc;
+		case VK_ACCESS_TRANSFER_WRITE_BIT:
+			return ResourceAccess::TransferDst;
+		default:
+			return ResourceAccess::Undefined;
+		}
+	}
+
+	static TextureLayout getTextureLayoutFromVK(VkImageLayout Layout) {
+		switch (Layout) {
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+			return TextureLayout::ColorAttachmentOptimal;
+		case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+			return TextureLayout::DepthStencilAttachmentOptimal;
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+			return TextureLayout::ShaderReadOnlyOptimal;
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+			return TextureLayout::TransferSrcOptimal;
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+			return TextureLayout::TransferDstOptimal;
+		default:
+			return TextureLayout::Undefined;
+		}
+	}
+
+	static VkAccessFlagBits getAccessFlagBits(ResourceAccess type) {
+		switch (type)
+		{
+		case ResourceAccess::ReadOnly:
+			return VK_ACCESS_SHADER_READ_BIT;
+		case ResourceAccess::WriteOnly:
+			return VK_ACCESS_SHADER_WRITE_BIT;
+		case ResourceAccess::ReadWrite:
+			return (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+		case ResourceAccess::TransferSrc:
+			return VK_ACCESS_TRANSFER_READ_BIT;
+		case ResourceAccess::TransferDst:
+			return VK_ACCESS_TRANSFER_WRITE_BIT;
+		default:
+			return (VkAccessFlagBits)0;
+		}
+	}
+
+	static VkImageLayout getImageLayout(TextureLayout type) {
+		switch (type) {
+		case TextureLayout::ColorAttachmentOptimal:
+			return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		case TextureLayout::DepthStencilAttachmentOptimal:
+			return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		case TextureLayout::ShaderReadOnlyOptimal:
+			return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		case TextureLayout::TransferSrcOptimal:
+			return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		case TextureLayout::TransferDstOptimal:
+			return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		default:
+			return VK_IMAGE_LAYOUT_UNDEFINED;
+		}
+	}
+
+	VulkanDevice::~VulkanDevice() {
+		delete mGraphicQue;
+		delete mTransferQueue;
+		delete mComputeQue;
+		delete mData;
+	}
+
+	bool VulkanDevice::Init() {
+		uint32_t queueCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, nullptr);
+		mData->mQueueFamilyProperties.resize(queueCount);
+		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, mData->mQueueFamilyProperties.data());
+		
+		if (!InitDevice()) return false;
+
+		__SetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(GetGlobalInstance(), "vkSetDebugUtilsObjectNameEXT");
+
+		if (isDescriptorHeapSupported()) {
+			mData->mDescriptorHeapProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
+			mData->mPhysicalDeviceProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+			mData->mPhysicalDeviceProperties.pNext = &mData->mDescriptorHeapProperties;
+		}
+		vkGetPhysicalDeviceProperties2(mData->mPhysicalDevice, &mData->mPhysicalDeviceProperties);
+
+		return true;
+	}
+
+	void VulkanDevice::Destory() {
+		delete mAllocator;
+		vkDeviceWaitIdle(mData->mLogicalDevice);
+		vkDestroyDevice(mData->mLogicalDevice, nullptr);
+	}
+
+	void VulkanDevice::setResourceAccess(RHIResource* resource, ResourceAccess access) {
+		mData->ResourceAccessMap[resource] = getAccessFlagBits(access);
+	}
+
+	void VulkanDevice::setTextureLayout(RHITexture* texture, TextureLayout layout) {
+		mData->TextureLayoutMap[texture] = getImageLayout(layout);
+	}
+
+	void VulkanDevice::waitIdle() {
+		vkDeviceWaitIdle(mData->mLogicalDevice);
+	}
+
+	ResourceAccess VulkanDevice::getResourceAccess(RHIResource* resource) {
+		auto it = mData->ResourceAccessMap.find(resource);
+		if (it != mData->ResourceAccessMap.end()) return getResourceAccessFromVK(it->second);
+		return ResourceAccess::Undefined;
+	}
+
+
+	TextureLayout VulkanDevice::getTextureLayout(RHITexture* texture) {
+		auto it = mData->TextureLayoutMap.find(texture);
+		if (it != mData->TextureLayoutMap.end()) return getTextureLayoutFromVK(it->second);
+		return TextureLayout::Undefined;
+	}
+
+	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, std::initializer_list<VulkanSemaphore*> SignalSemaphores, std::initializer_list<VulkanSemaphore*> WaitSemaphores, VulkanFence* Fence) {
+		switch (poolType) {
+			case _Graphics_:
+				Debug("Submit In Graphic Queue");
+				mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+				break;
+			case _Compute_:
+				Debug("Submit In Compute Queue");
+				mComputeQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+				break;
+			case _Transfer_:
+				Debug("Submit In Transfer Queue");
+				mTransferQueue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+				break;
+			default:
+				Error("Invalid Command Pool Type!");
+			break;
+		}
+	}
+
+	bool VulkanDevice::isDescriptorHeapSupported() const {
+		return mData->DescriptorHeapSupport;
+	}
+
+	VkPhysicalDeviceDescriptorHeapPropertiesEXT& VulkanDevice::getDescriptorHeapProperties() {
+		return mData->mDescriptorHeapProperties;
+	}
+
+	bool VulkanDevice::InitDevice() {
+		std::vector<const char*> extensions {
+			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+		};
+
+		VkPhysicalDeviceBufferDeviceAddressFeatures supportedFeatures {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+		};
+
+		VkPhysicalDeviceDescriptorHeapFeaturesEXT DescriptorHeapFeatures {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
+			.pNext = &supportedFeatures
+		};
+
+		VkPhysicalDeviceFeatures2 deviceFeatures2 {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &DescriptorHeapFeatures,
+		};
+
+		vkGetPhysicalDeviceFeatures2(mData->mPhysicalDevice, &deviceFeatures2);
+
+		if (DescriptorHeapFeatures.descriptorHeap == VK_TRUE && supportedFeatures.bufferDeviceAddress == VK_TRUE) {
+			//extensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+			extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+			Debug("Device Support Descriptor Heap, Enable Descriptor Heap Extension!");
+			mData->DescriptorHeapSupport = true;
+			DescriptorHeapFeatures.pNext = &supportedFeatures;
+			supportedFeatures.pNext = nullptr;
+			
+		}
+		else {
+			Warn("Device Not Support Descriptor Buffer, Fallback To Normal Descriptor Set!");
+		}
+
+		VkDeviceCreateInfo deviceCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+			.pNext = &DescriptorHeapFeatures,
+			.enabledExtensionCount = uint32_t(extensions.size()),
+			.ppEnabledExtensionNames = extensions.data(),
+			
+		};
+
+		int GQueFamilyIndex = -1;
+		int CQueFamilyIndex = -1;
+		int TQueFamilyIndex = -1;
+		uint32_t NumProrities = 0;
+		std::vector<VkDeviceQueueCreateInfo> QueInfos;
+		for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) {
+			const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
+			bool IsVaild = false;
+			if ((Prpos.queueFlags & VK_QUEUE_GRAPHICS_BIT) && GQueFamilyIndex == -1) {
+				GQueFamilyIndex = FamilyIndex;
+				IsVaild = 1;
+			}
+
+			if ((Prpos.queueFlags & VK_QUEUE_COMPUTE_BIT) && CQueFamilyIndex == -1) {
+				CQueFamilyIndex = FamilyIndex;
+				IsVaild = 1;
+			}
+
+			if ((Prpos.queueFlags & VK_QUEUE_TRANSFER_BIT) && TQueFamilyIndex == -1) {
+				TQueFamilyIndex = FamilyIndex;
+				IsVaild = 1;
+			}
+
+			if (!IsVaild) continue;
+			uint32_t QueIndex = QueInfos.size();
+			VkDeviceQueueCreateInfo Que = {
+				.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+				.queueFamilyIndex = FamilyIndex,
+				.queueCount = Prpos.queueCount
+			};
+			QueInfos.push_back(Que);
+			NumProrities += Prpos.queueCount;
+		}
+		if (CQueFamilyIndex == -1) {
+			Error("Error Device The Graphic Que haven't found");
+			return false;
+		}
+		std::vector<float> QueuePriorities(NumProrities);
+		float* CurrentQuePriority = QueuePriorities.data();
+		for (auto& info : QueInfos) {
+			info.pQueuePriorities = CurrentQuePriority;
+			const auto& Props = mData->mQueueFamilyProperties[info.queueFamilyIndex];
+			for (uint32_t i = 0; i < Props.queueCount; i++) *CurrentQuePriority++ = 1.0f;
+		}
+		deviceCreateInfo.queueCreateInfoCount = (uint32_t)QueInfos.size();
+		deviceCreateInfo.pQueueCreateInfos = QueInfos.data();
+		auto res = vkCreateDevice(mData->mPhysicalDevice, &deviceCreateInfo, nullptr, &(mData->mLogicalDevice));
+		if (res != VK_SUCCESS) {
+			Error("Device Create failed!");
+			switch(res) {
+			case VK_ERROR_OUT_OF_HOST_MEMORY:
+				Error("Device  Out of host memory!");
+				break;
+			case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+				Error("Device  Out of device memory!");
+				break;
+			case VK_ERROR_INITIALIZATION_FAILED:
+				Error("Device Initialization failed!");
+				break;
+			
+			}
+			return false;
+		}
+		mGraphicQue = new VulkanQueue(this, GQueFamilyIndex, "Graphic");
+		if (CQueFamilyIndex == -1) CQueFamilyIndex = GQueFamilyIndex;
+		mComputeQue = new VulkanQueue(this, CQueFamilyIndex, "Compute");
+		if (TQueFamilyIndex == -1) TQueFamilyIndex = CQueFamilyIndex;
+		mTransferQueue = new VulkanQueue(this, TQueFamilyIndex, "Transfer");
+		mAllocator = new VulkanMemoryAllocator();
+		mAllocator->init(this);
+		Debug("Well vulkan Device Create Success!");
+
+		
+
+		return true;
+	}
+
+	VulkanDevice::VulkanDevice(VkPhysicalDevice device) {
+		mData = new __VkDeviceData();
+		mData->mPhysicalDevice = device;
+		
+	}
+
+
+	VkDevice VulkanDevice::getLogicalDevice() {
+	//Export Func
+		return mData->mLogicalDevice;
+	}
+
+	VkPhysicalDevice_T* VulkanDevice::getPhysicalDevice() {
+		return mData->mPhysicalDevice;
+	}
+
+	uint32_t VulkanDevice::getMaxDescriptorSetSamplers() const { 
+		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSamplers; 
+	}
+
+	uint32_t VulkanDevice::getMaxDescriptorSetStorageImages() const {
+		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetStorageImages;
+	}
+
+	uint32_t VulkanDevice::getMaxDescriptorSetCombinedImageSamplers() const {
+		return  mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSampledImages; 
+	}
+
+	uint32_t VulkanDevice::getMaxDescriptorSetUniformBuffers() const {
+		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetUniformBuffers; 	
+	}
+
+
+
+}
