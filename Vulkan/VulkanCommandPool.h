@@ -1,6 +1,7 @@
 #pragma once
-
+#include "../RHIResource.h";
 #include <vector>
+#include <unordered_map>
 #include <atomic>
 struct VkCommandBuffer_T;
 
@@ -23,12 +24,20 @@ namespace FISIR{
 		_Transfer_,
 		COMMAND_POOL_TYPE_COUNT
 	};
+	
+
+	struct ResourceWillBeLayout_Access {
+		ResourceAccess access;
+		TextureLayout layout;
+	};
+
 
 	struct CBInfo {
 		VkCommandBuffer_T* buffer;
 		CommandBufferType type;
 		CommandPoolType poolType;
 		VulkanCommandPool* pool;
+		std::unordered_map<RHIResource*, ResourceWillBeLayout_Access> QuoteResources;
 	};
 
 

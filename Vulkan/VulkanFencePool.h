@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../DataBase/LockFreeQue.h"
+#include "../LockFreeQue.h"
 #include <cstdint>
 #include <mutex>
 #include <vector>

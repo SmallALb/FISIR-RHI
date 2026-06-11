@@ -12,15 +12,11 @@ namespace FISIR {
 	}
 
 
-	static VkDescriptorType getDescriptorType(BufferLayout type) {
-		switch (type) {
-		case BufferLayout::UniformBuffer:
-			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		case BufferLayout::StorageBuffer:
-			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		default:
-			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		}
+	static VkDescriptorType getDescriptorType(BufferLayoutFlags type) {
+		if (type & UniformBuffer) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		if (type & StorageBuffer) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		
+		return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	}
 	
 	struct __VKBufferData {
@@ -28,24 +24,21 @@ namespace FISIR {
 		GpuBlock* mBlock;
 		uint64_t size;
 		uint64_t stride;
-		BufferLayout bufferLayout;
+		BufferLayoutFlags bufferLayout;
 		MemType memoryType;
 		VkDeviceAddress Gpuaddress;
 	};
 
-	static VkBufferUsageFlags getBufferUsage(BufferLayout layout) {
-		switch (layout) {
-		case BufferLayout::VertexBuffer:
-			return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT ;
-		case BufferLayout::IndexBuffer:
-			return VK_BUFFER_USAGE_INDEX_BUFFER_BIT ;
-		case BufferLayout::UniformBuffer:
-			return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-		case BufferLayout::StorageBuffer:
-			return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT ;
-		default:
-			return 0;
-		}
+	static VkBufferUsageFlags getBufferUsage(BufferLayoutFlags layout) {
+		VkBufferUsageFlags flags = 0;
+
+		if (layout & VertexBuffer) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		if (layout & IndexBuffer) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		if (layout & UniformBuffer) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		if (layout & StorageBuffer) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		if (layout & TransferDstBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		if (layout & TransferSrcBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		return flags;
 	}
 	
 	VulkanBuffer::VulkanBuffer(VulkanDevice* device, const BufferInfo& info, uint32_t Usage, const char* DebugName) : mDevice(device) {

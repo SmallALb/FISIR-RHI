@@ -123,10 +123,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
     }
 
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        Warn(pCallbackData->pMessage);
+        Warn("{}", pCallbackData->pMessage);
     }
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        Error(pCallbackData->pMessage);
+        Error("{}", pCallbackData->pMessage);
     }
 
     return VK_FALSE;

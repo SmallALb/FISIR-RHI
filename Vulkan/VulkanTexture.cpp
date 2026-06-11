@@ -3,18 +3,17 @@
 #include "VulkanMemory.h"
 #include <vulkan/vulkan.h>
 #include "VulkanDebugNameSet.h"
-
+#include "../../Log/Logger.h"
 namespace FISIR {
 	struct __VkTextureData {
-		uint32_t width;
-		uint32_t height;
+		TextureSize size;
 		uint16_t mipLevels;
 		uint16_t arrayLayers;
 		VkImage image;
 		GpuBlock* mBlock;
 		TextureCOLORType colorType;
 		TextureType type;
-		VkImageLayout currentLayout;
+		std::atomic<VkImageLayout> currentLayout;
 		TextureUseForFlags useFor;
 		uint32_t sampleCount;
 	};
@@ -133,8 +132,7 @@ namespace FISIR {
 		mDevice(inDevice)
 	{
 		mData = new __VkTextureData();
-		mData->height = info.height;
-		mData->width = info.width;
+		mData->size = info.size;
 		mData->colorType = info.colorType;
 		mData->type = info.type;
 		mData->mipLevels = info.mipLevels;
@@ -142,13 +140,13 @@ namespace FISIR {
 		mData->sampleCount = info.sampleCount;
 		mData->useFor = info.useFor;
 		auto Allocator = mDevice->getAllocator();
-		size_t imageSize = info.width * info.height * getTextureColorTypeSize(info.colorType);
+		size_t imageSize = info.size.width * info.size.height * info.size.depth * getTextureColorTypeSize(info.colorType);
 		VkImageCreateInfo imageInfo = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.flags = info.type == TextureType::TEXTUREARRAY ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags)0,
 			.imageType = VK_IMAGE_TYPE_2D,
 			.format = getVulkanFormat(info.colorType),
-			.extent = {info.width, info.height, 1},
+			.extent = {info.size.width, info.size.height, info.size.depth},
 			.mipLevels = mData->mipLevels,
 			.arrayLayers = mData->arrayLayers,
 			.samples = getVulkanSampleCount(mData->sampleCount),
@@ -177,11 +175,11 @@ namespace FISIR {
 	}
 
 	uint32_t VulkanTexture::getWidth() const {
-		return mData->height;
+		return mData->size.width;
 	}
 
 	uint32_t VulkanTexture::getHeight() const {
-		return mData->width;
+		return mData->size.height;
 	}
 
 	const char* VulkanTexture::outPutString() const {
@@ -192,8 +190,18 @@ namespace FISIR {
 		return getFormVulkanImageLayout(mData->currentLayout);
 	}
 
+	uint16_t VulkanTexture::getLayerCount() const {
+		return mData->arrayLayers;
+	}
+
+	uint16_t VulkanTexture::getMipLevelCount() const {
+		return mData->mipLevels;
+	}
+
 	void VulkanTexture::transitionLayout(TextureLayout newLayout) {
 		mData->currentLayout = getVulkanImageLayout(newLayout);
+		Warn("The Image Ox{:x} Layout Become : {}", (size_t)(this), getTextureLayoutName(newLayout));
+
 	}
 
 	TextureCOLORType VulkanTexture::getColorType() const {

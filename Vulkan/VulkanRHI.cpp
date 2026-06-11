@@ -5,7 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <string>
 #include "../../Log/Logger.h"
-#include "../../DataBase/LockFreeQue.h"
+#include "../LockFreeQue.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
 #include "VulkanCommandContext.h"
@@ -17,18 +17,46 @@
 namespace FISIR {
     #include "ChangeImageFlagsToVulkanFlags.h"
 
-   /*
-       __VulkanData_AND_FUNC__
-   */
-
-
 	/*
 
 		CommandPool Manager and Thread Context
 
     */
     #include "VulkanThreadCommandContext.h"
+    //Pending Release Command Buffers
+    struct PendingReleaseCBInfo {
+        PendingReleaseCBInfo() {}
+        PendingReleaseCBInfo(VulkanFence* f, std::vector<CBInfo>&& c) : fence(f), cbInfos(std::move(c)) {}
+        PendingReleaseCBInfo(VulkanFence* f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
+
+
+        PendingReleaseCBInfo(PendingReleaseCBInfo&& other) noexcept
+            : fence(other.fence), cbInfos(std::move(other.cbInfos)) {
+            other.fence = nullptr;
+        }
+
+        PendingReleaseCBInfo& operator=(PendingReleaseCBInfo&& other) noexcept {
+            if (this != &other) {
+                fence = other.fence;
+                cbInfos = std::move(other.cbInfos);
+                other.fence = nullptr;
+            }
+            return *this;
+        }
+
+        VulkanFence* fence{ nullptr };
+        std::vector<CBInfo> cbInfos{};
+    };
+
     static VulkanCommandPoolManager* CommandPoolManager;
+
+    static LockFreeQue<PendingReleaseCBInfo> PendingReleaseCBs;
+    static std::vector<PendingReleaseCBInfo> PendingReleaseCBsInThread;
+
+    //Pending Upload Command Buffers
+    LockFreeQue<CBInfo> CmdBufferNeedUpload;
+    static std::mutex ContextCreateMutex;
+    std::thread RHIThread, RHIResourceThread;
 
 	/*
     * 
@@ -165,10 +193,6 @@ namespace FISIR {
 
   }
 
-  RHIResourcePack* VulkanRHI::RHICreateResourcePack(Type restyp,std::initializer_list<RHIResource*> resources) {
-      return mDescriptorPool->createResourcePack(restyp, resources);
-  }
-
   RHIResourcePack* VulkanRHI::RHICreateResourcePack(Type restyp, const std::vector<RHIResource*>& resources) {
       return mDescriptorPool->createResourcePack(restyp, resources);
   }
@@ -199,15 +223,15 @@ namespace FISIR {
                 switch (cmdBuffer.poolType) {
                 case CommandPoolType::_Graphics_:
                     RenderCMDs.push_back(cmdBuffer.buffer);
-                    RenderCMDInfos.push_back(cmdBuffer);
+                    RenderCMDInfos.push_back(std::move(cmdBuffer));
                     break;
                 case CommandPoolType::_Transfer_:
                     TransferCMDs.push_back(cmdBuffer.buffer);
-                    TransferCMDInfos.push_back(cmdBuffer);
+                    TransferCMDInfos.push_back(std::move(cmdBuffer));
                     break;
                 case CommandPoolType::_Compute_:
                     ComputeCMDs.push_back(cmdBuffer.buffer);
-                    ComputeCMDInfos.push_back(cmdBuffer);
+                    ComputeCMDInfos.push_back(std::move(cmdBuffer));
                     break;
                 }
             }
@@ -227,42 +251,52 @@ namespace FISIR {
     }
   }
 
+  //双指针移除算法
+  //一个类似快排的算法，将符合条件的放在右边然后弹出
+  //不符合的将其交换到最左边，然后左指针前移
+  template<class T_, class F_> 
+  bool TwoPointerSwapPop(std::vector<T_>& Target, F_ Judgefunc) {
+    for (int l=0, r=Target.size()-1; l<=r; ) {
+        if (Judgefunc(Target, r)) {
+            Target.pop_back();
+            r--;
+        }
+        else if (l < r) {
+            std::swap(Target[l], Target[r]);
+            l++;
+        }
+        else break;
+    }
+    return Target.empty();
+  }
+
   void VulkanRHI::VulkanResourceLoop() {
+
+
     Debug("Resource Thread ID: {}", std::this_thread::get_id());
     while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
-        //快排思维清理
-		//停止标志位停止后，强制清理所有命令缓冲区，不管fence状态
-        if (!PendingReleaseCBsInThread.empty()) {
-            for (int l=0, r=PendingReleaseCBsInThread.size()-1; l <= r; ) {
-				auto& [fence, cbs] = PendingReleaseCBsInThread[r];
-                bool isFree = 0;
-                if (!fence || fence->isSignaled()) {
-                    for (int cl = 0, cr = cbs.size() - 1; cl <= cr; ) {
-                        if (!cbs[cr].pool->isPoolUsed() || stopTag) {
-                            cbs[cr].pool->releaseCommandBuffer(cbs[cr]);
-							cbs.pop_back();
-                            cr--;
+
+
+        TwoPointerSwapPop(PendingReleaseCBsInThread, [this](std::vector<PendingReleaseCBInfo>& target, int idx)->bool {
+            auto& [fence, cbs] = target[idx];
+            if (!fence || fence->isSignaled()) {
+                if (fence) mFencePool->release(fence);
+                return TwoPointerSwapPop(cbs, [this](std::vector<CBInfo>& infos, int idx2) -> bool {
+                    if (!infos[idx2].QuoteResources.empty()) {
+                        for (auto [resource, newVal] : infos[idx2].QuoteResources) {
+                            if (resource->getResourceType() == Type::Texture) static_cast<VulkanTexture*>(resource)->transitionLayout(newVal.layout);
                         }
-                        else if (cl < cr) {
-							std::swap(cbs[cl], cbs[cr]);
-                            cl++;
-                        }
-                        else break;
+                        infos[idx2].QuoteResources.clear();
                     }
-					isFree = cbs.empty();
-                    if (fence) mFencePool->release(fence);
-                }
-                if (isFree || stopTag) {
-                    PendingReleaseCBsInThread.pop_back();
-                    r--;
-                }
-                else if (l < r) {
-					std::swap(PendingReleaseCBsInThread[l], PendingReleaseCBsInThread[r]);
-                    l++;
-                }
-                else break;
+                    bool isUsed= !infos[idx2].pool->isPoolUsed() || stopTag;
+                    if (isUsed) infos[idx2].pool->releaseCommandBuffer(infos[idx2]);
+                    return isUsed;
+
+                }) || stopTag;
             }
-        }
+            return stopTag;
+        });
+       
 
         PendingReleaseCBInfo Info;
         if (!PendingReleaseCBs.empty()) {
@@ -275,7 +309,7 @@ namespace FISIR {
                         cb.pool->releaseCommandBuffer(cb);
                     }
                     else {
-                        cbInfos.push_back(cb);
+                        cbInfos.push_back(std::move(cb));
                     }
                 }
                 if (fence) mFencePool->release(fence);

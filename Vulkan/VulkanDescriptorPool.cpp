@@ -2,7 +2,7 @@
 #include <vulkan/vulkan.h>
 #include "VulkanDevice.h"
 #include "../../Log/Logger.h"
-#include "../../DataBase/SparseMap.h"
+#include "../SparseMap.h"
 #include "../RHIResourcePack.h"
 #include <unordered_map>
 #include "VulkanBuffer.h"

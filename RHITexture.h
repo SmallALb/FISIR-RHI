@@ -50,13 +50,15 @@ namespace FISIR {
 
 		virtual TextureLayout getCurrentLayout() const = 0;
 
-		virtual void transitionLayout(TextureLayout newLayout) = 0;
-
 		virtual TextureCOLORType getColorType() const = 0;
 
 		virtual uint32_t getSampleCount() const = 0;
 
 		virtual TextureUseForFlags getTextureUseFor() const = 0;
+		
+		virtual uint16_t getLayerCount() const = 0;
+
+		virtual uint16_t getMipLevelCount() const = 0;
 	};
 
 

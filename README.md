@@ -24,17 +24,17 @@
   - ####  [1.2 DX12RHI](./Design/DynamicRHI.md#12-DX12RHI)
 
 - ### [2. 指令系统 RHICommand](./Design/RHICommand.md)
-  - #### [2.2 RHICommandListBase](./Design/RHICommandListBase.md)
-    - ##### [2.2.1 RHIRenderCommandList](./Design/RHIRenderCommandList.md)
-    - ##### [2.2.2 RHIComputeCommandList](./Design/RHIComputeCommandList.md)
-    - ##### [2.2.3 RHITransferCommandList](./Design/RHITransferCommandList.md)
-  - ##### [2.3 CommandListExecutor](./Design/CommandListExecutor.md)
-  - ##### [2.4 RHIContext](./Design/RHIContext.md)
+  - #### [2.2 RHICommandListBase](./Design/RHICommand.md)
+    - ##### [2.2.1 RHIRenderCommandList](./Design/RHICommand.md)
+    - ##### [2.2.2 RHIComputeCommandList](./Design/RHICommand.md)
+    - ##### [2.2.3 RHITransferCommandList](./Design/RHICommand.md)
+  - ##### [2.3 CommandListExecutor](./Design/RHICommand.md)
+  - ##### [2.4 RHIContext](./Design/RHICommand.md)
 
 - ### [4. 资源 RHIResource](./Design/RHIResource.md)
-  - #### [4.1 RHIBuffer](./Design/RHIBuffer.md)
-  - #### [4.2 RHITexture](./Design/RHITexture.md)
-
+  - #### [4.1 RHIBuffer](./Design/RHIResource.md#41-RHIBuffer)
+  - #### [4.2 RHITexture](./Design/RHIResource.md#42-RHITexture)
+  - #### [4.3 RHIResourcePack](/Design/RHIResource.md#43-RHIResourcePack)
 - ### [5. 渲染通道 RHIRenderPass](./Design/RHIRenderPass.md)
 
 - ### [6. 着色器 RHIShader](./Design/RHIShader.md)
@@ -45,46 +45,60 @@
 
 - ### [9. 窗口 RHIWindow](./Design/RHIWindow.md)
 
+- ### [10.VulkanRHI Details](./Design/VulkanRHIDetails.md)
+
 ---------------------------------
 <details>
   <summary><h2 style="display: inline;">修改 Fix</h2></summary>
   <details>
   <summary>中文</summary>
-  <p>2026-6-7 第一次添加设计文档</p>
+
+  - 第一次添加设计文档 (2026-6-7)
+  - 消除RHI中所有的.cpp调用，只包含头文件 (2026-6-8)
+
   </details>
 
   <details>
   <summary>English</summary>
-  <p>2026-6-7 The first time adding a design document</p>
+  
+  - The first time adding a design document (2026-6-7)
+  - Clear all the .Cpp file in RHI (2026-6-8)
+  
   </details>
 </details>
 
 ------------------------------------
-<details>
+<details open>
 <summary><h2 style="display: inline;">任务 Task Table</h2></summary>
 
-<details>
+<details open>
   <summary>中文</summary>
 
 - [] 优化类和函数命名
-- [] 消除RHI中所有的.cpp调用，只包含头文件
-- [] 修改DynamicLoader为内联头文件
-- [] 优化Vulkan Device中VkQueue的创建
+- [x] 消除RHI中所有的.cpp调用，只包含头文件 (2026-6-8)
+- [x] 修改DynamicLoader为内联头文件 (2026-6-8)
+- [x] 优化Vulkan Device中VkQueue的创建 (2026-6-8)
+- [x] 设计Layout转换和Barrier (2026-6-11)
 - [] 设计RHIViewPort，并实现Vulkan的特化
 - [] 修改编译脚本为CMake
+<a id="CN_Task_FIX-RHIDLL_PATH_FOUND_MEOTH"></a>
+- [] 修改RHIDLL自动路径匹配的方式[[DynamicRHI.md](./Design/DynamicRHI.md#CN-RHIDLL_PATH_FOUND_MEOTH_PROBLEM)][[RHICreator.h](RHICreator.h#19)]
 
 </details>
 
-<details>
+<details open>
   <summary>English</summary>
 
 - [] Optimize the name of class and function
-- [] Clear all the CPP File IN RHI
-- [] Fix DynamicLoader.cpp to inline head file
-- [] Optimize the VkQueue Creation
+- [x] Clear all the CPP File IN RHI (2026-6-8)
+- [x] Fix DynamicLoader.cpp to inline head file (2026-6-8)
+- [x] Optimize the VkQueue Creation (2026-6-8)
+- [x] Design Layout Transition and Memory Barrier (2026-6-11)
 - [] Designing RHIViewPort, and implementing Vulkan version
 - [] Modifying to CMake
 
 </details>
 
 </details>
+
+----------------------

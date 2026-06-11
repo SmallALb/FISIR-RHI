@@ -5,7 +5,7 @@
 #include <vector>
 #include <queue>
 #include <set>
-#include "../../DataBase/SparseMap.h"
+#include "../SparseMap.h"
 #include "VulkanTexture.h"
 #include "VulkanDeviceAllocationPool.h"
 #include <unordered_map>

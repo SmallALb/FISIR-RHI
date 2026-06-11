@@ -6,14 +6,19 @@
 #include <vulkan/vulkan.h>
 #include "../../Log/Logger.h"
 #include "VulkanCommandPool.h"
-
+#include "../SparseMap.h"
 namespace FISIR{
 	extern VkInstance GetGlobalInstance();
 #ifdef _DEBUG
 	static PFN_vkSetDebugUtilsObjectNameEXT    __SetDebugUtilsObjectName = nullptr;
 #endif // _DEBUG
 
+	static sparse_map<uint32_t, VulkanQueue*> FamilyIndexToQue;
 
+	static VulkanQueue* getVulkaQue(VulkanDevice* device, uint32_t familyIndex, const char* name) {
+		if (FamilyIndexToQue.contains(familyIndex)) return FamilyIndexToQue[familyIndex];
+		return FamilyIndexToQue[familyIndex] = new VulkanQueue(device, familyIndex, name);
+	}
 
 	struct __VkDeviceData {
 		VulkanDeviceExtensions Externsions;
@@ -51,11 +56,11 @@ namespace FISIR{
 		switch (Access)
 		{
 		case VK_ACCESS_SHADER_READ_BIT:
-			return ResourceAccess::ReadOnly;
+			return ResourceAccess::ShaderReadOnly;
 		case VK_ACCESS_SHADER_WRITE_BIT:
-			return ResourceAccess::WriteOnly;
+			return ResourceAccess::ShaderWriteOnly;
 		case (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT):
-			return ResourceAccess::ReadWrite;
+			return ResourceAccess::ShaderReadWrite;
 		case VK_ACCESS_TRANSFER_READ_BIT:
 			return ResourceAccess::TransferSrc;
 		case VK_ACCESS_TRANSFER_WRITE_BIT:
@@ -85,11 +90,11 @@ namespace FISIR{
 	static VkAccessFlagBits getAccessFlagBits(ResourceAccess type) {
 		switch (type)
 		{
-		case ResourceAccess::ReadOnly:
+		case ResourceAccess::ShaderReadOnly:
 			return VK_ACCESS_SHADER_READ_BIT;
-		case ResourceAccess::WriteOnly:
+		case ResourceAccess::ShaderWriteOnly:
 			return VK_ACCESS_SHADER_WRITE_BIT;
-		case ResourceAccess::ReadWrite:
+		case ResourceAccess::ShaderReadWrite:
 			return (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 		case ResourceAccess::TransferSrc:
 			return VK_ACCESS_TRANSFER_READ_BIT;
@@ -118,9 +123,6 @@ namespace FISIR{
 	}
 
 	VulkanDevice::~VulkanDevice() {
-		delete mGraphicQue;
-		delete mTransferQueue;
-		delete mComputeQue;
 		delete mData;
 	}
 
@@ -145,8 +147,14 @@ namespace FISIR{
 	}
 
 	void VulkanDevice::Destory() {
-		delete mAllocator;
 		vkDeviceWaitIdle(mData->mLogicalDevice);
+		
+		delete mAllocator;
+
+		for (auto &[id, Que] : FamilyIndexToQue) {
+			delete Que;
+		}
+
 		vkDestroyDevice(mData->mLogicalDevice, nullptr);
 	}
 
@@ -308,16 +316,19 @@ namespace FISIR{
 			}
 			return false;
 		}
-		mGraphicQue = new VulkanQueue(this, GQueFamilyIndex, "Graphic");
+		mGraphicQue = getVulkaQue(this, GQueFamilyIndex, "Graphic");
 		if (CQueFamilyIndex == -1) CQueFamilyIndex = GQueFamilyIndex;
-		mComputeQue = new VulkanQueue(this, CQueFamilyIndex, "Compute");
+		mComputeQue = getVulkaQue(this, CQueFamilyIndex, "Compute");
 		if (TQueFamilyIndex == -1) TQueFamilyIndex = CQueFamilyIndex;
-		mTransferQueue = new VulkanQueue(this, TQueFamilyIndex, "Transfer");
+		mTransferQueue = getVulkaQue(this, TQueFamilyIndex, "Transfer");
+
+		if (!mGraphicQue) Error("Error GraphicQue is null");
+		if (!mComputeQue) Error("Error ComputeQue is null");
+		if (!mTransferQueue) Error("Error TransferQue is null");
+
 		mAllocator = new VulkanMemoryAllocator();
 		mAllocator->init(this);
 		Debug("Well vulkan Device Create Success!");
-
-		
 
 		return true;
 	}

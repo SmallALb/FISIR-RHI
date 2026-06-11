@@ -38,8 +38,6 @@ namespace FISIR {
 
 		virtual void RHISubmitCommandList(RHICommandListBase* cmdList) override;
 
-		virtual RHIResourcePack* RHICreateResourcePack(Type restyp, std::initializer_list<RHIResource*> resources) override;
-
 		virtual RHIResourcePack* RHICreateResourcePack(Type restyp, const std::vector<RHIResource*>& resources) override;
 
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) override;

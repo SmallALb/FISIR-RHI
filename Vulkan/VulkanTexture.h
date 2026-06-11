@@ -25,7 +25,6 @@ namespace FISIR {
 
 		virtual TextureLayout getCurrentLayout() const override;
 
-		virtual void transitionLayout(TextureLayout newLayout) override;
 
 		virtual TextureCOLORType getColorType() const override;
 
@@ -45,6 +44,13 @@ namespace FISIR {
 			if (typ == typeid(VulkanResource)) return static_cast<VulkanResource*>(this);
 			else return static_cast<RHIResource*>(this);
 		}
+		
+
+		virtual uint16_t getLayerCount() const override;
+
+		virtual uint16_t getMipLevelCount() const override;
+
+		void transitionLayout(TextureLayout newLayout);
 
 		__VkTextureData* mData;
 	private:

@@ -69,7 +69,7 @@ namespace FISIR {
 
 	class RHIComputeCommandList : public RHICommandListBase {
 	public:
-		RHIComputeCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Compute); }
+		RHIComputeCommandList(DynamicRHI* rhi) { Context = rhi->RHIGetContext(CmdType::Compute); }
 		void dispatch(uint32_t GroupCountX, uint32_t GroupCountY, uint32_t GroupCountZ);
 		void setPipelineState(RHIPipeline* pipeline);
 		CmdType getCommandListType() const { return CmdType::Compute; }
@@ -77,7 +77,7 @@ namespace FISIR {
 
 	class RHITransferCommandList : public RHICommandListBase {
 	public:
-		RHITransferCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Transfer); }
+		RHITransferCommandList(DynamicRHI* rhi) { Context = rhi->RHIGetContext(CmdType::Transfer); }
 
 		void TransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions) {
 			auto ctx = static_cast<RHITransferContext*>(getContext());
@@ -106,7 +106,7 @@ namespace FISIR {
 
 	class RHIRenderCommandList : public RHICommandListBase {
 	public:
-		RHIRenderCommandList() { Context = RHIGet()->RHIGetContext(CmdType::Render); }
+		RHIRenderCommandList(DynamicRHI* rhi) { Context = rhi->RHIGetContext(CmdType::Render); }
 
 		CmdType getCommandListType() const {return CmdType::Render;}
 
@@ -142,6 +142,34 @@ namespace FISIR {
 			auto ctx = static_cast<RHIRenderContext*>(getContext());
 			PushFunc([ctx, pack](RHICommandListBase&) {
 				ctx->RHIBindResourcePack(pack);
+			});
+		}
+
+		void TransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, bufferTransitions, waitForStageDone, beginStageWhenDone](RHICommandListBase&) {
+				ctx->RHITransitionBuffers(bufferTransitions, waitForStageDone, beginStageWhenDone);
+			});
+		}
+
+		void TransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, textureTransitions, waitForStageDone, beginStageWhenDone](RHICommandListBase&) {
+				ctx->RHITransitionTextures(textureTransitions, waitForStageDone, beginStageWhenDone);
+			});
+		}
+
+		void CopyBuffer(RHIBuffer* src, RHIBuffer* dst, uint64_t srcOffset, uint64_t dstOffset, uint64_t size) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, dst, src, dstOffset, srcOffset, size](RHICommandListBase&) {
+				ctx->RHICopyBuffer(dst, src, size, srcOffset, dstOffset);
+			});
+		}
+
+		void CopyTexture(RHIBuffer* src, RHITexture* dst, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcoffset, TextureSize dstOffset, TextureSize size) {
+			auto ctx = static_cast<RHIRenderContext*>(getContext());
+			PushFunc([ctx, dst, src, dstOffset, srcoffset, size, miplevel, arrayindex, arraycount](RHICommandListBase&) {
+				ctx->RHICopyTexture(src, dst, size, miplevel, arrayindex, arraycount, srcoffset, dstOffset);
 			});
 		}
 	};

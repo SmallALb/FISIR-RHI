@@ -1,5 +1,3 @@
-static std::thread::id MainID = std::thread::id();
-
 
 
 class VulkanCommandPoolManager {
@@ -105,10 +103,6 @@ private:
     VulkanDevice* mDevice;
 };
 
-
-
-
-
 struct ThreadCommanPoolListener {
     ThreadCommanPoolListener(VulkanCommandPoolManager* manager, CommandPoolType type) {
         mManager = manager;
@@ -157,34 +151,4 @@ struct ThreadContext {
 };
 static thread_local std::unique_ptr<ThreadContext> TlsContext;
 
-//Pending Release Command Buffers
-struct PendingReleaseCBInfo {
-    PendingReleaseCBInfo() {}
-    PendingReleaseCBInfo(VulkanFence* f, std::vector<CBInfo>&& c) : fence(f), cbInfos(std::move(c)) {}
-    PendingReleaseCBInfo(VulkanFence* f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
 
-
-    PendingReleaseCBInfo(PendingReleaseCBInfo&& other) noexcept
-        : fence(other.fence), cbInfos(std::move(other.cbInfos)) {
-        other.fence = nullptr;
-    }
-
-    PendingReleaseCBInfo& operator=(PendingReleaseCBInfo&& other) noexcept {
-        if (this != &other) {
-            fence = other.fence;
-            cbInfos = std::move(other.cbInfos);
-            other.fence = nullptr;
-        }
-        return *this;
-    }
-
-    VulkanFence* fence{ nullptr };
-    std::vector<CBInfo> cbInfos{};
-};
-static LockFreeQue<PendingReleaseCBInfo> PendingReleaseCBs;
-static std::vector<PendingReleaseCBInfo> PendingReleaseCBsInThread;
-
-//Pending Upload Command Buffers
-LockFreeQue<CBInfo> CmdBufferNeedUpload;
-static std::mutex ContextCreateMutex;
-std::thread RHIThread, RHIResourceThread;

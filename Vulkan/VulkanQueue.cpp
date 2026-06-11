@@ -2,8 +2,12 @@
 #include "VulkanDevice.h"
 #include <vulkan/vulkan.h>
 #include "../../Log/Logger.h"
+#include "VulkanDebugNameSet.h"
 
 namespace FISIR{
+
+	static std::atomic_uint  QueIndexOfFamilyIndex[32] {0};
+
 	struct __VkQueData {
 		VkQueue mQue;
 	};
@@ -14,7 +18,11 @@ namespace FISIR{
 #ifdef _DEBUG
 		mDebugName = std::string(DebugName);
 		Debug("{} Vk Que Create!", mDebugName);
+		setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->mQue, VK_OBJECT_TYPE_QUEUE, (DebugName ? DebugName : "VulkanBuffer"));
+
 #endif // DEBUG
+	
+		mQueueIndex = QueIndexOfFamilyIndex[FamilyIndex]++;
 		vkGetDeviceQueue(mDevice->getLogicalDevice(), mFamilyIndex, mQueueIndex, &mData->mQue);
 	}
 

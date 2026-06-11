@@ -15,16 +15,18 @@ namespace FISIR{
 
 
 	static uint32_t getQueFamilyIndex(VulkanDevice* device, CommandPoolType poolType) {
-		switch (poolType)
-		{
+		VulkanQueue* queue = nullptr;
+
+		switch (poolType) {
 		case FISIR::_Graphics_:
-			return device->getGraphicQueue()->getFamilyIndex();
+			queue= device->getGraphicQueue();
 		case FISIR::_Transfer_:
-			return device->getTransferQueue()->getFamilyIndex();
+			queue= device->getTransferQueue();
 		case FISIR::_Compute_:
-			return device->getComputeQueue()->getFamilyIndex();
+			queue = device->getComputeQueue();
 		}
-		return 0;
+		if (!queue) return 0;
+		return queue->getFamilyIndex();
 	}
 
 	struct __VKCommandPoolData {

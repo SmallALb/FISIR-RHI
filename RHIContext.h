@@ -54,6 +54,14 @@ namespace FISIR {
 		virtual void RHISetDepthBias(float bias) = 0;
 
 		virtual void RHIBindResourcePack(RHIResourcePack* pack) = 0;
+		
+		virtual void RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) = 0;
+
+		virtual void RHITransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) = 0;
+
+		virtual void RHICopyBuffer(RHIBuffer* srcBuffer, RHIBuffer* dstBuffer, uint64_t size, uint64_t srcOffset = 0, uint64_t dstOffset = 0) = 0;
+
+		virtual void RHICopyTexture(RHIBuffer* dst, RHITexture* src, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset = 0, TextureSize dstOffset = {0,0,0}) = 0;
 
 		virtual CmdType getCmdType() const override {return CmdType::Render;}
 	};
