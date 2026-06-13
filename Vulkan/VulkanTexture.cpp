@@ -107,6 +107,17 @@ namespace FISIR {
 		}
 	}
 
+	static TextureCOLORType getTextureColorTypeFromVkFormat(VkFormat format) {
+		switch (format) {
+		case VK_FORMAT_R8G8B8A8_UNORM: return TextureCOLORType::RGBA_8;
+		case VK_FORMAT_R16G16B16A16_UNORM: return TextureCOLORType::RGBA_16;
+		case VK_FORMAT_R32G32B32A32_SFLOAT: return TextureCOLORType::RGBA_32;
+		case VK_FORMAT_R8G8B8_UNORM: return TextureCOLORType::RGB_8;
+		case VK_FORMAT_D24_UNORM_S8_UINT: return TextureCOLORType::Depth24_Stencil8;
+		default: return TextureCOLORType::RGBA_8;
+		}
+	}
+
 	static VkSampleCountFlagBits getVulkanSampleCount(uint32_t sampleCount) {
 		switch (sampleCount) {
 		case 1:
@@ -163,6 +174,26 @@ namespace FISIR {
 		 setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name ? name : "VulkanTexture");
 	}
 
+	VulkanTexture::VulkanTexture(VulkanDevice* inDevice, VkImage_T* imagehandle, size_t format, const TextureSize& size, const char* name) {
+		mData = new __VkTextureData();
+		mData->size = size;
+		mData->image = imagehandle;
+		mData->mBlock = nullptr;
+		mData->mipLevels = 1;
+		mData->arrayLayers = 1;
+		mData->sampleCount = 1;
+		mData->colorType = getTextureColorTypeFromVkFormat((VkFormat)format);
+		mData->type = TextureType::TEXTURE2D;
+		mData->currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		mData->useFor = TextureUseForColorAttachment | TextureUseForShaderReadOnly;
+
+		if (name) {
+			setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name);
+		}
+		
+	
+	}
+
 	VulkanTexture::~VulkanTexture() {
 		vkDestroyImage(mDevice->getLogicalDevice(), mData->image, nullptr);
 		auto Allocator = mDevice->getAllocator();
@@ -174,16 +205,8 @@ namespace FISIR {
 		return mData->image;
 	}
 
-	uint32_t VulkanTexture::getWidth() const {
-		return mData->size.width;
-	}
-
-	uint32_t VulkanTexture::getHeight() const {
-		return mData->size.height;
-	}
-
-	const char* VulkanTexture::outPutString() const {
-		return "Vulkan Texture";
+	TextureSize VulkanTexture::getTextureSize() const {
+		return mData->size;
 	}
 
 	TextureLayout VulkanTexture::getCurrentLayout() const {
@@ -221,6 +244,10 @@ namespace FISIR {
 
 	TextureUseForFlags VulkanTexture::getTextureUseFor() const {
 		return mData->useFor;
+	}
+
+	TextureType VulkanTexture::getTextureType() const {
+		return mData->type;
 	}
 
 	uint32_t VulkanTexture::getVkColorType() const {

@@ -19,11 +19,11 @@ namespace FISIR{
 
 		switch (poolType) {
 		case FISIR::_Graphics_:
-			queue= device->getGraphicQueue();
+			queue= device->getGraphicQueue(); break;
 		case FISIR::_Transfer_:
-			queue= device->getTransferQueue();
+			queue= device->getTransferQueue(); break;
 		case FISIR::_Compute_:
-			queue = device->getComputeQueue();
+			queue = device->getComputeQueue(); break;
 		}
 		if (!queue) return 0;
 		return queue->getFamilyIndex();

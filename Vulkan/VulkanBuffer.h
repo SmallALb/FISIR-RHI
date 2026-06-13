@@ -16,10 +16,6 @@ namespace FISIR {
 
 		virtual size_t getSize() const override;
 
-		virtual const char* outPutString() const override {
-			return "VulkanBuffer";
-		}
-
 		virtual void* getBufferData() const { return nullptr; }
 
 		virtual void updateBufferData(void* Data, size_t size) override;

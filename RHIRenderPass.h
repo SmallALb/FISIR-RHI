@@ -1,11 +1,10 @@
 #pragma once
-
 #include "ExclusiveDepthStencil.h"
 #include "RHITypes.h"
 #include "RHITexture.h"
 #include <vector>
 #include "../DataBase/HashCreate.h"
-
+#include "../Log/Logger.h"
 namespace FISIR {
 	
 
@@ -35,6 +34,8 @@ namespace FISIR {
 	};
 
 
+
+
 	enum class RenderTargetLoadAction : unsigned char {
 		None,
 		Load,
@@ -55,40 +56,57 @@ namespace FISIR {
 
 
 	struct ColorEntry {
-		RHITexture* RenderTarget;
-		RHITexture* ResolveTarget;
-		RenderTargetLoadAction loadOp;
-		RenderTargetStoreAction storeOp;
-		int MipIndex;
-		int ArraySlice;
-		bool operator == (const ColorEntry& other) const {
-			return RenderTarget == other.RenderTarget &&
-				ResolveTarget == other.ResolveTarget &&
-				loadOp == other.loadOp &&
-				storeOp == other.storeOp &&
-				MipIndex == other.MipIndex &&
-				ArraySlice == other.ArraySlice;
-		}
+		struct {
+			RenderTargetLoadAction	loadOp : 2 {RenderTargetLoadAction::None};
+			RenderTargetStoreAction storeOp : 2  {RenderTargetStoreAction::None};
+			TextureLayout			initLayout : 3 {TextureLayout::Undefined};
+			TextureLayout			dstLayout : 3 {TextureLayout::Undefined};
+			TextureCOLORType		colorType : 4 { TextureCOLORType::RGB_8 };
+			uint32_t				sampleCount : 2 { 1 };
+			bool					hasResolveTarget : 1 { false };
+			TextureCOLORType		resolveColorType : 3{ TextureUseForNone };
+			uint32_t				resolveSampleCount : 2{ 1 };
+			bool					exeit: 1 {false};
+		} EntryPros;
+		uint32_t value;
 
+		bool operator == (const ColorEntry& other) const {
+			return value == other.value;
+		}
+	};
+
+	struct ColorEntryInputInfo {
+		uint8_t InputPosition {0};
+		ColorEntry Entry;
 	};
 
 	struct DepthStencilEntry {
-		RHITexture* RenderTarget;
-		RHITexture* ResolveTarget;
-		ExclusiveDepthStencil DepthAction;
+
+		TextureCOLORType						colorType{ TextureCOLORType::Depth24_Stencil8 };
+		uint32_t								sampleCount { 1 };
+		ExclusiveDepthStencil					depthAction {};
+		bool									hasResolveTarget{ false };
+		TextureCOLORType						resolveColorType{ TextureCOLORType::Depth24_Stencil8 };
+		uint32_t								resolveSampleCount { 1 };
+		TextureLayout							initLayout { TextureLayout::Undefined };
+		TextureLayout							dstLayout { TextureLayout::Undefined };
+		bool									exeit{0};
 
 		bool operator == (const DepthStencilEntry& other) const {
-			return RenderTarget == other.RenderTarget &&
-				ResolveTarget == other.ResolveTarget &&
-				DepthAction == other.DepthAction;
+			return colorType == other.colorType &&
+				sampleCount == other.sampleCount &&
+				depthAction == other.depthAction &&
+				hasResolveTarget == other.hasResolveTarget &&
+				resolveColorType == other.resolveColorType &&
+				resolveSampleCount == other.resolveSampleCount &&
+				initLayout == other.initLayout &&
+				dstLayout == other.dstLayout;
 		}
-
-
 	};
 
 
 	struct SubPassInfo {
-		uint32_t ColorEntryMask;
+		uint64_t ColorEntryMask;
 		bool UseDepthStencil;
 		bool ReadDepthAsInput;
 		RHIUsingStage DepthStencilReadStage { NoneStage };
@@ -104,36 +122,32 @@ namespace FISIR {
 	struct RHIRenderPassInfo {
 		RHIRenderPassInfo() {}
 
-		RHIRenderPassInfo(const std::vector<ColorEntry>& targets, DepthStencilEntry depthTargets, const std::vector<SubPassInfo>& subPasses) : mSubPasses(subPasses), mDepthStencilEntry(depthTargets) {
-			for (auto target : targets) {
-				mColorEntries[target.RenderTarget->getTextureUseFor()] = target;
-				ColorEntriesMask |= target.RenderTarget->getTextureUseFor();
+		RHIRenderPassInfo(const std::vector<ColorEntryInputInfo>& targets, DepthStencilEntry depthTargets, const std::vector<SubPassInfo>& subPasses) {
+			for (auto [pos, entry] : targets) if (!ColorEntries[pos].EntryPros.exeit) {
+				ColorEntries[pos] = entry;
+				ColorEntries[pos].EntryPros.exeit = true;
 			}
-			mSubPasses = subPasses;
+			else {
+				Warn("This Position: {} Had Been Inputed", pos);
+			}
+			DepthStencilEntry = depthTargets;
+			SubPasses = subPasses;
 			GetHash();
 		}
 
-		ColorEntry mColorEntries[TextureUseForAll + 1] {nullptr};
-		DepthStencilEntry mDepthStencilEntry;
+		ColorEntry ColorEntries[64];
+		DepthStencilEntry DepthStencilEntry;
 
-		std::vector<SubPassInfo> mSubPasses;
-
-		uint32_t ColorEntriesMask{ 0 };
+		std::vector<SubPassInfo> SubPasses;
 		mutable uint32_t HashVal {0}; 
 
 		bool operator == (const RHIRenderPassInfo& other) const {
-			if (!(mDepthStencilEntry == other.mDepthStencilEntry &&
-				mSubPasses == other.mSubPasses &&
-				HashVal == other.HashVal)) {
+			if (ColorEntries != other.ColorEntries) return false;
+			
+			if (!(DepthStencilEntry == other.DepthStencilEntry &&
+				SubPasses == other.SubPasses)) {
 				return false;
 			}
-
-			for (size_t i = 0; i < TextureUseForAll + 1; ++i) {
-				if (mColorEntries[i] != other.mColorEntries[i]) {
-					return false;
-				}
-			}
-
 			return true;
 		}
 
@@ -143,24 +157,21 @@ namespace FISIR {
 
 		uint32_t GetHash() const {
 			if (HashVal == 0) {
-				uint32_t mask = ColorEntriesMask;
-				for (uint32_t i =0; mask != 0 && i<= TextureUseForAll; i++) if ((mask & (1u << i))) {
-					mask &= ~(1u << i);
-
-					HashVal = HashCombine(HashVal, HashPointer(mColorEntries[i].RenderTarget));
-					HashVal = HashCombine(HashVal, HashPointer(mColorEntries[i].ResolveTarget));
-					HashVal = HashCombine(HashVal, (uint32_t)mColorEntries[i].loadOp);
-					HashVal = HashCombine(HashVal, (uint32_t)mColorEntries[i].storeOp);
-					HashVal = HashCombine(HashVal, (uint32_t)mColorEntries[i].MipIndex);
-					HashVal = HashCombine(HashVal, (uint32_t)mColorEntries[i].ArraySlice);
-
+				for (auto &target : ColorEntries) {
+					HashVal = HashCombine(HashVal, target.value);
 				}
 
-				HashVal = HashCombine(HashVal, HashPointer(mDepthStencilEntry.RenderTarget));
-				HashVal = HashCombine(HashVal, HashPointer(mDepthStencilEntry.ResolveTarget));
-				HashVal = HashCombine(HashVal, mDepthStencilEntry.DepthAction.GetHash());
+				HashVal = HashCombine(HashVal, (int)DepthStencilEntry.colorType);
+				HashVal = HashCombine(HashVal, DepthStencilEntry.sampleCount);
+				HashVal = HashCombine(HashVal, DepthStencilEntry.depthAction.GetHash());
+				HashVal = HashCombine(HashVal, DepthStencilEntry.hasResolveTarget);
+				HashVal = HashCombine(HashVal, (int)DepthStencilEntry.resolveColorType);
+				HashVal = HashCombine(HashVal, DepthStencilEntry.resolveSampleCount);
+				HashVal = HashCombine(HashVal, (uint32_t)DepthStencilEntry.initLayout);
+				HashVal = HashCombine(HashVal, (uint32_t)DepthStencilEntry.dstLayout);
 
-				for (auto& subpass : mSubPasses) {
+
+				for (auto& subpass : SubPasses) {
 					HashVal = HashCombine(HashVal, subpass.ColorEntryMask);
 					HashVal = HashCombine(HashVal, subpass.UseDepthStencil ? 1u : 0u);
 					HashVal = HashCombine(HashVal, subpass.ReadDepthAsInput ? 1u : 0u);

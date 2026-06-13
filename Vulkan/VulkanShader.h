@@ -17,8 +17,6 @@ namespace FISIR {
 
 		virtual void* getResourceAPIHandle() const override;
 
-		virtual const char* outPutString() const override;
-
 		__VkShaderData* mData;
 
 		VulkanDevice* mDevice;

@@ -16,6 +16,7 @@ namespace FISIR {
 	class RHIResourcePack;
 	class RHIRenderPass;
 	class RHIResource;
+	class RHIFrameBuffer;
 
 	struct RHIPipelineState;
 	struct RHIRenderPassInfo;
@@ -43,6 +44,8 @@ namespace FISIR {
 		virtual RHIResourcePack* RHICreateResourcePack(Type restyp, const std::vector<RHIResource*>& resources) = 0;
 
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) = 0;
+	
+		virtual RHIFrameBuffer* RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) = 0;
 	};
 
 }

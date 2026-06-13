@@ -2,7 +2,6 @@
 #include <vector>
 #include <cstdio>
 #include <algorithm>
-#include <vulkan/vulkan.h>
 #include <string>
 #include "../../Log/Logger.h"
 #include "../LockFreeQue.h"
@@ -13,9 +12,10 @@
 #include "VulkanBuffer.h"
 #include "VulkanTexture.h"
 #include "VulkanRenderPass.h"
+#include "VulkanFrameBuffer.h"
 #include "../RHICommandList.h"
+#include "ChangeImageFlagsToVulkanFlags.h"
 namespace FISIR {
-    #include "ChangeImageFlagsToVulkanFlags.h"
 
 	/*
 
@@ -200,12 +200,24 @@ namespace FISIR {
   RHIRenderPass* VulkanRHI::RHICreateRenderPass(const RHIRenderPassInfo& info) {
       Debug("Getting Render Pass");
       if (RenderPassCache.find(info) != RenderPassCache.end()) {
-          Debug("Using cached Render Pass");
+          Debug("RenderPass cache hit 0x{:x}", (size_t)RenderPassCache[info]);
           return RenderPassCache[info];
       }
       Debug("Creating new Render Pass");
       auto res = new VulkanRenderPass(mDevice, info);
+      if (!res || !res->getRenderPassHandle()) {      
+          Error("Failed to create VulkanRenderPass");
+          return nullptr;
+      }
       RenderPassCache[info] = res;
+      return res;
+  }
+
+  RHIFrameBuffer* VulkanRHI::RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) {
+      RHIRenderPass* renderpass = RHICreateRenderPass(info);
+      Debug("renderpass pointer = 0x{:x}", (size_t)renderpass);
+      auto res = new VulkanFrameBuffer(mDevice, textures, width, height, renderpass);
+      Debug("Frame Buffer Handle 0x{:x}", (size_t)res);
       return res;
   }
 
@@ -344,6 +356,7 @@ FISIR::DynamicRHI* RHICreate() {
 
 void RHIDestroy(FISIR::DynamicRHI* rhi) {
     FISIR::gIsShuttingDown = 1;
+    
     delete rhi;
     vkDestroyInstance(FISIR::gInstance, nullptr);
 }

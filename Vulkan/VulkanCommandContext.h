@@ -11,7 +11,7 @@ namespace FISIR{
 	static constexpr size_t MAX_PENDING_FRAMES = 3;
 	class VulkanPipeline;
 	class VulkanDevice;
-	
+	class RHIFrameBuffer;	
 
 	class VulkanContextBase {
 	public:
@@ -35,7 +35,7 @@ namespace FISIR{
 
 		virtual void RHIEndDrawingViewport(RHIRenderPass* pass) override;
 
-		virtual void RHIBeginRenderPass(RHIRenderPass* pass) override;
+		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame) override;
 
 		virtual void RHIEndRenderPass() override;
 
@@ -59,11 +59,9 @@ namespace FISIR{
 
 		virtual void RHITransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) override;
 
-
 		virtual void RHICopyBuffer(RHIBuffer* srcBuffer, RHIBuffer* dstBuffer, uint64_t size, uint64_t srcOffset = 0, uint64_t dstOffset = 0) override;
 
 		virtual void RHICopyTexture(RHIBuffer* src, RHITexture* dst, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset = 0, TextureSize dstOffset = {0,0,0}) override;
-
 
 	private:
 		//临时，这个帧要外部引入

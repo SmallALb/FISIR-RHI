@@ -42,6 +42,10 @@ namespace FISIR {
 
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) override;
 
+		virtual RHIFrameBuffer* RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) override;
+
+
+
 	private:
 		void VulkanRHILoop();
 

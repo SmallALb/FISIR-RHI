@@ -44,9 +44,7 @@ namespace FISIR {
 	public:
 		virtual ~RHITexture() {}
 
-		virtual uint32_t getWidth() const = 0;
-
-		virtual uint32_t getHeight() const = 0;
+		virtual TextureSize getTextureSize() const = 0;
 
 		virtual TextureLayout getCurrentLayout() const = 0;
 
@@ -59,6 +57,8 @@ namespace FISIR {
 		virtual uint16_t getLayerCount() const = 0;
 
 		virtual uint16_t getMipLevelCount() const = 0;
+
+		virtual TextureType getTextureType() const = 0;
 	};
 
 

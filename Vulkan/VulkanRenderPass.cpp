@@ -1,16 +1,14 @@
 #include "VulkanDevice.h"
-#include "VulkanTexture.h"
 #include "VulkanRenderPass.h"
-#include <vulkan/vulkan.h>
+#include "ChangeImageFlagsToVulkanFlags.h"
 #include <unordered_map>
 #include "../../Log/Logger.h"
 namespace FISIR{
 	
 
-   #include "ChangeImageFlagsToVulkanFlags.h"
 
 	struct SubpassAttachmentRefs {
-		uint32_t ColorMask;
+		uint64_t ColorMask;
 		bool UseDepthStencil;
 		bool ReadDepthAsInput;
 
@@ -96,98 +94,101 @@ namespace FISIR{
 		return dependencies;
 	}
 
-
 	struct __VKRenderPassData {
 		VkRenderPass renderpass;
+		uint32_t ColorEnrtiesRenderAttachmentIndex[64] { 0x3f3f };
+		uint32_t ColorEnrtiesResloveAttachmentIndex[64] { 0x3f3f };
+
+		uint32_t DepthStencilAttachmentIndex = -1;
+		uint32_t DepthStencilResolveAttachmentIndex = -1;
 	};
 
-	void VulkanRenderPass::InputAttachment(std::vector<VkAttachmentDescription>& Attachments, std::unordered_map<RHITexture*, uint32_t>& TextureToAttachmentIndex, const RHIRenderPassInfo& info) {
-		auto mask = info.ColorEntriesMask;
-		for (uint32_t i = 0; mask != 0 && i <= TextureUseForAll; i++) if ((mask & (1u << i))) {
-			mask &= ~(1u << i);
+
+	void VulkanRenderPass::InputAttachment(const RHIRenderPassInfo& info) {
+		for (int i=0; i<64; i++) if (info.ColorEntries[i].EntryPros.exeit) {
 			//Color
-			auto& Colorentry = info.mColorEntries[i];
-			if (Colorentry.RenderTarget && !TextureToAttachmentIndex.contains(Colorentry.RenderTarget)) {
+			auto& pros = info.ColorEntries[i].EntryPros;
+			VkAttachmentDescription attachmentDesc{
+			  .format = getVulkanFormat(pros.colorType),
+			  .samples = getVulkanSampleCount(pros.sampleCount),
+			  .loadOp = getVulkanLoadOp(pros.loadOp),
+			  .storeOp = getVulkanStoreOp(pros.storeOp),
+			  .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			  .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			  .initialLayout = getVulkanImageLayout(pros.initLayout),
+			  .finalLayout = getVulkanImageLayout(pros.dstLayout)
+			};
+			mData->ColorEnrtiesRenderAttachmentIndex[i] = attachmentDescriptions.size();
+			attachmentDescriptions.push_back(attachmentDesc);
+
+			if (pros.hasResolveTarget) {
 				VkAttachmentDescription attachmentDesc{
-				  .format = getVulkanFormat(Colorentry.RenderTarget->getColorType()),
-				  .samples = getVulkanSampleCount(Colorentry.RenderTarget->getSampleCount()),
-				  .loadOp = getVulkanLoadOp(Colorentry.loadOp),
-				  .storeOp = getVulkanStoreOp(Colorentry.storeOp),
-				  .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-				  .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-				  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-				  .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				};
-				TextureToAttachmentIndex[Colorentry.RenderTarget] = Attachments.size();
-				Attachments.push_back(attachmentDesc);
-			}
-			if (Colorentry.ResolveTarget && !TextureToAttachmentIndex.contains(Colorentry.ResolveTarget)) {
-				VkAttachmentDescription attachmentDesc{
-					.format = getVulkanFormat(Colorentry.ResolveTarget->getColorType()),
-					.samples = getVulkanSampleCount(Colorentry.ResolveTarget->getSampleCount()),
-					.loadOp = getVulkanLoadOp(Colorentry.loadOp),
-					.storeOp = getVulkanStoreOp(Colorentry.storeOp),
+					.format = getVulkanFormat(pros.resolveColorType),
+					.samples = getVulkanSampleCount(pros.resolveSampleCount),
+					.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 				};
-				TextureToAttachmentIndex[Colorentry.ResolveTarget] = Attachments.size();
-				Attachments.push_back(attachmentDesc);
+				mData->ColorEnrtiesResloveAttachmentIndex[i] = attachmentDescriptions.size();
+				attachmentDescriptions.push_back(attachmentDesc);
+			}
+		}
+
+
+		//DepthStencil
+		auto& target = info.DepthStencilEntry;
+		if (target.exeit) {
+			VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			VkAttachmentStoreOp depthStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+			if (target.depthAction.isUsingDepth()) {
+				if (target.depthAction.isDepthRead()) {
+					depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+				}
+				else if (target.depthAction.isDepthWrite()) {
+					depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+				}
+				if (target.depthAction.isDepthWrite()) {
+					depthStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+				}
 			}
 
-			//DepthStencil
-			auto& DepthStencilentry = info.mDepthStencilEntry;
-			if (DepthStencilentry.RenderTarget && !TextureToAttachmentIndex.contains(DepthStencilentry.RenderTarget)) {
-				VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-				VkAttachmentStoreOp depthStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
-				if (DepthStencilentry.DepthAction.isUsingDepth()) {
-					if (DepthStencilentry.DepthAction.isDepthRead()) {
-						depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-					}
-					else if (DepthStencilentry.DepthAction.isDepthWrite()) {
-						depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-					}
-					if (DepthStencilentry.DepthAction.isDepthWrite()) {
-						depthStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-					}
+			VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			VkAttachmentStoreOp stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+			if (target.depthAction.isUsingStencil()) {
+				if (target.depthAction.isStencilRead()) {
+					stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 				}
-
-
-				VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-				VkAttachmentStoreOp stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-
-				if (DepthStencilentry.DepthAction.isUsingStencil()) {
-					if (DepthStencilentry.DepthAction.isStencilRead()) {
-						stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-					}
-					else if (DepthStencilentry.DepthAction.isStencilWrite()) {
-						stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-					}
-					if (DepthStencilentry.DepthAction.isStencilWrite()) {
-						stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-					}
+				else if (target.depthAction.isStencilWrite()) {
+					stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 				}
-
-				VkAttachmentDescription attachmentDesc{
-					.format = getVulkanFormat(DepthStencilentry.RenderTarget->getColorType()),
-					.samples = getVulkanSampleCount(DepthStencilentry.RenderTarget->getSampleCount()),
-					.loadOp = depthLoadOp,
-					.storeOp = depthStoreOp,
-					.stencilLoadOp = stencilLoadOp,
-					.stencilStoreOp = stencilStoreOp,
-					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-				};
-				TextureToAttachmentIndex[DepthStencilentry.RenderTarget] = Attachments.size();
-				Attachments.push_back(attachmentDesc);
+				if (target.depthAction.isStencilWrite()) {
+					stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+				}
 			}
 
-			if (DepthStencilentry.RenderTarget && DepthStencilentry.ResolveTarget && !TextureToAttachmentIndex.contains(DepthStencilentry.ResolveTarget)) {
+			VkAttachmentDescription attachmentDesc{
+				.format = getVulkanFormat(target.colorType),
+				.samples = getVulkanSampleCount(target.sampleCount),
+				.loadOp = depthLoadOp,
+				.storeOp = depthStoreOp,
+				.stencilLoadOp = stencilLoadOp,
+				.stencilStoreOp = stencilStoreOp,
+				.initialLayout = getVulkanImageLayout(target.initLayout),
+				.finalLayout = getVulkanImageLayout(target.dstLayout)
+			};
+			mData->DepthStencilAttachmentIndex = attachmentDescriptions.size();
+			attachmentDescriptions.push_back(attachmentDesc);
+
+			if (target.hasResolveTarget) {
 				VkAttachmentDescription attachmentDesc{
-					.format = getVulkanFormat(DepthStencilentry.ResolveTarget->getColorType()),
-					.samples = getVulkanSampleCount(DepthStencilentry.ResolveTarget->getSampleCount()),
+					.format = getVulkanFormat(target.resolveColorType),
+					.samples = getVulkanSampleCount(target.sampleCount),
 					.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 					.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -195,10 +196,11 @@ namespace FISIR{
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
 				};
-				TextureToAttachmentIndex[DepthStencilentry.ResolveTarget] = Attachments.size();
-				Attachments.push_back(attachmentDesc);
+				mData->DepthStencilResolveAttachmentIndex = attachmentDescriptions.size();
+				attachmentDescriptions.push_back(attachmentDesc);
 			}
 		}
+
 	}
 
 	RenderPass_t VulkanRenderPass::getRenderPassHandle() {
@@ -216,64 +218,67 @@ namespace FISIR{
 		mData = new __VKRenderPassData();
 		mDevice = device;
 
-		std::vector<VkAttachmentDescription> attachmentDescriptions;
-		std::unordered_map<RHITexture*, uint32_t> textureToAttachmentIndex;
-		InputAttachment(attachmentDescriptions, textureToAttachmentIndex, renderPassinfo);
+		InputAttachment(renderPassinfo);
 
 		std::vector<VkSubpassDescription> subpasses;
 		std::vector<SubpassAttachmentRefs> subpassRefs;
 
 		std::vector<std::vector<VkAttachmentReference>> CollorRefs;
+		std::vector<std::vector<VkAttachmentReference>> ResloveRefs;
 		std::vector<VkAttachmentReference> DepthStencilRefs;
 		std::vector<std::vector<VkAttachmentReference>> InputRefs;
 
 		//subpass
-		for (auto& subpass : renderPassinfo.mSubPasses) {
+		for (auto& subpass : renderPassinfo.SubPasses) {
 			std::vector<VkAttachmentReference> colorRefs;
+			std::vector<VkAttachmentReference> resloveRefs;
 			std::vector<VkAttachmentReference> inputRefs;
-			uint32_t mask = subpass.ColorEntryMask;
-			for (uint32_t i = 0; mask != 0 && i <= TextureUseForAll; i++) if ((mask & (1u << i))) {
-				mask &= ~(1u << i);
-				auto& Colorentry = renderPassinfo.mColorEntries[i];
-				if (Colorentry.RenderTarget) {
-					VkAttachmentReference ref {
-						.attachment = textureToAttachmentIndex[Colorentry.RenderTarget],
-						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-					};
-					colorRefs.push_back(ref);
+
+			VkAttachmentReference depthref;
+			if (renderPassinfo.DepthStencilEntry.exeit && subpass.UseDepthStencil) {
+				depthref.attachment = mData->DepthStencilAttachmentIndex;
+				depthref.layout = subpass.ReadDepthAsInput ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+					: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;;
+				if (subpass.ReadDepthAsInput) {
+					inputRefs.push_back(depthref);
 				}
-				
-				if (Colorentry.ResolveTarget) {
-					VkAttachmentReference ref {
-						.attachment = textureToAttachmentIndex[Colorentry.ResolveTarget],
-						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-					};
-					colorRefs.push_back(ref);
+				else {
+					depthref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 				}
-				VkAttachmentReference depthref;
-				if (renderPassinfo.mDepthStencilEntry.RenderTarget) {
-					depthref.attachment = textureToAttachmentIndex[renderPassinfo.mDepthStencilEntry.RenderTarget];
-					if (subpass.ReadDepthAsInput){
-						depthref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-						inputRefs.push_back(depthref);
-					}
-					else {
-						depthref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-					}
-				}
-				
-				CollorRefs.push_back(std::move(colorRefs));
 				DepthStencilRefs.push_back(depthref);
-				InputRefs.push_back(std::move(inputRefs));
+			}
+			uint32_t mask = subpass.ColorEntryMask;
+			for (uint32_t i = 0; mask; i++) if (mask & (1u << i) && renderPassinfo.ColorEntries[i].EntryPros.exeit) {
+				mask &= ~(1u << i);
+				auto& target = renderPassinfo.ColorEntries[i];
+				auto& pros = renderPassinfo.ColorEntries[i].EntryPros;
+				VkAttachmentReference ref {
+					.attachment = mData->ColorEnrtiesRenderAttachmentIndex[i],
+					.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				};
+				colorRefs.push_back(ref);
+				
+				if (pros.hasResolveTarget) {
+					VkAttachmentReference ref {
+						.attachment = mData->ColorEnrtiesResloveAttachmentIndex[i],
+						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+					};
+					resloveRefs.push_back(ref);
+				}
 
 			}
+			CollorRefs.push_back(std::move(colorRefs));
+			InputRefs.push_back(std::move(inputRefs));
+			ResloveRefs.push_back(std::move(resloveRefs));
+
 			VkSubpassDescription subpassDesc{
 				.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 				.inputAttachmentCount = (uint32_t)InputRefs.back().size(),
 				.pInputAttachments = inputRefs.empty() ? nullptr : InputRefs.back().data(),
 				.colorAttachmentCount = (uint32_t)CollorRefs.back().size(),
 				.pColorAttachments = CollorRefs.back().data(),
-				.pDepthStencilAttachment = renderPassinfo.mDepthStencilEntry.RenderTarget ? &DepthStencilRefs.back() : nullptr,
+				.pResolveAttachments = ResloveRefs.back().data(),
+				.pDepthStencilAttachment = renderPassinfo.DepthStencilEntry.exeit ? &DepthStencilRefs.back() : nullptr,
 			};
 			subpasses.push_back(subpassDesc);
 
@@ -283,6 +288,7 @@ namespace FISIR{
 				.ReadDepthAsInput = subpass.ReadDepthAsInput
 			};
 			subpassRefs.push_back(subpassRef);
+				
 		}
 
 		//dependency
@@ -326,7 +332,6 @@ namespace FISIR{
 		};
 
 		if (vkCreateRenderPass(mDevice->getLogicalDevice(), &renderPassCreateInfo, nullptr, &mData->renderpass) != VK_SUCCESS) {
-			Error("Failed to create Vulkan Render Pass!");
 		}
 	}
 }

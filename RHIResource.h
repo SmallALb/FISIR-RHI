@@ -10,13 +10,9 @@ namespace FISIR {
 	
 
 
-	class RHIResource : public Object {
+	class RHIResource {
 	public:
 		virtual ~RHIResource() {}
-
-		inline virtual const char* outPutString() const override {
-			return "RHIResource";
-		}
 
 		virtual Type getResourceType() const { return Type::NLL; }
 

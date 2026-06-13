@@ -1,0 +1,8 @@
+# RHIFrameBuffer
+
+创建frameBuffer 需要renderPass，renderPass 基于RHI进行创建，
+那么Frame的创建接口函数就应该这样写
+RHICreateFrameBuffer(const RenderPassInfo& info)
+传入info然后内部调用RHICreateRenderPass
+接着framebuffer的创建支持传入renderpass抽象对象
+

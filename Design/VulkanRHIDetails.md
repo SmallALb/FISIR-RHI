@@ -5,6 +5,12 @@
   <details>
   <summary>中文</summary>
     
+
+  - ### 在渲染指令集中执行资源操作
+  当资源数量较小的时候推荐使用渲染上线文提供的Transfer和Copy指令，可以减小跨队列的麻烦，效率更高
+  执行资源布局转换命令时，会记录资源，然后等待此次命令执行完毕后，在资源管理线程中立即修改在 VulkanTexture 的 layou显示
+
+  - ### 在资源指令集中执行纹理操作(make it in future)
   通过CmdList调用 **TransitionTextures** 
   Q1: 多次转换命令编译时，一个转换一旦提交，那么之前的转换命令全部编译无效
    （手动控制？）
@@ -14,18 +20,27 @@
   以上的问题暂时留着了，因为不可能一会就完成，先修改渲染上下文可使用转换和资源复制：
   1 在渲染上下文中添加对应资源操作指令
 
-  - ### 在渲染指令集中执行资源操作
-  当资源数量较小的时候推荐使用渲染上线文提供的Transfer和Copy指令，可以减小跨队列的麻烦，效率更高
-  执行资源布局转换命令时，会记录资源，然后等待此次命令执行完毕后，在资源管理线程中立即修改在 VulkanTexture 的 layou显示
-
-  - ### 在资源指令集中执行纹理操作
-
   </details>
 
   <details>
     <summary>English</summary>
   </details>
 
+- ## Present and SwapChain
+
+  <details>
+    <summary>中文</summary>
+  对于Vk的画面呈现需要从Surface 中创建一个呈现队列或者直接使用图形队列作为呈现队列，那么就一定要创建surface 和 swapchain
+
+  就是需要给整个屏幕一个铺满整个画面的长方型顶点，然后将渲染好的帧图像渲染到这个交换链图像上就好了，这一块的指令就在RHIThread中执行就最好
+  
+  目前要做的就是呈现的这一块，屏幕窗口由外部进行传入。然后根据当前的系统平台选择合适的surface 创建合适的交换链和presentQue
+  </details>
+  
+
+  <details>
+    <summary>English</summary>
+  </details>
 
 ------------------------------------
 

@@ -30,8 +30,4 @@ namespace FISIR {
         return mData->mShader;
     }
 
-    
-    const char* VulkanShader::outPutString() const {
-        return "Vulkan Shader";
-    }
 }

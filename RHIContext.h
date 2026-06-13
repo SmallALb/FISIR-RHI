@@ -12,6 +12,7 @@ namespace FISIR {
 	class RHIRenderPass;
 	class RHIPipeline;
 	class RHIResourcePack;
+	class RHIFrameBuffer;
 
 
 	class RHIContext {
@@ -39,7 +40,7 @@ namespace FISIR {
 
 		virtual void RHIEndDrawingViewport(RHIRenderPass* pass) = 0;
 
-		virtual void RHIBeginRenderPass(RHIRenderPass* pass) = 0;
+		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame) = 0;
 
 		virtual void RHIEndRenderPass() = 0;
 

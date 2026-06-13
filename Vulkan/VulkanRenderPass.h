@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../RHIRenderPass.h"
-#include "../RHITexture.h"
 #include <unordered_map>
 struct VkAttachmentDescription;
 
@@ -11,7 +10,7 @@ namespace FISIR {
 	struct __VKRenderPassData;
 
 	class VulkanRenderPass : public RHIRenderPass {
-		void InputAttachment(std::vector<VkAttachmentDescription>& Attachments, std::unordered_map<RHITexture*, uint32_t>& TextureToAttachmentIndex, const RHIRenderPassInfo& info);
+		void InputAttachment(const RHIRenderPassInfo& info);
 	
 	public:
 		virtual RenderPass_t getRenderPassHandle() override;
@@ -19,7 +18,9 @@ namespace FISIR {
 		virtual ~VulkanRenderPass();
 
 		VulkanRenderPass(VulkanDevice* device, const RHIRenderPassInfo& renderPassinfo);
-	
+		
+
+		std::vector<VkAttachmentDescription> attachmentDescriptions;
 		__VKRenderPassData* mData;
 		VulkanDevice* mDevice;
 	};

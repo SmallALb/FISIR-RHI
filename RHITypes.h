@@ -16,7 +16,7 @@ namespace FISIR {
         ShaderTYPCOUNT
     };
 
-    enum class Type { NLL, Buffer, Texture, Sampler, RenderPass, Pipeline };
+    enum class Type { NLL, Buffer, Texture, Sampler, RenderPass, Pipeline, FrmeBuffer };
     
     enum class TextureCOLORType {
         RGB_8, RGB_16, RGB_32, RGBA_8, RGBA_16, RGBA_32, R_8, Depth24_Stencil8
@@ -46,7 +46,7 @@ namespace FISIR {
 
     enum class ResourceAccess { Undefined, ShaderReadOnly, ShaderWriteOnly, ShaderReadWrite, TransferSrc, TransferDst };
     
-    enum class TextureLayout { Undefined, ColorAttachmentOptimal, DepthStencilAttachmentOptimal, ShaderReadOnlyOptimal, TransferSrcOptimal, TransferDstOptimal, Storage };
+    enum class TextureLayout { Undefined, ColorAttachmentOptimal, DepthStencilAttachmentOptimal, ShaderReadOnlyOptimal, TransferSrcOptimal, TransferDstOptimal, Storage, Present };
     
     enum class TopologyType { Point, Line, LineStrip, Triangle, TriangleStrip, TriangleFan };
     
@@ -74,6 +74,7 @@ namespace FISIR {
     };
     
     enum TextureUseFor {
+        TextureUseForNone = 0,
         TextureUseForColorAttachment = 1,
         TextureUseForDepthStencilAttachment = 1 << 1,
         TextureUseForShaderReadOnly = 1 << 2,
@@ -97,16 +98,20 @@ namespace FISIR {
             int32_t y;
             int32_t z;
         };
+
+        bool operator ==(const TextureSize& other) const {
+            return x == other.x && y == other.y && z == other.z;
+        }
     };
 
     struct TextureInfo {
-        TextureSize size;
-        TextureCOLORType colorType;
-        TextureType type;
-        TextureUseForFlags useFor{ TextureUseForStorage | TextureUseForShaderReadOnly };
-        uint16_t mipLevels{ 1 };
-        uint16_t arrayLayers{ 1 };
-        uint32_t sampleCount{ 1 };
+        TextureSize         size;
+        TextureCOLORType    colorType;
+        TextureType         type;
+        TextureUseForFlags  useFor{ TextureUseForStorage | TextureUseForShaderReadOnly };
+        uint16_t            mipLevels{ 1 };
+        uint16_t            arrayLayers{ 1 };
+        uint32_t            sampleCount{ 1 };
     };
 
 

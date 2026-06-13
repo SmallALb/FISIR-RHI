@@ -1,5 +1,5 @@
 #pragma once
-#include "../RHIResource.h";
+#include "../RHIResource.h"
 #include <vector>
 #include <unordered_map>
 #include <atomic>

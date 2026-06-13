@@ -110,10 +110,10 @@ namespace FISIR {
 
 		CmdType getCommandListType() const {return CmdType::Render;}
 
-		void BeginRenderPass(RHIRenderPass* pass, const char* name) {
+		void BeginRenderPass(RHIFrameBuffer* frame) {
 			auto ctx = static_cast<RHIRenderContext*>(getContext());
-			PushFunc([ctx, &pass, name](RHICommandListBase&) {
-				ctx->RHIBeginRenderPass(pass);
+			PushFunc([ctx, frame](RHICommandListBase&) {
+				ctx->RHIBeginRenderPass(frame);
 			});
 		}
 

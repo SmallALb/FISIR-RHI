@@ -41,11 +41,17 @@
 
 - ### [7. 管线 RHIPipeline](./Design/RHIPipeline.md)
 
-- ### [8. 视口 RHIViewport](./Design/RHIViewport.md)
+- ### [8. 帧缓冲 RHIFrameBuffer](./Design/RHIFrameBuffer.md)
 
-- ### [9. 窗口 RHIWindow](./Design/RHIWindow.md)
+- ### [9. 视口 RHIViewport](./Design/RHIViewport.md)
 
-- ### [10.VulkanRHI Details](./Design/VulkanRHIDetails.md)
+- ### [10. 窗口 RHIWindow](./Design/RHIWindow.md)
+
+- ### [11.VulkanRHI Details](./Design/VulkanRHIDetails.md)
+
+  - #### [11.1 Texture Layout and Barrier](./Design/VulkanRHIDetails.md##texture-layout-and-barrier)
+
+  -###[11.2 Present and SwapChain](./Design/VulkanRHIDetails.md##Present-and-SwapChain)
 
 ---------------------------------
 <details>
@@ -79,7 +85,7 @@
 - [x] 修改DynamicLoader为内联头文件 (2026-6-8)
 - [x] 优化Vulkan Device中VkQueue的创建 (2026-6-8)
 - [x] 设计Layout转换和Barrier (2026-6-11)
-- [] 设计RHIViewPort，并实现Vulkan的特化
+- [] 设计RHIViewPort，RHIFrameBuffer，并实现Vulkan的特化
 - [] 修改编译脚本为CMake
 <a id="CN_Task_FIX-RHIDLL_PATH_FOUND_MEOTH"></a>
 - [] 修改RHIDLL自动路径匹配的方式[[DynamicRHI.md](./Design/DynamicRHI.md#CN-RHIDLL_PATH_FOUND_MEOTH_PROBLEM)][[RHICreator.h](RHICreator.h#19)]

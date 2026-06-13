@@ -9,6 +9,7 @@
 #include "../../Log/Logger.h"
 #include <vulkan/vulkan.h>
 #include "VulkanDescriptorPool.h"
+#include "VulkanFrameBuffer.h"
 namespace FISIR{
 	static VkImageLayout getVulkanImageLayout(TextureLayout layout) {
 		switch (layout) {
@@ -151,12 +152,25 @@ namespace FISIR{
 
 	}
 
-	void VulkanRenderContext::RHIBeginRenderPass(RHIRenderPass* pass) {
+	void VulkanRenderContext::RHIBeginRenderPass(RHIFrameBuffer* frame) {
+		Debug("Begin Frame Render, Buffer Handle 0x{:x}", (size_t)frame);
+		VkClearValue clearValues[2] = {};
+		clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };  
+		clearValues[1].depthStencil = { 1.0f, 0 };            
+		auto renderpass = frame->getFrameRenderPass();
+
 		VkRenderPassBeginInfo info {
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-			.renderPass = (VkRenderPass)pass->getRenderPassHandle()
+			.renderPass = static_cast<VkRenderPass>(renderpass->getRenderPassHandle()),
+			.framebuffer = static_cast<VkFramebuffer>(frame->getResourceAPIHandle()),
+			.renderArea = {
+				.offset = {0, 0},
+				.extent = {frame->getFrameWidth(), frame->getFrameHeight()},
+			},
+			.clearValueCount = 2,
+			.pClearValues = clearValues,
 		};
-		vkCmdBeginRenderPass(mCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE_AND_SECONDARY_COMMAND_BUFFERS_KHR);
+		vkCmdBeginRenderPass(mCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
 	}
 
 	void VulkanRenderContext::RHIEndRenderPass() {
@@ -192,6 +206,7 @@ namespace FISIR{
 	void VulkanRenderContext::RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
 		std::vector<VkImageMemoryBarrier> Barriers;
 		for (auto& [texture, waitForAccessDone, beginAccessWhenDone, oldlayout, newlayout] : textureTransitions) {
+			if (mCommandBuffer.QuoteResources.contains(texture) && mCommandBuffer.QuoteResources[texture].access == beginAccessWhenDone && mCommandBuffer.QuoteResources[texture].layout == newlayout)
 			mCommandBuffer.QuoteResources[texture] = { beginAccessWhenDone, newlayout };
 			VkImageMemoryBarrier barrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
