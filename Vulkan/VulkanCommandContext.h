@@ -11,19 +11,23 @@ namespace FISIR{
 	static constexpr size_t MAX_PENDING_FRAMES = 3;
 	class VulkanPipeline;
 	class VulkanDevice;
-	class RHIFrameBuffer;	
+	class VulkanRHI;
+	class RHIFrameBuffer;
 
 	class VulkanContextBase {
 	public:
-		virtual CBInfo getCommandBuffer() = 0;
+		VulkanContextBase(VulkanDevice* device) : mDevice(device) {}
 
-		virtual VulkanCommandPool* getCommandPool() = 0;
+		CBInfo&& getBackCBInfo() {return std::move(usingCommandBuffer);}
 
+		CBInfo usingCommandBuffer;
+		VulkanDevice* mDevice;
 	};
 
 	class VulkanRenderContext : public RHIRenderContext, public VulkanContextBase {
 	public:
-		VulkanRenderContext(VulkanDevice* device, VulkanFencePool* fecePool, VulkanCommandPool* cmdPool) ;
+		thread_local static std::unique_ptr<ThreadCommanPoolListener> commandPool;
+		VulkanRenderContext(VulkanRHI* rhi, VulkanDevice* device);
 
 		~VulkanRenderContext();
 
@@ -35,7 +39,7 @@ namespace FISIR{
 
 		virtual void RHIEndDrawingViewport(RHIRenderPass* pass) override;
 
-		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame) override;
+		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame, const ClearValue& value) override;
 
 		virtual void RHIEndRenderPass() override;
 
@@ -43,17 +47,16 @@ namespace FISIR{
 
 		virtual void RHIDrawPrimitive(unsigned int BaseVertextIndex, unsigned int NumPrimitives, unsigned int NumInstances) override;
 		
-		virtual CBInfo getCommandBuffer() override { return mCommandBuffer; }
 
-		virtual VulkanCommandPool* getCommandPool() override {return mCommandPool;}
-
-		virtual void RHISetViewport(RHIViewport* viewport) override;
+		virtual void RHISetViewport(float x, float y, float width, float height, float maxDepth, float minDepth) override;
 
 		virtual void RHISetScissor(uint32_t width, uint32_t height) override;
 
 		virtual void RHISetDepthBias(float bias) override;
 
-		virtual void RHIBindResourcePack(RHIResourcePack* pack) override;
+		virtual void RHIBindResourcePack(RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) override;
+
+		virtual void RHIBindVertexBuffer(RHIBuffer* buffer, uint32_t binding, uint64_t offset) override;
 
 		virtual void RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) override;
 
@@ -63,19 +66,16 @@ namespace FISIR{
 
 		virtual void RHICopyTexture(RHIBuffer* src, RHITexture* dst, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset = 0, TextureSize dstOffset = {0,0,0}) override;
 
-	private:
-		//临时，这个帧要外部引入
-		size_t currentFrameIndex = 0;
-		VulkanDevice* mDevice;
-		VulkanCommandPool* mCommandPool;
-		VulkanFencePool* mFencePool;
-		CBInfo mCommandBuffer;
-		bool bIsInRenderPass{0};
+		virtual void* changeOtherHandle(const std::type_info& typ) override;
+	
+		RHIFrameBuffer* currentFrameBuffer{nullptr};
+
 	};
 
 	class VulkanComputeContext : public RHIComputeContext, public VulkanContextBase{
 	public:
-		VulkanComputeContext(VulkanDevice* device, VulkanFencePool* fecePool, VulkanCommandPool* cmdPool);
+
+		VulkanComputeContext(VulkanRHI* rhi, VulkanDevice* device) : VulkanContextBase(device) {}
 
 		~VulkanComputeContext();
 
@@ -87,21 +87,13 @@ namespace FISIR{
 
 		virtual bool RHIDispatch(unsigned int groupCountX, unsigned int groupCountY, unsigned int groupCountZ) override;
 
-		virtual CBInfo getCommandBuffer() override { return mCommandBuffer; }
 
-		virtual VulkanCommandPool* getCommandPool() override { return mCommandPool; }
-
-
-	private:
-		VulkanDevice* mDevice;
-		VulkanCommandPool* mCommandPool;
-		VulkanFencePool* mFencePool;
-		CBInfo mCommandBuffer;
 	};
 
 	class VulkanTransferContext : public RHITransferContext, public VulkanContextBase {
 	public:
-		VulkanTransferContext(VulkanDevice* device, VulkanFencePool* fencePool, VulkanCommandPool* cmdPool);
+
+		VulkanTransferContext(VulkanRHI* rhi, VulkanDevice* device) : VulkanContextBase(device) {}
 		
 		~VulkanTransferContext();
 
@@ -114,17 +106,6 @@ namespace FISIR{
 		virtual void RHITransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions) override;
 
 		virtual void RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions) override;
-
-		virtual CBInfo getCommandBuffer() override { return mCommandBuffer; }
-
-		virtual VulkanCommandPool* getCommandPool() override { return mCommandPool; }
-
-
-	private:
-		VulkanDevice* mDevice;
-		VulkanCommandPool* mCommandPool;
-		VulkanFencePool* mFencePool;
-		CBInfo mCommandBuffer;
 
 	};
 }

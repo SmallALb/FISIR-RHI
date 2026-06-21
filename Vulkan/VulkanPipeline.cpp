@@ -16,12 +16,14 @@ namespace FISIR{
 		switch (typ) {
 		case RHIDescriptorTyp::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
 		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		}
 		return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	}
 
-	static VkShaderStageFlags  ChoiceDescriptorStage(RHIUsingStage stage) {
+	static VkShaderStageFlags  ChoiceDescriptorStage(RHIUsingStageFlags stage) {
+		Debug("ChoiceDescriptorStage called with stage = {}", (uint32_t)stage);
 		VkShaderStageFlags res = 0;
 		if ((stage & VertexShaderStage)) res |= VK_SHADER_STAGE_VERTEX_BIT;
 		if ((stage & FragmentShaderStage)) res |= VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -135,6 +137,51 @@ namespace FISIR{
 		VkPipelineLayout PipelineLayout;
 		VkPipeline mPipeline;
 	};
+
+	static std::vector<VkDescriptorSetAndBindingMappingEXT> BuildDescriptorMappings(const RHIPipelineDescribeInfo& describeInfo) {
+		std::vector<VkDescriptorSetAndBindingMappingEXT> mappings;
+
+		for (const auto& binding : describeInfo.Bindings) {
+			VkDescriptorSetAndBindingMappingEXT mapping = {
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+				.descriptorSet = 0,  // 当前统一使用 set 0
+				.firstBinding = binding.binding,
+				.bindingCount = binding.count,
+				.resourceMask = 0,  // 自动检测
+				.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+				.sourceData = {
+					.constantOffset = {
+						.heapOffset = 0,      // 实际偏移由 ResourcePack 决定，这里填 0
+						.heapArrayStride = 0, // 如果是数组，每个元素步长，这里填 0 表示连续
+					}
+				}
+			};
+
+			// 根据描述符类型设置 resourceMask
+			switch (binding.descriptorTyp) {
+			case RHIDescriptorTyp::Sampler:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+				break;
+			case RHIDescriptorTyp::SamplerImage:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
+				break;
+			case RHIDescriptorTyp::Image:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
+				break;
+			case RHIDescriptorTyp::UniformBuffer:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
+				break;
+			default:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
+				break;
+			}
+
+			mappings.push_back(mapping);
+		}
+
+		return mappings;
+	}
+
 	
 	
 	VulkanPipeline::VulkanPipeline(VulkanDevice* inDevice, VulkanDescriptorPool* DescriptorPool, const RHIPipelineState& State) :
@@ -145,15 +192,9 @@ namespace FISIR{
 		//DesLayout
 		mData->Descriptorlayout = DescriptorPool->createDescriptorSetLayout(State.describeInfo);
 
-		//PushConstantRange
-		VkPushConstantRange PushConstantRange = {
-		  .stageFlags = ChoiceDescriptorStage(State.constantRange.Stage),
-		  .offset = 0,
-		  .size = State.constantRange.bufferSize,
-		};
 
 		//PipelineLayout
-		PieplineLayoutHash HashVal(State.describeInfo, State.constantRange);
+		PieplineLayoutHash HashVal(State.describeInfo);
 
 		if (PipelineLayoutMap.contains(HashVal)) mData->PipelineLayout = PipelineLayoutMap[HashVal];
 		else {
@@ -161,8 +202,6 @@ namespace FISIR{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 				.setLayoutCount = 1,
 				.pSetLayouts = &mData->Descriptorlayout,
-				.pushConstantRangeCount = 1,
-				.pPushConstantRanges = &PushConstantRange,
 			};
 			vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &mData->PipelineLayout);
 			PipelineLayoutMap[HashVal] = mData->PipelineLayout;
@@ -270,6 +309,16 @@ namespace FISIR{
 		  .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f},
 		};
 
+		//MappingInfo
+		std::vector<VkDescriptorSetAndBindingMappingEXT> mappingInfo;
+		if (mDevice->isDescriptorHeapSupported()) mappingInfo = std::move(BuildDescriptorMappings(State.describeInfo));
+
+		VkShaderDescriptorSetAndBindingMappingInfoEXT shaderMappingInfo = {
+			.sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+			.mappingCount = (uint32_t)mappingInfo.size(),
+			.pMappings = mappingInfo.data(),  // 指向数组数据
+		};
+
 		//Shader
 		std::vector<VkPipelineShaderStageCreateInfo> shaderInfos;
 		if (!State.isComputePipeline) {
@@ -281,8 +330,10 @@ namespace FISIR{
 					case __GEOMETRY__: usingStage = VK_SHADER_STAGE_GEOMETRY_BIT; break;
 				}
 
+
 				VkPipelineShaderStageCreateInfo info {
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.pNext = mDevice->isDescriptorHeapSupported() ? &shaderMappingInfo : nullptr,
 					.stage = usingStage,
 					.module = (VkShaderModule)State.Shaders[i]->getResourceAPIHandle(),
 					.pName = "main"
@@ -293,6 +344,7 @@ namespace FISIR{
 		else {
 			VkPipelineShaderStageCreateInfo info{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.pNext = mDevice->isDescriptorHeapSupported() ? &shaderMappingInfo : nullptr,
 				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 				.module = (VkShaderModule)State.Shaders[__COMPUTESHADER__]->getResourceAPIHandle(),
 				.pName = "main"
@@ -301,9 +353,15 @@ namespace FISIR{
 		}
 
 		//Create Pipeline
+			VkPipelineCreateFlags2CreateInfo flags2info {
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+				.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT
+			};
+			
 		if (!State.isComputePipeline) {
 			VkGraphicsPipelineCreateInfo info = {
 				.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+				.pNext = mDevice->isDescriptorHeapSupported() ? &flags2info : nullptr,
 				.stageCount = (uint32_t)shaderInfos.size(),
 				.pStages = shaderInfos.data(),
 				.pVertexInputState = &ISinfo,
@@ -314,20 +372,21 @@ namespace FISIR{
 				.pDepthStencilState = &pipelineDepthStencilStateCreateInfo,
 				.pColorBlendState = &pipelineColorBlendStateCreateInfo,
 				.pDynamicState = &pipelineDynamicStateCreateInfo,
-				.layout = mData->PipelineLayout,
+				.layout = mDevice->isDescriptorHeapSupported() ? VK_NULL_HANDLE : mData->PipelineLayout,
 				.renderPass = (VkRenderPass)State.renderpass->getRenderPassHandle(),
 				.basePipelineIndex = -1,
 			};
+
 			vkCreateGraphicsPipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
 			
-			if (mDevice->isDescriptorHeapSupported()) info.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
 
 		}
 		else {
 			VkComputePipelineCreateInfo info = {
 			  .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			  .pNext = mDevice->isDescriptorHeapSupported() ? &flags2info : nullptr,
 			  .stage = shaderInfos[0],
-			  .layout = mData->PipelineLayout,
+			  .layout = mDevice->isDescriptorHeapSupported() ? VK_NULL_HANDLE : mData->PipelineLayout,
 			};
 			vkCreateComputePipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
 

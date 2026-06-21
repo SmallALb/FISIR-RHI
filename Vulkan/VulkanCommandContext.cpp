@@ -7,9 +7,12 @@
 #include "VulkanTexture.h"
 #include "VulkanBuffer.h"
 #include "../../Log/Logger.h"
-#include <vulkan/vulkan.h>
 #include "VulkanDescriptorPool.h"
 #include "VulkanFrameBuffer.h"
+#include "VulkanFencePool.h"
+#include "VulkanSwapChian.h"
+#include "VulkanRHI.h"
+#include <iostream>
 namespace FISIR{
 	static VkImageLayout getVulkanImageLayout(TextureLayout layout) {
 		switch (layout) {
@@ -104,7 +107,7 @@ namespace FISIR{
 		if (stage & RHIUsingStage::PipelineTransferStage){
 			flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
-
+		return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 		return flags;
 		
 	}
@@ -115,33 +118,56 @@ namespace FISIR{
 	}
 
 
+	static ResourceAccess getAccessFromLayout(TextureLayout layout) {
+		switch (layout) {
+		case TextureLayout::ColorAttachmentOptimal:
+		case TextureLayout::DepthStencilAttachmentOptimal:
+			return ResourceAccess::ShaderReadWrite;
+		case TextureLayout::ShaderReadOnlyOptimal:
+			return ResourceAccess::ShaderReadOnly;
+		case TextureLayout::TransferSrcOptimal:
+			return ResourceAccess::TransferSrc;
+		case TextureLayout::TransferDstOptimal:
+			return ResourceAccess::TransferDst;
+		default:
+			return ResourceAccess::Undefined;
+		}
+	
+	}
+
 	/*
 		RenderContext
 	*/
-	VulkanRenderContext::VulkanRenderContext(VulkanDevice* device, VulkanFencePool* fecePool, VulkanCommandPool* cmdPool) {
-		mDevice = device;
-		mFencePool = fecePool;
-		mCommandPool = cmdPool;
+	
+	thread_local std::unique_ptr<ThreadCommanPoolListener> VulkanRenderContext::commandPool = nullptr;
+	VulkanRenderContext::VulkanRenderContext(VulkanRHI* rhi, VulkanDevice* device) : VulkanContextBase(device) {
+		if (VulkanRenderContext::commandPool == nullptr) VulkanRenderContext::commandPool.reset(rhi->choiceCommandPool(CmdType::Render));
 		
+		usingCommandBuffer = VulkanRenderContext::commandPool->mCommandPool->createCommandBuffer(CommandBufferType::_Primary_);
 	}
 
 	VulkanRenderContext::~VulkanRenderContext() {
-		//if (!isDestroyed) destroy();
+	
 	}
 
 	void VulkanRenderContext::RHIBegin() {
-		mCommandBuffer = mCommandPool->createCommandBuffer(_Primary_);
+		//Warn("Try Begin Command!");
 		VkCommandBufferBeginInfo beginInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 		};
-		vkBeginCommandBuffer(mCommandBuffer.buffer, &beginInfo);
-		Debug("VK RHI Begin RenderCmd");
+		vkBeginCommandBuffer(usingCommandBuffer.buffer, &beginInfo);
+		if (!usingCommandBuffer.buffer) {
+			Error("CommandBuffer is Null ");
+			//Warn("RHI Begin!");
+		}
 	}
 
 	void VulkanRenderContext::RHIEnd() {
-		vkEndCommandBuffer(mCommandBuffer.buffer);
-		Debug("VK RHI End RenderCmd");
+		//Debug("RHIEnd Begin");
+		if (vkEndCommandBuffer(usingCommandBuffer.buffer) != VK_SUCCESS) Error("Vulkan Command End Failed");
+		//Debug("RHIEnd finished");
+
 	}
 
 	void VulkanRenderContext::RHIBeginDrawingViewport(RHIViewport* viewport, RHITexture* rhiTexture) {
@@ -152,62 +178,98 @@ namespace FISIR{
 
 	}
 
-	void VulkanRenderContext::RHIBeginRenderPass(RHIFrameBuffer* frame) {
-		Debug("Begin Frame Render, Buffer Handle 0x{:x}", (size_t)frame);
-		VkClearValue clearValues[2] = {};
-		clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };  
-		clearValues[1].depthStencil = { 1.0f, 0 };            
-		auto renderpass = frame->getFrameRenderPass();
+	void VulkanRenderContext::RHIBeginRenderPass(RHIFrameBuffer* frame, const ClearValue& value) {
+		currentFrameBuffer = frame;
+		//Debug("Begin Frame Render, Buffer Handle 0x{:x}", (size_t)currentFrameBuffer);
+		std::vector<VkClearValue> clearValues;
+		auto& [isColorC, c, isDepthStencilC, dc, s]  = value;
+
+		if (isColorC) {
+			VkClearValue val {
+				.color = {c.R, c.G, c.B, c.A}
+			};
+			clearValues.push_back(val);		
+		}
+
+		if (isDepthStencilC) {
+			VkClearValue val{
+				.depthStencil = {dc, s}
+			};
+			clearValues.push_back(val);
+		}
+		auto renderpass = currentFrameBuffer->getFrameRenderPass();
 
 		VkRenderPassBeginInfo info {
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass = static_cast<VkRenderPass>(renderpass->getRenderPassHandle()),
-			.framebuffer = static_cast<VkFramebuffer>(frame->getResourceAPIHandle()),
+			.framebuffer = static_cast<VkFramebuffer>(currentFrameBuffer->getResourceAPIHandle()),
 			.renderArea = {
 				.offset = {0, 0},
-				.extent = {frame->getFrameWidth(), frame->getFrameHeight()},
+				.extent = {currentFrameBuffer->getFrameWidth(), currentFrameBuffer->getFrameHeight()},
 			},
-			.clearValueCount = 2,
-			.pClearValues = clearValues,
+			.clearValueCount = (uint32_t)(clearValues.size()),
+			.pClearValues = clearValues.data(),
 		};
-		vkCmdBeginRenderPass(mCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdBeginRenderPass(usingCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
 	}
 
 	void VulkanRenderContext::RHIEndRenderPass() {
-		vkCmdEndRenderPass(mCommandBuffer.buffer);
+		vkCmdEndRenderPass(usingCommandBuffer.buffer);
 
+		auto& textures = currentFrameBuffer->getFrameTextures();
+		auto renderpasss = currentFrameBuffer->getFrameRenderPass();
+		for (size_t i = 0; i<textures.size(); i++) {
+			TextureLayout layout = renderpasss->getAttachmentFinalLayout(i);
+			//textures[i]->setWait();
+			//usingCommandBuffer.QuoteResources[textures[i]] = {getAccessFromLayout(layout), layout};
+			static_cast<VulkanTexture*>(textures[i])->transitionLayout(layout);
+		}
 	}
 
 	void VulkanRenderContext::RHISetGraphicsPipelineState(RHIPipeline* pipeline) {
-		vkCmdBindPipeline(mCommandBuffer.buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)pipeline->getPipelineHandle());
+		vkCmdBindPipeline(usingCommandBuffer.buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)pipeline->getPipelineHandle());
 	}
 
 	void VulkanRenderContext::RHIDrawPrimitive(unsigned int BaseVertextIndex, unsigned int NumPrimitives, unsigned int NumInstances) {
-		vkCmdDraw(mCommandBuffer.buffer, NumPrimitives, NumInstances, BaseVertextIndex, 0);
+		vkCmdDraw(usingCommandBuffer.buffer, NumPrimitives, NumInstances, BaseVertextIndex, 0);
 	}
 
-	void VulkanRenderContext::RHISetViewport(RHIViewport* viewport) {
-		vkCmdSetViewport(mCommandBuffer.buffer, 0, 1, nullptr);
+
+	void VulkanRenderContext::RHISetViewport(float x, float y, float width, float height, float maxDepth, float minDepth) {
+		VkViewport viewport {
+			.x = x,
+			.y = y,
+			.width = width,
+			.height = height,
+			.minDepth = minDepth,
+			.maxDepth = maxDepth,
+		};
+		vkCmdSetViewport(usingCommandBuffer.buffer, 0, 1, &viewport);
 	}
 
 	void VulkanRenderContext::RHISetScissor(uint32_t width, uint32_t height) {
 		VkRect2D exten {{0, 0}, {width, height}};
-		vkCmdSetScissor(mCommandBuffer.buffer, 0, 1, &exten);
+		vkCmdSetScissor(usingCommandBuffer.buffer, 0, 1, &exten);
 	}
 
 	void VulkanRenderContext::RHISetDepthBias(float bias) {
-		vkCmdSetDepthBias(mCommandBuffer.buffer, 0.0, 0.0, 0.0);
+		vkCmdSetDepthBias(usingCommandBuffer.buffer, 0.0, 0.0, 0.0);
 	}
 
-	void VulkanRenderContext::RHIBindResourcePack(RHIResourcePack* pack) {
-		CmdBindResourcePack(mDevice, mCommandBuffer.buffer, pack);
+	void VulkanRenderContext::RHIBindResourcePack(RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) {
+		CmdBindResourcePack(mDevice, usingCommandBuffer.buffer, Resourcepack, Samplerpack);
+	}
+
+	void VulkanRenderContext::RHIBindVertexBuffer(RHIBuffer* buffer, uint32_t binding, uint64_t offset) {
+		auto vkbuffer = static_cast<VkBuffer>(buffer->getResourceAPIHandle());
+		vkCmdBindVertexBuffers(usingCommandBuffer.buffer, binding, 1, &vkbuffer, &offset);
 	}
 
 	void VulkanRenderContext::RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
 		std::vector<VkImageMemoryBarrier> Barriers;
 		for (auto& [texture, waitForAccessDone, beginAccessWhenDone, oldlayout, newlayout] : textureTransitions) {
-			if (mCommandBuffer.QuoteResources.contains(texture) && mCommandBuffer.QuoteResources[texture].access == beginAccessWhenDone && mCommandBuffer.QuoteResources[texture].layout == newlayout)
-			mCommandBuffer.QuoteResources[texture] = { beginAccessWhenDone, newlayout };
+			if (usingCommandBuffer.QuoteResources.contains(texture) && usingCommandBuffer.QuoteResources[texture].access == beginAccessWhenDone && usingCommandBuffer.QuoteResources[texture].layout == newlayout)
+			usingCommandBuffer.QuoteResources[texture] = { beginAccessWhenDone, newlayout };
 			VkImageMemoryBarrier barrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 				.srcAccessMask = getVulkanAccessFlags(waitForAccessDone),
@@ -220,19 +282,20 @@ namespace FISIR{
 				.subresourceRange = {getVulkanAspectFlagsForUsing(texture->getTextureUseFor()), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS},
 			};
 			Barriers.push_back(barrier);
+			//texture->setWait();
 		}
-		vkCmdPipelineBarrier(mCommandBuffer.buffer, 
+		vkCmdPipelineBarrier(usingCommandBuffer.buffer, 
 			getVulkanPipelineSatgeFlags(waitForStageDone), 
 			getVulkanPipelineSatgeFlags(beginStageWhenDone),
 			0, 0, nullptr, 0, nullptr, static_cast<uint32_t>(Barriers.size()), Barriers.data());
-
+		
 		
 	}
 
 	void VulkanRenderContext::RHITransitionBuffers(std::initializer_list<BufferTransitionInfo> bufferTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
 		std::vector<VkBufferMemoryBarrier> Barriers;
 		for (auto& [buffer, waitForAccessDone, beginAccessWhenDone] : bufferTransitions) {
-			mCommandBuffer.QuoteResources[buffer] = {beginAccessWhenDone};
+			usingCommandBuffer.QuoteResources[buffer] = {beginAccessWhenDone};
 			VkBufferMemoryBarrier barrier {
 				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
 				.srcAccessMask = getVulkanAccessFlags(waitForAccessDone),
@@ -241,9 +304,10 @@ namespace FISIR{
 				.offset = 0,
 				.size = buffer->getSize()
 			};
+			//buffer->setWait();
 			Barriers.push_back(barrier);
 		}
-		vkCmdPipelineBarrier(mCommandBuffer.buffer, 
+		vkCmdPipelineBarrier(usingCommandBuffer.buffer, 
 			getVulkanPipelineSatgeFlags(waitForStageDone),
 			getVulkanPipelineSatgeFlags(beginStageWhenDone),
 			0, 0, nullptr, static_cast<uint32_t>(Barriers.size()), Barriers.data(), 0, nullptr);
@@ -265,17 +329,17 @@ namespace FISIR{
 			.pRegions = &sizeinfo,
 		};
 
-		vkCmdCopyBuffer2(mCommandBuffer.buffer, &copyinfo);
+		vkCmdCopyBuffer2(usingCommandBuffer.buffer, &copyinfo);
 	
 	}
 
 	void VulkanRenderContext::RHICopyTexture(RHIBuffer* src, RHITexture* dst, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset, TextureSize dstOffset) {
-		if (mCommandBuffer.QuoteResources[dst].layout != TextureLayout::TransferDstOptimal) {
+		if (usingCommandBuffer.QuoteResources[dst].layout != TextureLayout::TransferDstOptimal) {
 			TextureTransitionInfo tranInfo {
 				.texture = dst,
-				.waitForAccessDone = mCommandBuffer.QuoteResources.contains(dst) ? mCommandBuffer.QuoteResources[dst].access : ResourceAccess::Undefined,
+				.waitForAccessDone = usingCommandBuffer.QuoteResources.contains(dst) ? usingCommandBuffer.QuoteResources[dst].access : ResourceAccess::Undefined,
 				.beginAccessWhenDone = ResourceAccess::TransferDst,
-				.oldLayout = mCommandBuffer.QuoteResources.contains(dst) ? mCommandBuffer.QuoteResources[dst].layout : TextureLayout::Undefined,
+				.oldLayout = usingCommandBuffer.QuoteResources.contains(dst) ? usingCommandBuffer.QuoteResources[dst].layout : TextureLayout::Undefined,
 				.newLayout = TextureLayout::TransferDstOptimal,
 			};
 			RHITransitionTextures({tranInfo}, RHIUsingStage::PipelinTopStage, RHIUsingStage::PipelineTransferStage);
@@ -304,23 +368,22 @@ namespace FISIR{
 			.regionCount = 1,
 			.pRegions = &sizeinfo,
 		};
-		vkCmdCopyBufferToImage2(mCommandBuffer.buffer, &copyinfo);
+		vkCmdCopyBufferToImage2(usingCommandBuffer.buffer, &copyinfo);
 	}
 
-
+	void* VulkanRenderContext::changeOtherHandle(const std::type_info& typ) {
+		if (typ == typeid(VulkanContextBase))
+			return static_cast<VulkanContextBase*>(this);
+		return nullptr;
+	}
 
 	/*
 		ComputeContext
 	*/
-	VulkanComputeContext::VulkanComputeContext(VulkanDevice* device, VulkanFencePool* fecePool, VulkanCommandPool* cmdPool) {
-		mDevice = device;
-		mFencePool = fecePool;
-		mCommandPool = cmdPool;
-
-	}
+	
 
 	VulkanComputeContext::~VulkanComputeContext() {
-	
+
 	}
 
 	void VulkanComputeContext::RHIBegin()
@@ -341,16 +404,13 @@ namespace FISIR{
 	}
 
 
+
 	/*
 		TransferContext
 	*/
-	VulkanTransferContext::VulkanTransferContext(VulkanDevice* device, VulkanFencePool* fencePool, VulkanCommandPool* cmdPool) {
-		mDevice = device;
-		mFencePool = fencePool;
-		mCommandPool = cmdPool;
-	}
 
 	VulkanTransferContext::~VulkanTransferContext() {
+
 	}
 
 	void VulkanTransferContext::RHIBegin()
@@ -370,10 +430,8 @@ namespace FISIR{
 	{
 	}
 
-	void VulkanTransferContext::RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions)
-	{
+	void VulkanTransferContext::RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions) {
 	}
-
 
 
 }

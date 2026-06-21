@@ -3,7 +3,7 @@
 #include "VulkanDevice.h"
 namespace FISIR {
     struct __VkShaderData {
-        VkShaderModule mShader;
+        VkShaderModule mShader {VK_NULL_HANDLE};
     };
 
 
@@ -17,12 +17,11 @@ namespace FISIR {
 		   .pCode = (const uint32_t*)shaderData //TODO: set code data
 		};
 
-
-		vkCreateShaderModule(mDevice->getLogicalDevice(), &shaderModuleCreateInfo, nullptr, &mData->mShader);
+        vkCreateShaderModule(mDevice->getLogicalDevice(), &shaderModuleCreateInfo, nullptr, &mData->mShader);
     }
 
     VulkanShader::~VulkanShader() {
-        vkDestroyShaderModule(mDevice->getLogicalDevice(), mData->mShader, nullptr);
+        if (mData->mShader)vkDestroyShaderModule(mDevice->getLogicalDevice(), mData->mShader, nullptr);
         delete mData;
     }
 

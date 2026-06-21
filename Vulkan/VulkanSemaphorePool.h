@@ -4,19 +4,19 @@
 #include <cstdint>
 #include <mutex>
 #include <vector>
-
+#include "../RHISemaphore.h"
 struct VkSemaphore_T;
 
 namespace FISIR{
 	class VulkanDevice;
 
-	class VulkanSemaphore {
+	class VulkanSemaphore : public RHISemaphore {
 	public:
 		VulkanSemaphore(VulkanDevice* device, const char* name = nullptr);
 
 		~VulkanSemaphore();
 
-		VkSemaphore_T* getSemaphore() const;
+		virtual void* getSemaphoreHandle() const override;
 
 #ifdef _DEBUG
 		const char* getName() const { return mName; }

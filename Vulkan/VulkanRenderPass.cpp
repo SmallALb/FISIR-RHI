@@ -6,6 +6,21 @@
 namespace FISIR{
 	
 
+	static TextureLayout getTextureLayout(VkImageLayout layout) {
+		switch (layout) {
+			case VK_IMAGE_LAYOUT_UNDEFINED: return TextureLayout::Undefined;
+			case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return TextureLayout::ColorAttachmentOptimal;
+			case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return TextureLayout::DepthStencilAttachmentOptimal;
+			case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return TextureLayout::ShaderReadOnlyOptimal;
+			case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return TextureLayout::TransferSrcOptimal;
+			case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return TextureLayout::TransferDstOptimal;
+			case VK_IMAGE_LAYOUT_GENERAL: return TextureLayout::Storage;
+			case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return TextureLayout::Present;
+			default: return TextureLayout::Undefined;
+		}
+	
+	}
+
 
 	struct SubpassAttachmentRefs {
 		uint64_t ColorMask;
@@ -101,6 +116,8 @@ namespace FISIR{
 
 		uint32_t DepthStencilAttachmentIndex = -1;
 		uint32_t DepthStencilResolveAttachmentIndex = -1;
+		std::vector<VkAttachmentDescription> attachmentDescriptions;
+
 	};
 
 
@@ -108,6 +125,15 @@ namespace FISIR{
 		for (int i=0; i<64; i++) if (info.ColorEntries[i].EntryPros.exeit) {
 			//Color
 			auto& pros = info.ColorEntries[i].EntryPros;
+
+			Info("Current Ini Layout : Name-{}, value-{}", getTextureLayoutName(pros.initLayout), (uint32_t)pros.initLayout);
+			Info("Current Dst Layout : Nmae-{}, value-{}", getTextureLayoutName(pros.dstLayout), (uint32_t)pros.dstLayout);
+
+
+			if (pros.dstLayout == TextureLayout::Undefined) {
+				Warn("You can Not Use Undefine Layout To the Texture Dst Layout!");
+			}
+
 			VkAttachmentDescription attachmentDesc{
 			  .format = getVulkanFormat(pros.colorType),
 			  .samples = getVulkanSampleCount(pros.sampleCount),
@@ -118,8 +144,8 @@ namespace FISIR{
 			  .initialLayout = getVulkanImageLayout(pros.initLayout),
 			  .finalLayout = getVulkanImageLayout(pros.dstLayout)
 			};
-			mData->ColorEnrtiesRenderAttachmentIndex[i] = attachmentDescriptions.size();
-			attachmentDescriptions.push_back(attachmentDesc);
+			mData->ColorEnrtiesRenderAttachmentIndex[i] = mData->attachmentDescriptions.size();
+			mData->attachmentDescriptions.push_back(attachmentDesc);
 
 			if (pros.hasResolveTarget) {
 				VkAttachmentDescription attachmentDesc{
@@ -132,8 +158,8 @@ namespace FISIR{
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 				};
-				mData->ColorEnrtiesResloveAttachmentIndex[i] = attachmentDescriptions.size();
-				attachmentDescriptions.push_back(attachmentDesc);
+				mData->ColorEnrtiesResloveAttachmentIndex[i] = mData->attachmentDescriptions.size();
+				mData->attachmentDescriptions.push_back(attachmentDesc);
 			}
 		}
 
@@ -182,8 +208,8 @@ namespace FISIR{
 				.initialLayout = getVulkanImageLayout(target.initLayout),
 				.finalLayout = getVulkanImageLayout(target.dstLayout)
 			};
-			mData->DepthStencilAttachmentIndex = attachmentDescriptions.size();
-			attachmentDescriptions.push_back(attachmentDesc);
+			mData->DepthStencilAttachmentIndex = mData->attachmentDescriptions.size();
+			mData->attachmentDescriptions.push_back(attachmentDesc);
 
 			if (target.hasResolveTarget) {
 				VkAttachmentDescription attachmentDesc{
@@ -196,8 +222,8 @@ namespace FISIR{
 					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
 				};
-				mData->DepthStencilResolveAttachmentIndex = attachmentDescriptions.size();
-				attachmentDescriptions.push_back(attachmentDesc);
+				mData->DepthStencilResolveAttachmentIndex = mData->attachmentDescriptions.size();
+				mData->attachmentDescriptions.push_back(attachmentDesc);
 			}
 		}
 
@@ -323,8 +349,8 @@ namespace FISIR{
 
 		VkRenderPassCreateInfo renderPassCreateInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-			.attachmentCount = (uint32_t)attachmentDescriptions.size(),
-			.pAttachments = attachmentDescriptions.data(),
+			.attachmentCount = (uint32_t)mData->attachmentDescriptions.size(),
+			.pAttachments = mData->attachmentDescriptions.data(),
 			.subpassCount = (uint32_t)subpasses.size(),
 			.pSubpasses = subpasses.data(),
 			.dependencyCount = (uint32_t)dependencies.size(),
@@ -333,5 +359,14 @@ namespace FISIR{
 
 		if (vkCreateRenderPass(mDevice->getLogicalDevice(), &renderPassCreateInfo, nullptr, &mData->renderpass) != VK_SUCCESS) {
 		}
+	}
+
+	TextureLayout VulkanRenderPass::getAttachmentFinalLayout(uint32_t index) const {
+		if (index >= mData->attachmentDescriptions.size()) return TextureLayout::Undefined;
+		return getTextureLayout(mData->attachmentDescriptions[index].finalLayout);
+	}
+
+	uint32_t VulkanRenderPass::getAttachmentCount() const {
+		return static_cast<uint32_t>(mData->attachmentDescriptions.size());
 	}
 }

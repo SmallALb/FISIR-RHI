@@ -13,7 +13,9 @@ namespace FISIR {
 	class RHIPipeline;
 	class RHIResourcePack;
 	class RHIFrameBuffer;
-
+	class RHISemaphore;
+	class RHIFence;
+	class RHISwapChain;
 
 	class RHIContext {
 	public:
@@ -29,8 +31,14 @@ namespace FISIR {
 
 		virtual void RHIExecuteSubCommand() {};
 
-
 		virtual CmdType getCmdType() const {return CmdType::None;}
+
+		template<class T>
+		T* as() {
+			return static_cast<T*>(changeOtherHandle(typeid(T)));
+		}
+	private:
+		virtual void* changeOtherHandle(const std::type_info& typ) { return nullptr; };
 	};
 
 	class RHIRenderContext  : public RHIContext {
@@ -40,7 +48,7 @@ namespace FISIR {
 
 		virtual void RHIEndDrawingViewport(RHIRenderPass* pass) = 0;
 
-		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame) = 0;
+		virtual void RHIBeginRenderPass(RHIFrameBuffer* frame, const ClearValue& value) = 0;
 
 		virtual void RHIEndRenderPass() = 0;
 
@@ -48,13 +56,15 @@ namespace FISIR {
 
 		virtual void RHIDrawPrimitive(unsigned int BaseVertextIndex, unsigned int NumPrimitives, unsigned int NumInstances) = 0;
 
-		virtual void RHISetViewport(RHIViewport* viewport) = 0;
+		virtual void RHISetViewport(float x, float y, float width, float height, float maxDepth, float minDepth) = 0;
 
 		virtual void RHISetScissor(uint32_t width, uint32_t height) = 0;
 
 		virtual void RHISetDepthBias(float bias) = 0;
 
-		virtual void RHIBindResourcePack(RHIResourcePack* pack) = 0;
+		virtual void RHIBindResourcePack(RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) = 0;
+
+		virtual void RHIBindVertexBuffer(RHIBuffer* buffer, uint32_t binding, uint64_t offset) = 0;
 		
 		virtual void RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) = 0;
 

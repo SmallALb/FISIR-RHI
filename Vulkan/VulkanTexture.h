@@ -17,7 +17,7 @@ namespace FISIR {
 		VulkanTexture(VulkanDevice* inDevice, const TextureInfo& info, uint32_t usage = 0, const char* name = nullptr);
 
 		VulkanTexture(VulkanDevice* inDevice, VkImage_T* imagehandle, size_t format,
-			const TextureSize& size, const char* name = nullptr);
+			const TextureSize& size, bool NoNeedRelese = 1, const char* name = nullptr);
 
 		virtual ~VulkanTexture();
 

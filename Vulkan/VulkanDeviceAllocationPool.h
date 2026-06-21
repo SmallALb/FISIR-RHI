@@ -1,6 +1,11 @@
 #pragma once
 
 namespace FISIR {
+	static uint64_t align_up(uint64_t size, uint64_t align) {
+		return (size + align - 1) & ~(align - 1);
+	}
+
+
 	constexpr unsigned int FIRST_LEVEL_INDEX_MAX = 32;    //一级最大索引数
 	constexpr unsigned int SECOND_LEVEL_INDEX_COUNT = 32; //单个一级的二级数量
 	constexpr unsigned int FIRST_LEVEL_INDEX_SHIFT = 8; //计算大和小分界点的幂次
@@ -73,19 +78,33 @@ namespace FISIR {
 		}
 
 
-		GpuBlock* NewBlock(size_t Size) {
-			if (Size > totalSize) return nullptr;
+		GpuBlock* NewBlock(size_t Size, uint64_t align) {
+			size_t alignedSize = align_up(Size, align);
+			if (alignedSize > totalSize) return nullptr;
 			int f, s;
-			mapping_insert(Size, f, s);
+			mapping_insert(alignedSize, f, s);
 			GpuBlock* block = getSuitable(f, s);
 			if (!block) return nullptr;
+
+			size_t alignedOffset = align_up(block->Info.offset, align);
+			size_t offsetDiff = alignedOffset - block->Info.offset;
+
+			if (offsetDiff > 0) {
+				size_t newSize = block->Info.Size - offsetDiff;
+				if (newSize < alignedSize) {
+					return nullptr;
+				}
+				block->Info.offset = alignedOffset;
+				block->Info.Size = newSize;
+			}
+
 			block->PoolID = PoolID;
 			block->isFreeBlock = 0;
 			Remove_List(block);
-			SplitBlock(block, Size);
+			SplitBlock(block, alignedSize);
 			block->Info.MemoryType = MemTypeID;
-			totalSize -= Size;
-			UsingSize += Size;
+			totalSize -= alignedSize;
+			UsingSize += alignedSize;
 			Debug("Well New Block Success!");
 			return block;
 		}

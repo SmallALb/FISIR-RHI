@@ -32,7 +32,7 @@ namespace FISIR {
 
 		uint32_t getVkDescriptorType() const override;
 
-		uint32_t getDeviceAddress() const;
+		uint64_t  getDeviceAddress() const;
 
 		void*& getHostVisablePtr() {return Data_GPU;}
 

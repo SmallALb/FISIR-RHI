@@ -15,6 +15,9 @@ namespace FISIR{
 	VulkanQueue::VulkanQueue(VulkanDevice* device, uint32_t FamilyIndex, const char* DebugName):
 	mFamilyIndex(FamilyIndex), mDevice(device) {
 		mData = new __VkQueData();
+		mQueueIndex = QueIndexOfFamilyIndex[FamilyIndex]++;
+		vkGetDeviceQueue(mDevice->getLogicalDevice(), mFamilyIndex, mQueueIndex, &mData->mQue);
+		if (!mData->mQue) {Error("Can Not Create Que: {}", DebugName); return;}
 #ifdef _DEBUG
 		mDebugName = std::string(DebugName);
 		Debug("{} Vk Que Create!", mDebugName);
@@ -22,16 +25,14 @@ namespace FISIR{
 
 #endif // DEBUG
 	
-		mQueueIndex = QueIndexOfFamilyIndex[FamilyIndex]++;
-		vkGetDeviceQueue(mDevice->getLogicalDevice(), mFamilyIndex, mQueueIndex, &mData->mQue);
 	}
 
 	VulkanQueue::~VulkanQueue() {
 		delete mData;
 	}
 
-	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, std::initializer_list<VulkanSemaphore*> SignalSemaphores, std::initializer_list<VulkanSemaphore*> WaitSemaphores, VulkanFence* Fence) {
-		
+	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
+		Warn("Cmd Submit!");
 		// 验证 queue 是否有效
 		if (mData->mQue == VK_NULL_HANDLE) {
 			Error("Queue is VK_NULL_HANDLE!");
@@ -53,9 +54,9 @@ namespace FISIR{
 
 
 		for (auto& semaphore : SignalSemaphores) 
-			semaphoresToSignal.push_back(semaphore->getSemaphore());
+			semaphoresToSignal.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
 		for (auto& semaphore : WaitSemaphores) {
-			semaphoresToWait.push_back(semaphore->getSemaphore());
+			semaphoresToWait.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
 			waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 		}
 
@@ -69,13 +70,18 @@ namespace FISIR{
 			.signalSemaphoreCount = (uint32_t)semaphoresToSignal.size(),
 			.pSignalSemaphores = (semaphoresToSignal.empty()) ? nullptr : semaphoresToSignal.data(),
 		};
+		Warn("Wait Cmd Submit!");
 
-		if (vkQueueSubmit(mData->mQue, 1, &info, Fence ? Fence->getVkFence() : VK_NULL_HANDLE) != VK_SUCCESS) {
+		if (vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE) != VK_SUCCESS) {
 			Error("Failed to submit command buffer to queue!");
 			return;
 		}
 		Debug("Command buffer submitted to queue successfully!");
 
+	}
+
+	VkQueue_T* VulkanQueue::getQueueHandle() const {
+		return mData->mQue;
 	}
 
 	

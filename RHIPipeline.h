@@ -42,22 +42,12 @@ namespace FISIR {
 		_4x8BIT = 0x20,
 		_8x8BIT =0x40,
 	};
-
-	enum APIOperation {
-		_NOT_Equal_,
-		_Equal_,
-		_Equal_Less_,
-		_Equal_Greate_,
-		_Less_,
-		_Greate_,
-		_Always_
-	};
-
 	
 
 	struct RHIVertexInputInfo {
 		RHIVertexInputInfo(const std::initializer_list<RHIBaseDataTYPE>& lis) {
 			if (lis.size() >= 64) return;
+			for (auto& BaseDataType : BaseDataTypes) BaseDataType = 0;
 			for (auto& typ : lis) {
 				BaseDataTypes[Count / 16] |= typ << (4 * (Count % 16));
 				Count++;
@@ -91,7 +81,7 @@ namespace FISIR {
 	struct RHIPipelineDescribeBinding {
 		RHIPipelineDescribeBinding() {}
 
-		RHIPipelineDescribeBinding(uint8_t binding, uint16_t count, RHIDescriptorTyp descriptorT = RHIDescriptorTyp::UniformBuffer, RHIUsingStage Stage = NoneStage):
+		RHIPipelineDescribeBinding(uint8_t binding, uint16_t count, RHIDescriptorTyp descriptorT = RHIDescriptorTyp::UniformBuffer, RHIUsingStageFlags Stage = NoneStage):
 			count(count),
 			binding(binding),
 			descriptorTyp(descriptorT),
@@ -101,7 +91,7 @@ namespace FISIR {
 		uint16_t count;
 		uint8_t binding;
 		RHIDescriptorTyp descriptorTyp;
-		RHIUsingStage usingStage;
+		RHIUsingStageFlags usingStage;
 
 		bool operator == (const RHIPipelineDescribeBinding& other) const{
 			return descriptorTyp == other.descriptorTyp && binding == other.binding && count == other.count && usingStage == other.usingStage;
@@ -132,28 +122,6 @@ namespace FISIR {
 		}
 	};
 
-	
-
-	struct ConstantRangeInfo {
-		RHIUsingStage Stage;
-		uint32_t bufferSize;
-
-		size_t getHash() const {
-			// use HashCombine for stable combination
-			size_t h = 0;
-			h = HashCombine(h, static_cast<uint8_t>(Stage));
-			h = HashCombine(h, bufferSize);
-			return h;
-		}
-
-		bool operator == (const ConstantRangeInfo& info) const {
-			return Stage == info.Stage && bufferSize == info.bufferSize;
-		}
-
-		bool operator != (const ConstantRangeInfo& info) const {
-			return Stage != info.Stage && bufferSize != info.bufferSize;
-		}
-	};
 
 	struct RasterizationState {
 		bool DepthClipEnable;
@@ -191,15 +159,14 @@ namespace FISIR {
 	};
 
 	struct PieplineLayoutHash {
-		PieplineLayoutHash(const RHIPipelineDescribeInfo& dinfo, const ConstantRangeInfo& rinfo) :
-			desinfo(dinfo), rangeinfo(rinfo)
+		PieplineLayoutHash(const RHIPipelineDescribeInfo& dinfo) :
+			desinfo(dinfo)
 		{
 		}
 		const RHIPipelineDescribeInfo& desinfo;
-		const ConstantRangeInfo& rangeinfo;
 
 		bool operator == (const PieplineLayoutHash& other) const {
-			return desinfo == other.desinfo && rangeinfo == other.rangeinfo;
+			return desinfo == other.desinfo;
 		}
 
 		bool operator != (const PieplineLayoutHash& other) const {
@@ -209,7 +176,6 @@ namespace FISIR {
 
 	struct RHIPipelineState {
 		RHIPipelineDescribeInfo describeInfo;
-		ConstantRangeInfo constantRange;
 		RHIVertexInputInfo vertexInfo;
 		TopologyType topologyType;
 		RasterizationState rasterizationState;
@@ -219,13 +185,11 @@ namespace FISIR {
 		RHIShader* Shaders[ShaderTYPCOUNT] {nullptr};
 		RHIRenderPass* renderpass;
 		bool isComputePipeline{0};
-		const char* pipelineName;
 
 		size_t getHash() const {
 			uint32_t h = 0;
 			// combine describe and constant range
 			h = HashCombine(h, (uint32_t)describeInfo.HashVal);
-			h = HashCombine(h, constantRange.getHash());
 			// vertex info
 			h = HashCombine(h, (uint32_t)vertexInfo.Count);
 			for (int i = 0; i < 4; ++i) h = HashCombine(h, (uint32_t)vertexInfo.BaseDataTypes[i]);
@@ -260,13 +224,11 @@ namespace FISIR {
 			for (int i = 0; i < ShaderTYPCOUNT; ++i) h = HashCombine(h, HashPointer(Shaders[i]));
 			h = HashCombine(h, HashPointer(renderpass));
 			h = HashCombine(h, (uint32_t)isComputePipeline);
-			h = HashCombine(h, HashPointer(pipelineName));
 			return (size_t)h;
 		}
 
 		bool operator==(const RHIPipelineState& other) const {
 			if (!(describeInfo == other.describeInfo)) return false;
-			if (!(constantRange == other.constantRange)) return false;
 			if (!(vertexInfo == other.vertexInfo)) return false;
 			if (topologyType != other.topologyType) return false;
 			if (rasterizationState.DepthClipEnable != other.rasterizationState.DepthClipEnable) return false;
@@ -293,7 +255,6 @@ namespace FISIR {
 			for (int i = 0; i < ShaderTYPCOUNT; ++i) if (Shaders[i] != other.Shaders[i]) return false;
 			if (renderpass != other.renderpass) return false;
 			if (isComputePipeline != other.isComputePipeline) return false;
-			if (pipelineName != other.pipelineName) return false;
 			return true;
 		}
 
@@ -320,19 +281,12 @@ namespace std {
 		}
 	};
 	
-	template<>
-	struct hash<FISIR::ConstantRangeInfo> {
-		size_t operator() (const FISIR::ConstantRangeInfo& info) const {
-			return info.getHash(); 
-		}
-	};
 
 	template<> 
 	struct hash<FISIR::PieplineLayoutHash> {
 		size_t operator() (const FISIR::PieplineLayoutHash& v) const {
 			size_t h = 0;
 			h = FISIR::HashCombine(h, v.desinfo.HashVal);
-			h = FISIR::HashCombine(h, v.rangeinfo.getHash());
 			return h;
 		}
 	};

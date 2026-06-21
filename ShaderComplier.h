@@ -1,6 +1,6 @@
 #pragma once
 
-
+#pragma comment(lib, "vulkan-1.lib")
 #include "../Log/Logger.h"
 
 #ifdef _WIN32
@@ -100,13 +100,14 @@ namespace FISIR {
                 Error("Shader data already exists, clear before compiling new shader");
                 return;
             }
-            std::vector<wchar_t> wideData(dataSize / sizeof(wchar_t));
 
             auto RenderAPI = RHICreator::getCrrentRenderInterfaceApi();
-            LPCWSTR args[]{
+            std::vector<LPCWSTR> args{
                 L"-E", entryPoint,
-                L"-T", target, L"-spirv"
+                L"-T", target, L"-spirv",
             };
+            if (RenderAPI == FISIR::RHIAPI::Vulkan) args.push_back(L"-fspv-debug=vulkan-with-source");
+
 
             IDxcBlobEncoding* pShaderBlob = nullptr;
             mData->dxcLibrary->CreateBlobWithEncodingOnHeapCopy(
@@ -117,7 +118,7 @@ namespace FISIR {
 
             mData->dxcCompiler->Compile(
                 pShaderBlob, nullptr, entryPoint, target,
-                args, _countof(args), nullptr, 0, nullptr, &result
+                args.data(), uint32_t(args.size()), nullptr, 0, nullptr, &result
             );
 
             HRESULT hr; result->GetStatus(&hr);

@@ -10,6 +10,7 @@
 #include "VulkanDeviceAllocationPool.h"
 #include <unordered_map>
 namespace FISIR{
+
 	
 	constexpr size_t PageSize = 128 * 1024 * 1024;
 
@@ -37,23 +38,23 @@ namespace FISIR{
 		vkGetPhysicalDeviceMemoryProperties(mDevice->getPhysicalDevice(), &mData->mDeviceMemoryProperties);
 	}
 
-	GpuBlock* VulkanMemoryAllocator::create(size_t Size, MemType visable, RHIResource* resource, void** CpuSetPtr) {
+	GpuBlock* VulkanMemoryAllocator::create(size_t Size, size_t align, MemType visable, RHIResource* resource, void** CpuSetPtr) {
 		Debug("Try Create Gpu Block");
 		auto T = make_sure_type_exits(visable, resource);
-		GpuBlock* block = mData->DevicePoolMap[T.first][T.second].NewBlock(Size);
+		GpuBlock* block = mData->DevicePoolMap[T.first][T.second].NewBlock(Size, align);
 		if (!block) {
 			auto& pools = mData->DevicePoolMap[T.first];
 			uint32_t poolID = T.second;
 			for (; poolID <pools.size(); poolID++) if (pools[poolID].totalSize > 0) {
-				block = pools[poolID].NewBlock(Size);
+				block = pools[poolID].NewBlock(Size, align);
 				if (block) return block;
 			}
 			if (poolID == pools.size()) {
 				pools.emplace_back(poolID, PageSize, T.first, mDevice->getLogicalDevice(), mDevice->isDescriptorHeapSupported());
 			}
-			block = pools.back().NewBlock(Size);
+			block = pools.back().NewBlock(Size, align);
 		}
-		if (resource) bindMemoryFor(block, resource, CpuSetPtr);
+		if (resource) bindMemoryFor(block, align, resource, CpuSetPtr);
 		return block;
 	}
 
@@ -62,8 +63,14 @@ namespace FISIR{
 		mData->DevicePoolMap[Block->Info.MemoryType][Block->PoolID].FreeBlock(Block);
 	}
 
-	void VulkanMemoryAllocator::bindMemoryFor(GpuBlock* block, RHIResource* resource, void** CpuSetPtr) {
+	void VulkanMemoryAllocator::bindMemoryFor(GpuBlock* block, size_t align, RHIResource* resource, void** CpuSetPtr) {
 		block->bindingResource = resource;
+
+		if (block->Info.offset % align != 0) {
+			Error("Memory offset {} is not aligned to required alignment {}!", block->Info.offset, align);
+			return;
+		}
+
 		resource->getResourceType() == Type::Texture 
 			? vkBindImageMemory(
 				mDevice->getLogicalDevice(), 

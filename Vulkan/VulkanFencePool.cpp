@@ -27,10 +27,10 @@ namespace FISIR{
 		if (mFence) vkDestroyFence(mDevice->getLogicalDevice(), mFence, nullptr);
 	}
 
-	VkFence_T* VulkanFence::getVkFence() {
+	void* VulkanFence::getFenceHandle() const {
 		return mFence;
 	}
-	
+
 	void VulkanFence::reset() {
 		if (mFence) {
 			vkResetFences(mDevice->getLogicalDevice(), 1, &mFence);

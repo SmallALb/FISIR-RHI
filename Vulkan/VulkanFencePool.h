@@ -1,5 +1,5 @@
 #pragma once
-
+#include "../RHIFence.h"
 #include "../LockFreeQue.h"
 #include <cstdint>
 #include <mutex>
@@ -11,21 +11,21 @@ namespace FISIR{
 	
 	class VulkanDevice;
 
-	class VulkanFence {
+	class VulkanFence : public RHIFence {
 	public:
 		VulkanFence(VulkanDevice* device, bool signaled = false, const char* name = "Unnamed Fence");
 
 		virtual ~VulkanFence();
 
-		VkFence_T* getVkFence();
+		virtual  void* getFenceHandle() const override;
 
-		void reset();
+		virtual  void reset() override;
 
-		void wait();
+		virtual void wait() override;
 
-		bool isSignaled();
+		virtual  bool isSignaled() override;
 
-		bool waitFor(uint64_t timeout = UINT64_MAX);
+		virtual  bool waitFor(uint64_t timeout = UINT64_MAX) override;
 
 #ifdef _DEBUG
 	const char* getName() const {return mName;}
@@ -36,6 +36,7 @@ namespace FISIR{
 	private:
 		VulkanDevice* mDevice;
 		VkFence_T* mFence;
+		std::mutex fenceMtx;
 
 #ifdef _DEBUG
 	const char* mName {nullptr};

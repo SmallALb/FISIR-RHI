@@ -23,9 +23,12 @@ namespace FISIR {
 
 		virtual void* getResourceAPIHandle() const override;
 
+		virtual std::vector<RHITexture*>& getFrameTextures() override;
+
 	private:
 		VulkanDevice* mDevice;
 		VulkanTexture* mDepthStencilEntry;
+		std::vector<RHITexture*> mTextures;
 		RHIRenderPass* mRenderPass;
 		uint32_t mHeight{0};
 		uint32_t mWidth{0};

@@ -7,10 +7,6 @@
 
 namespace FISIR {	
 
-	static uint64_t align_up(uint64_t size, uint64_t align) {
-		return (size + align - 1) & ~(align - 1);
-	}
-
 
 	static VkDescriptorType getDescriptorType(BufferLayoutFlags type) {
 		if (type & UniformBuffer) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -57,7 +53,11 @@ namespace FISIR {
 		};
 		vkCreateBuffer(mDevice->getLogicalDevice(), &bufferInfo, nullptr, &mData->buffer);
 
-		mData->mBlock = allocator->create(info.size, info.memoryType, this, &Data_GPU);
+		VkMemoryRequirements memReqs;
+		vkGetBufferMemoryRequirements(mDevice->getLogicalDevice(), mData->buffer, &memReqs);
+
+
+		mData->mBlock = allocator->create(info.size, memReqs.alignment, info.memoryType, this, &Data_GPU);
 		Debug("Create Buffer: {}", info.size);
 		setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->buffer, VK_OBJECT_TYPE_BUFFER, (DebugName ? DebugName : "VulkanBuffer"));
 		VkBufferDeviceAddressInfo addrInfo{
@@ -65,6 +65,7 @@ namespace FISIR {
 			.buffer = mData->buffer
 		};
 		mData->Gpuaddress = vkGetBufferDeviceAddress(mDevice->getLogicalDevice(), &addrInfo);
+		Debug("Buffer created with device address: 0x{:x}", mData->Gpuaddress);
 		if (info.data_CPU) {
 			memcpy(Data_GPU, info.data_CPU, info.size);
 		}
@@ -105,7 +106,7 @@ namespace FISIR {
 		return getDescriptorType(mData->bufferLayout);
 	}
 
-	uint32_t VulkanBuffer::getDeviceAddress() const {
+	uint64_t  VulkanBuffer::getDeviceAddress() const {
 		return mData->Gpuaddress;
 	}
 

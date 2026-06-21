@@ -8,6 +8,8 @@
 #include "VulkanBuffer.h"
 #include "VulkanTexture.h"
 #include "VulkanMemory.h"
+#include "VulkanSampler.h"
+#include "ChangeImageFlagsToVulkanFlags.h"
 namespace FISIR{
 
 
@@ -31,6 +33,16 @@ namespace FISIR{
 		VkDeviceSize minSamplerReserved = 0;
 		uint32_t     maxEmbeddedSamplers = 0;
 	} sizes;
+
+	
+	static VkShaderStageFlags ChoiceDescriptorStage(RHIUsingStageFlags stage) {
+		Debug("ChoiceDescriptorStage called with stage = {}", (uint32_t)stage);
+		VkShaderStageFlags res = 0;
+		if ((stage & VertexShaderStage)) res |= VK_SHADER_STAGE_VERTEX_BIT;
+		if ((stage & FragmentShaderStage)) res |= VK_SHADER_STAGE_FRAGMENT_BIT;
+		if ((stage & ComputeShaderStage)) res |= VK_SHADER_STAGE_COMPUTE_BIT;
+		return res;
+	}
 
 
 	static void QueryDescriptorSizes(VulkanDevice* Device) {
@@ -57,6 +69,9 @@ namespace FISIR{
 		sizes.minResourceReserved = heapProps.minResourceHeapReservedRange;
 		sizes.minSamplerReserved = heapProps.minSamplerHeapReservedRange;
 		sizes.maxEmbeddedSamplers = heapProps.maxDescriptorHeapEmbeddedSamplers;
+
+		Debug("Descriptor Heap Sizes: minResourceReserved = {}, minSamplerReserved = {}",
+			sizes.minResourceReserved, sizes.minSamplerReserved);
 	}
 
 	uint32_t GetDescriptorSize(VkDescriptorType type) {
@@ -131,18 +146,13 @@ namespace FISIR{
 
 	*/
 	class DescriptorHeap : public RHIResourcePack {
-		
-		
-		bool check(Type SrcResTyp, Type DstResTyp) {
-			return SrcResTyp == DstResTyp || (SrcResTyp == Type::Buffer && DstResTyp == Type::Texture) || (SrcResTyp == Type::Texture && DstResTyp == Type::Buffer);
-		}	
 
 		uint32_t caculateAndCheck(Type ResTyp, const std::vector<RHIResource*>& resources) {
 			uint32_t res = 0;
-			for (auto& resource : resources) if (check(ResTyp, resource->getResourceType())) {
+			for (auto& resource : resources) {
 				res += GetDescriptorSize((VkDescriptorType)(resource->as<VulkanResource>()->getVkDescriptorType()));
 			}
-			else return 0;
+			
 			return res;
 		}
 
@@ -212,9 +222,27 @@ namespace FISIR{
 
 				}
 				else if (resource->getResourceType() == Type::Sampler) {
+					auto sampler = static_cast<VulkanSampler*>(resource);
+					auto info = sampler->getSamplerInfo();
 					VkSamplerCreateInfo samplerInfo{
 						.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+						.magFilter = getVkFilter(info.enlagerFilter),
+						.minFilter = getVkFilter(info.minFilter),
+						.mipmapMode = getVkMipMapMode(info.mipMapMode),
+						.addressModeU = getVkSamplerAddressMode(info.u),
+						.addressModeV = getVkSamplerAddressMode(info.v),
+						.addressModeW = getVkSamplerAddressMode(info.w),
+						.mipLodBias = info.mipLodBias,
+						.anisotropyEnable = info.anisotropyEnable,
+						.maxAnisotropy = info.maxAnisotropy,
+						.compareEnable = info.compareEnable,
+						.compareOp = getVkOperation(info.compareOP),
+						.minLod = info.minLop,
+						.maxLod = info.minLop,
+						.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+						.unnormalizedCoordinates = info.unNormalized,
 					};
+
 					VkHostAddressRangeEXT hostRange{
 						.address = (void*)((uint64_t)mHeadBuffer->getHostVisablePtr() + offset),
 						.size = descriptorsize
@@ -235,7 +263,7 @@ namespace FISIR{
 			//Create Heap
 			mDevice = Device;
 			resourceType = typ;
-			VkDeviceSize reservedSize = (typ == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+			reservedSize = (typ == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
 
 			//--caculate Size	
 			UseDataSize = caculateAndCheck(typ, resources);
@@ -257,12 +285,15 @@ namespace FISIR{
 			//Input Buffer / Sampler Data
 			InputInHeap(resources);
 		}
-		
+
+
+		virtual Type getResourceType() const {return resourceType;};
+
 
 		~DescriptorHeap() {
 			delete mHeadBuffer;
 		}
-
+		VkDeviceSize reservedSize;
 		VulkanBuffer* mHeadBuffer;
 		VulkanDevice* mDevice;
 		uint32_t UseDataSize;
@@ -324,7 +355,7 @@ namespace FISIR{
 				.binding = v.binding,
 				.descriptorType = static_cast<VkDescriptorType>(v.descriptorTyp),
 				.descriptorCount = v.count,
-				.stageFlags = v.usingStage
+				.stageFlags = ChoiceDescriptorStage(v.usingStage)
 			};
 			bindings.push_back(layoutBinding);
 		}
@@ -342,8 +373,35 @@ namespace FISIR{
 		return mData->DescriptorSetLayoutMap[info];
 	}
 
-	RHIResourcePack* VulkanDescriptorPool::createResourcePack(Type restyp, const std::vector<RHIResource*>& resources) {
-		return mData->HeapEnable ? new DescriptorHeap(mDevice, restyp, resources) : nullptr;
+	RHIResourcePackResult VulkanDescriptorPool::createResourcePack(const std::vector<RHIResource*>& resources) {
+		if (mData->HeapEnable) {
+			std::vector<RHIResource*> resourceList;   // Buffer 和 Texture
+			std::vector<RHIResource*> samplerList;    // Sampler
+
+			for (auto res : resources) {
+				if (res->getResourceType() == Type::Sampler) {
+					samplerList.push_back(res);
+				}
+				else {
+					resourceList.push_back(res);
+				}
+			}
+			
+			if (resourceList.empty() && samplerList.empty()) return {};
+			
+			RHIResourcePackResult res;
+
+			if (!resourceList.empty()) {
+				res.ResourcePack = new DescriptorHeap(mDevice, Type::Buffer, resourceList);
+			}
+			if (!samplerList.empty()) {
+				res.SamplerPack = new DescriptorHeap(mDevice, Type::Sampler, samplerList);
+			}
+
+			return res;
+		}
+
+		return {};
 	}
 
 	void VulkanDescriptorPool::destroyResourcePack(RHIResourcePack* pack) {
@@ -352,23 +410,47 @@ namespace FISIR{
 
 		
 	
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* pack) {
-		if (device->isDescriptorHeapSupported()) {
-			auto PackHandle = static_cast<DescriptorHeap*>(pack);
-			VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
-			VkBindHeapInfoEXT info {
-				.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
-				.heapRange = {
-					.address = PackHandle->mHeadBuffer->getDeviceAddress(),
-					.size = PackHandle->mHeadBuffer->getSize(),
-					
-				},
-				.reservedRangeOffset = PackHandle->UseDataSize,
-				.reservedRangeSize = reservedSize
-			};
-			PackHandle->resourceType == Type::Sampler ? fpCmdBindSamplerHeap(cmd, &info) : fpCmdBindResourceHeap(cmd, &info);
-			
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) {
+		if (Resourcepack) {
+			if (device->isDescriptorHeapSupported()) {
+				auto PackHandle = static_cast<DescriptorHeap*>(Resourcepack);
+				Debug("PackHandle->resourceType = {}", (int)PackHandle->resourceType);
+				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+				VkBindHeapInfoEXT info{
+					.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
+					.heapRange = {
+						.address = PackHandle->mHeadBuffer->getDeviceAddress(),
+						.size = PackHandle->mHeadBuffer->getSize(),
+
+					},
+					.reservedRangeOffset = PackHandle->UseDataSize,
+					.reservedRangeSize = reservedSize
+				};
+				fpCmdBindResourceHeap(cmd, &info);
+				Debug("Bind ResourcePack : RangeSize : {}", reservedSize);
+			}
 		}
+
+		if (Samplerpack) {
+			if (device->isDescriptorHeapSupported()) {
+				auto PackHandle = static_cast<DescriptorHeap*>(Samplerpack);
+				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+				VkBindHeapInfoEXT info{
+					.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
+					.heapRange = {
+						.address = PackHandle->mHeadBuffer->getDeviceAddress(),
+						.size = PackHandle->mHeadBuffer->getSize(),
+					},
+					.reservedRangeOffset = PackHandle->UseDataSize,
+					.reservedRangeSize = reservedSize
+				};
+				fpCmdBindSamplerHeap(cmd, &info);
+
+
+			}
+		
+		}
+
 	}
 
 }

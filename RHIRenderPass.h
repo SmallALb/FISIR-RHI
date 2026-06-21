@@ -36,37 +36,20 @@ namespace FISIR {
 
 
 
-	enum class RenderTargetLoadAction : unsigned char {
-		None,
-		Load,
-		Clear,
-
-		Count,
-		CountBits = 2,
-	};
-
-	enum class RenderTargetStoreAction : unsigned char {
-		None,
-		Store,
-		MultisampleResolve,
-
-		Count,
-		CountBits = 2,
-	};
-
 
 	struct ColorEntry {
 		struct {
 			RenderTargetLoadAction	loadOp : 2 {RenderTargetLoadAction::None};
 			RenderTargetStoreAction storeOp : 2  {RenderTargetStoreAction::None};
-			TextureLayout			initLayout : 3 {TextureLayout::Undefined};
-			TextureLayout			dstLayout : 3 {TextureLayout::Undefined};
+			TextureLayout			initLayout : 4 {TextureLayout::Undefined};
+			TextureLayout			dstLayout : 4 {TextureLayout::Undefined};
 			TextureCOLORType		colorType : 4 { TextureCOLORType::RGB_8 };
 			uint32_t				sampleCount : 2 { 1 };
 			bool					hasResolveTarget : 1 { false };
 			TextureCOLORType		resolveColorType : 3{ TextureUseForNone };
 			uint32_t				resolveSampleCount : 2{ 1 };
 			bool					exeit: 1 {false};
+			uint32_t                _padding : 7;
 		} EntryPros;
 		uint32_t value;
 
@@ -192,7 +175,10 @@ namespace FISIR {
 		virtual ~RHIRenderPass() {}
 
 		virtual RenderPass_t getRenderPassHandle() = 0;
+
+		virtual TextureLayout getAttachmentFinalLayout(uint32_t index) const = 0;
 	
+		virtual uint32_t getAttachmentCount() const = 0;
 	};
 
 }

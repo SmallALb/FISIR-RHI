@@ -33,6 +33,7 @@ namespace FISIR {
 			semaphore->reName(name);
 			return semaphore;
 		}
+		if (!semaphore) Error("Get A Null semaphore");
 		return semaphore;
 	}
 
@@ -64,7 +65,7 @@ namespace FISIR {
 	VulkanSemaphore::~VulkanSemaphore() {
 		if (mSemaphore) vkDestroySemaphore(mDevice->getLogicalDevice(), mSemaphore, nullptr);
 	}
-	VkSemaphore_T* VulkanSemaphore::getSemaphore() const {
+	void* VulkanSemaphore::getSemaphoreHandle() const {
 		return mSemaphore;
 	}
 

@@ -41,7 +41,7 @@ namespace FISIR{
 
 	
 
-	VulkanCommandPool::VulkanCommandPool(VulkanDevice* device, CommandPoolType mType) {
+	VulkanCommandPool::VulkanCommandPool(VulkanDevice* device, CommandPoolType mType, uint32_t FamilyIndex) {
 		mDevice = device;
 		mPoolType = mType;
 		mData = new __VKCommandPoolData();
@@ -51,7 +51,7 @@ namespace FISIR{
 		VkCommandPoolCreateInfo poolInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | (mType == _Transfer_ ? VK_COMMAND_POOL_CREATE_TRANSIENT_BIT : (VkCommandPoolCreateFlags)0),
-			.queueFamilyIndex = getQueFamilyIndex(mDevice, mType),
+			.queueFamilyIndex = FamilyIndex == UINT32_MAX ? getQueFamilyIndex(mDevice, mType) : FamilyIndex,
 		};
 		vkCreateCommandPool(mDevice->getLogicalDevice(), &poolInfo, nullptr, &mData->mPool);
 
@@ -114,12 +114,9 @@ namespace FISIR{
 		}
 		uint32_t index = (cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.front() : mData->FreeSecondaryCommandBuffers.front();
 		(cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.pop() : mData->FreeSecondaryCommandBuffers.pop();
-		CBInfo cbInfo {
-			.buffer = (cbType == _Primary_) ? mData->PrimaryCommandBufferPool[index] : mData->SecondaryCommandBufferPool[index],
-			.type = cbType,
-			.poolType = mPoolType,
-			.pool = this
-		};
+		
+		CBInfo cbInfo((cbType == _Primary_) ? mData->PrimaryCommandBufferPool[index] : mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this);
+
 		if (cbInfo.buffer == VK_NULL_HANDLE) {
 			Error("Failed to allocate command buffer!");
 			return {};
@@ -135,6 +132,117 @@ namespace FISIR{
 		vkResetCommandBuffer(cbInfo.buffer, 0);
 		(cbInfo.type == _Primary_) ? mData->FreePrimaryCommandBuffers.push(mData->PrimaryCommandBufferUsage[cbInfo.buffer]) : mData->FreeSecondaryCommandBuffers.push(mData->SecondaryCommandBufferUsage[cbInfo.buffer]);
 
+	}
+
+
+	std::vector<VulkanCommandPool*>& VulkanCommandPoolManager::getPool(CommandPoolType type) {
+		switch (type) {
+		case _Graphics_:
+			return RenderCommandPools;
+		case _Compute_:
+			return ComputeCommandPools;
+		case _Transfer_:
+			return TransferCommandPools;
+		}
+	}
+
+	LockFreeQue<VulkanCommandPool*>& VulkanCommandPoolManager::getQue(CommandPoolType type) {
+		switch (type) {
+		case _Graphics_:
+			return FreeRenderCommandPools;
+		case _Compute_:
+			return FreeComputeCommandPools;
+		case _Transfer_:
+			return FreeTransferCommandPools;
+		}
+	}
+
+	std::mutex& VulkanCommandPoolManager::getMutex(CommandPoolType type) {
+		switch (type) {
+		case _Graphics_:
+			return RenderCommandPoolsMTX;
+		case _Compute_:
+			return ComputeCommandPoolsMTX;
+		case _Transfer_:
+			return TransferCommandPoolsMTX;
+		}
+	}
+
+	VulkanCommandPoolManager::VulkanCommandPoolManager(VulkanDevice* device) : mDevice(device) {
+		RenderCommandPools.resize(10, nullptr);
+		ComputeCommandPools.resize(10, nullptr);
+		TransferCommandPools.resize(10, nullptr);
+
+		for (auto& pool : RenderCommandPools) {
+			pool = new VulkanCommandPool(mDevice, CommandPoolType::_Graphics_);
+			FreeRenderCommandPools.push(pool);
+		}
+
+		for (auto& pool : ComputeCommandPools) {
+			pool = new VulkanCommandPool(mDevice, CommandPoolType::_Compute_);
+			FreeComputeCommandPools.push(pool);
+		}
+
+		for (auto& pool : TransferCommandPools) {
+			pool = new VulkanCommandPool(mDevice, CommandPoolType::_Transfer_);
+			FreeTransferCommandPools.push(pool);
+		}
+	}
+
+	VulkanCommandPoolManager::~VulkanCommandPoolManager() {
+		for (auto& pool : RenderCommandPools) {
+			delete pool;
+		}
+
+		for (auto& pool : ComputeCommandPools) {
+			delete pool;
+		}
+
+		for (auto& pool : TransferCommandPools) {
+			delete pool;
+		}
+
+		std::lock_guard<std::mutex> lock(MapMutex);
+		for (auto& [familyindex, pool] : FamilyIndexToPool) delete pool;	
+
+	}
+
+	VulkanCommandPool* VulkanCommandPoolManager::getCommandPool(CommandPoolType type) {
+		auto& Pool = getPool(type);
+		auto& Que = getQue(type);
+		auto& Mtx = getMutex(type);
+
+		VulkanCommandPool* res = nullptr;
+		uint32_t familyindex = getQueFamilyIndex(mDevice, type);
+
+		if (Que.pop(res)) {
+
+			return res;
+		}
+
+		std::lock_guard<std::mutex> lock(Mtx);
+
+		if (Que.pop(res)) {
+			return res;
+		}
+
+		res = new VulkanCommandPool(mDevice, type);
+		Pool.push_back(res);
+
+		return res;
+	}
+
+	VulkanCommandPool* VulkanCommandPoolManager::getCommandPool(uint32_t FamilyIndex) {
+		std::lock_guard<std::mutex> lock(MapMutex);
+		if (FamilyIndexToPool.contains(FamilyIndex)) return FamilyIndexToPool[FamilyIndex];
+		FamilyIndexToPool[FamilyIndex] = new VulkanCommandPool(mDevice, CommandPoolType::_Presnet_, FamilyIndex);
+		return FamilyIndexToPool[FamilyIndex];
+	}
+
+	void VulkanCommandPoolManager::reBackCommandPool(VulkanCommandPool* pool) {
+		if (!pool) return;
+		auto& Que = getQue(pool->mPoolType);
+		Que.push(pool);
 	}
 
 

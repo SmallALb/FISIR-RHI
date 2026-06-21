@@ -15,9 +15,9 @@ VkDebugUtilsMessengerEXT gDebugMessenger = VK_NULL_HANDLE;
 
 
 static const char* EnableExtensions[] = {
-  VK_KHR_SURFACE_EXTENSION_NAME,
+    VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef _WIN32
-  //VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+  VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #endif
 #ifdef _DEBUG
     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,

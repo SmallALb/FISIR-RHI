@@ -9,6 +9,8 @@ namespace FISIR {
 	public:
 
 		virtual ~RHIResourcePack() {}
+
+		virtual Type getResourceType() const = 0;
 	
 	};
 

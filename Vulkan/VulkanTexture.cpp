@@ -16,6 +16,7 @@ namespace FISIR {
 		std::atomic<VkImageLayout> currentLayout;
 		TextureUseForFlags useFor;
 		uint32_t sampleCount;
+		bool NoNeedRelease{0};
 	};
 
 	static VkImageLayout getVulkanImageLayout(TextureLayout layout) {
@@ -58,6 +59,9 @@ namespace FISIR {
 		}
 		if (flags & TextureUseFor::TextureUseForStorage) {
 			usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+		}
+		if (flags & TextureUseFor::TextureUseForInputAttachment) {
+			usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 		}
 		return usage;
 	}
@@ -120,19 +124,19 @@ namespace FISIR {
 
 	static VkSampleCountFlagBits getVulkanSampleCount(uint32_t sampleCount) {
 		switch (sampleCount) {
-		case 1:
+		case 0:
 			return VK_SAMPLE_COUNT_1_BIT;
-		case 2:
+		case 1:
 			return VK_SAMPLE_COUNT_2_BIT;
-		case 4:
+		case 2:
 			return VK_SAMPLE_COUNT_4_BIT;
-		case 8:
+		case 3:
 			return VK_SAMPLE_COUNT_8_BIT;
-		case 16:
+		case 4:
 			return VK_SAMPLE_COUNT_16_BIT;
-		case 32:
+		case 5:
 			return VK_SAMPLE_COUNT_32_BIT;
-		case 64:
+		case 6:
 			return VK_SAMPLE_COUNT_64_BIT;
 		default:
 			return VK_SAMPLE_COUNT_1_BIT;
@@ -169,24 +173,28 @@ namespace FISIR {
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		 };
 		 vkCreateImage(mDevice->getLogicalDevice(), &imageInfo, nullptr, &mData->image);
-		 mData->mBlock = Allocator->create(imageSize, MemType::MemTypeDeviceLocal, this);
+		
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(mDevice->getLogicalDevice(), mData->image, &memReqs);
+
+		 mData->mBlock = Allocator->create(imageSize, memReqs.alignment, MemType::MemTypeDeviceLocal, this);
 	
 		 setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name ? name : "VulkanTexture");
 	}
 
-	VulkanTexture::VulkanTexture(VulkanDevice* inDevice, VkImage_T* imagehandle, size_t format, const TextureSize& size, const char* name) {
+	VulkanTexture::VulkanTexture(VulkanDevice* inDevice, VkImage_T* imagehandle, size_t format, const TextureSize& size, bool NoNeedRelease, const char* name) {
 		mData = new __VkTextureData();
 		mData->size = size;
 		mData->image = imagehandle;
 		mData->mBlock = nullptr;
 		mData->mipLevels = 1;
 		mData->arrayLayers = 1;
-		mData->sampleCount = 1;
+		mData->sampleCount = 0;
 		mData->colorType = getTextureColorTypeFromVkFormat((VkFormat)format);
 		mData->type = TextureType::TEXTURE2D;
 		mData->currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		mData->useFor = TextureUseForColorAttachment | TextureUseForShaderReadOnly;
-
+		mData->NoNeedRelease = NoNeedRelease;
 		if (name) {
 			setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name);
 		}
@@ -195,9 +203,11 @@ namespace FISIR {
 	}
 
 	VulkanTexture::~VulkanTexture() {
-		vkDestroyImage(mDevice->getLogicalDevice(), mData->image, nullptr);
-		auto Allocator = mDevice->getAllocator();
-		Allocator->free(mData->mBlock);
+		if (!mData->NoNeedRelease){
+			vkDestroyImage(mDevice->getLogicalDevice(), mData->image, nullptr);
+			auto Allocator = mDevice->getAllocator();
+			Allocator->free(mData->mBlock);
+		}
 		delete mData;
 	}
 

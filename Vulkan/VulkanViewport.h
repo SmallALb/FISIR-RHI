@@ -1,28 +1,31 @@
-#pragma once
+﻿#pragma once
 
 #include "../RHIViewport.h"
+#include <atomic>
 
 struct VkSurfaceKHR_T;
-
+struct VkFence_T;
 namespace FISIR {
 	class VulkanDevice;
 	class VulkanTexture;
 	class VulkanFrameBuffer;
 	class VulkanRenderPass;
+	class VulkanPipeline;
 	class VulkanImageView;
+	class VulkanQueue;
+	class RHIShader;
+	class DynamicRHI;
+	class VulkanSemaphore;
+	class VulkanFence;
 
 	struct __VKViewportData;
-	
-	class VullkanViewport : public RHIViewport {
+
+	class VulkanViewport : public RHIViewport {
 	public:
-		
-		VullkanViewport(VulkanDevice* device, uint32_t iniWidth, uint32_t initHeight, void* WindowHandle);
 
-		~VullkanViewport();
+		VulkanViewport(DynamicRHI* rhi, TextureCOLORType colorType, uint32_t iniWidth, uint32_t initHeight, void* WindowHandle);
 
-		virtual void* getNativeSwapChain() const override;
-
-		virtual void* getNativeBackBufferTexture() const override;
+		~VulkanViewport();
 
 		virtual void* getNativeWindow(void** handle) const override;
 
@@ -30,19 +33,15 @@ namespace FISIR {
 
 		virtual uint32_t getViewportHeight() const override;
 
-		virtual void tick(float deltatime) override;
+		virtual void setViewportResize(uint32_t height, uint32_t width) override;
 
-		virtual void waitForFrameEventCompletion() override;
-
-		virtual void IssueFrameEvent() override;
 
 		VkSurfaceKHR_T* getVkSurface() const;
 
-		VulkanDevice* mDevice{nullptr};
-		__VKViewportData* mData {nullptr};
-		std::vector<VulkanTexture*> VulkanSwapChainTextures;
-		VulkanRenderPass* VulkanSwapChainRednerPass;
-		std::vector<VulkanFrameBuffer*> VulkanSwapChainFrameBuffers;
+		uint32_t getVulkanColorFormat() const;
+
+		TextureCOLORType ImageColorType;
+		__VKViewportData* mData{ nullptr };
 	};
 
 }

@@ -19,16 +19,17 @@ namespace FISIR{
 
 	VulkanFrameBuffer::VulkanFrameBuffer(VulkanDevice* device, const std::vector<RHITexture*>& textures, uint32_t width, uint32_t height, RHIRenderPass* renderpass)
 		: mDevice(device), 
-		mDepthStencilEntry(nullptr),        
 		mRenderPass(renderpass),        
 		mHeight(height),
 		mWidth(width), 
+		mTextures(textures),
 		mData(new __VkFrameBufferData())  
 	{
 		
 		auto vulkanrenderPass = static_cast<VulkanRenderPass*>(renderpass);
 
-		for (auto& texture : textures) {
+		for (auto& texture : mTextures) {
+			if (texture->getTextureUseFor() & TextureUseForDepthStencilAttachment) mDepthStencilEntry = static_cast<VulkanTexture*>(texture);
 			auto view = mDevice->getImageView(texture);
 			mData->views.push_back(view->getImageViewHandle());
 		}
@@ -69,5 +70,9 @@ namespace FISIR{
 	
 	void* VulkanFrameBuffer::getResourceAPIHandle() const {
 		return mData->mBuffer;
+	}
+
+	std::vector<RHITexture*>& VulkanFrameBuffer::getFrameTextures() {
+		return mTextures;
 	}
 }

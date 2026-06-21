@@ -2,7 +2,6 @@
 
 #include "../RHIRenderPass.h"
 #include <unordered_map>
-struct VkAttachmentDescription;
 
 namespace FISIR {
 	class VulkanDevice;
@@ -19,8 +18,11 @@ namespace FISIR {
 
 		VulkanRenderPass(VulkanDevice* device, const RHIRenderPassInfo& renderPassinfo);
 		
+		
+		virtual TextureLayout getAttachmentFinalLayout(uint32_t index) const override;
 
-		std::vector<VkAttachmentDescription> attachmentDescriptions;
+		virtual uint32_t getAttachmentCount() const override;
+
 		__VKRenderPassData* mData;
 		VulkanDevice* mDevice;
 	};

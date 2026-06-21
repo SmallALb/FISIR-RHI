@@ -6,6 +6,7 @@
 #include "VulkanSemaphorePool.h"
 #include "VulkanFencePool.h"
 struct VkSemaphore_T;
+struct VkQueue_T;
 namespace FISIR {
 	
 	class VulkanDevice;
@@ -22,11 +23,13 @@ namespace FISIR {
 	
 		~VulkanQueue();
 
-		void Submit(const std::vector<VkCommandBuffer_T*>& cmds, std::initializer_list<VulkanSemaphore*> SignalSemaphores = {}, std::initializer_list<VulkanSemaphore*> WaitSemaphores = {}, VulkanFence* Fence = nullptr);
+		void Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence = nullptr);
 
 		inline uint32_t getFamilyIndex() const {return mFamilyIndex;}
 
 		inline uint32_t getQueueIndex() const {return mQueueIndex;}
+
+		VkQueue_T* getQueueHandle() const;
 	public:
 		__VkQueData* mData;
 	private:

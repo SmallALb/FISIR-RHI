@@ -1,5 +1,7 @@
+#pragma once
 #include "VulkanPipeline.h"
 #include "../RHIResource.h"
+
 
 struct VkDescriptorPool_T;
 struct VkDescriptorLayout_T;
@@ -25,7 +27,7 @@ namespace FISIR {
 		VkDescriptorSetLayout_T* createDescriptorSetLayout(const RHIPipelineDescribeInfo& info);
 
 
-		RHIResourcePack* createResourcePack(Type restyp, const std::vector<RHIResource*>& resources);
+		RHIResourcePackResult createResourcePack(const std::vector<RHIResource*>& resources);
 		
 		void destroyResourcePack(RHIResourcePack* pack);
 
@@ -34,6 +36,6 @@ namespace FISIR {
 		__VKDescriptorPoolData* mData;
 	};
 
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* pack);
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack);
 
 }

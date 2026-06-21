@@ -7,6 +7,9 @@
 #include "../../Log/Logger.h"
 #include "VulkanCommandPool.h"
 #include "../SparseMap.h"
+#include "VulkanImageView.h"
+#include "VulkanTexture.h"
+#include "VulkanSwapChian.h"
 namespace FISIR{
 	extern VkInstance GetGlobalInstance();
 #ifdef _DEBUG
@@ -15,7 +18,7 @@ namespace FISIR{
 
 	static sparse_map<uint32_t, VulkanQueue*> FamilyIndexToQue;
 
-	static VulkanQueue* getVulkaQue(VulkanDevice* device, uint32_t familyIndex, const char* name) {
+	static VulkanQueue* getVulkanQue(VulkanDevice* device, uint32_t familyIndex, const char* name) {
 		if (FamilyIndexToQue.contains(familyIndex)) return FamilyIndexToQue[familyIndex];
 		return FamilyIndexToQue[familyIndex] = new VulkanQueue(device, familyIndex, name);
 	}
@@ -31,8 +34,11 @@ namespace FISIR{
 		VkDevice mLogicalDevice = nullptr;
 		std::unordered_map<RHIResource*, VkAccessFlagBits> ResourceAccessMap;
 		std::unordered_map<RHITexture*, VkImageLayout> TextureLayoutMap;
+		std::unordered_map<VkSurfaceKHR, VulkanQueue*> SurafacePresentQue;
 		bool DescriptorHeapSupport = false;
-
+		int GQueFamilyIndex = -1;
+		int CQueFamilyIndex = -1;
+		int TQueFamilyIndex = -1;
 	};
 
 
@@ -126,13 +132,13 @@ namespace FISIR{
 		delete mData;
 	}
 
-	bool VulkanDevice::Init() {
+	bool VulkanDevice::Init(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
 		uint32_t queueCount = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, nullptr);
 		mData->mQueueFamilyProperties.resize(queueCount);
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, mData->mQueueFamilyProperties.data());
 		
-		if (!InitDevice()) return false;
+		if (!InitDevice(viewports, ViewPortSwapChainCache)) return false;
 
 		__SetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(GetGlobalInstance(), "vkSetDebugUtilsObjectNameEXT");
 
@@ -183,7 +189,17 @@ namespace FISIR{
 		return TextureLayout::Undefined;
 	}
 
-	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, std::initializer_list<VulkanSemaphore*> SignalSemaphores, std::initializer_list<VulkanSemaphore*> WaitSemaphores, VulkanFence* Fence) {
+	VulkanImageView* VulkanDevice::getImageView(RHITexture* texture) {
+		return mImageViewManager->getViewToTexture(static_cast<VulkanTexture*>(texture));
+	}
+
+	void VulkanDevice::freeImageView(RHITexture* texture) {
+		mImageViewManager->freeViewToTexture(static_cast<VulkanTexture*>(texture));
+	}
+
+	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, 
+		const std::vector<RHISemaphore*>& SignalSemaphores, 
+		const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
 		switch (poolType) {
 			case _Graphics_:
 				Debug("Submit In Graphic Queue");
@@ -211,7 +227,7 @@ namespace FISIR{
 		return mData->mDescriptorHeapProperties;
 	}
 
-	bool VulkanDevice::InitDevice() {
+	bool VulkanDevice::InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
 		std::vector<const char*> extensions {
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
@@ -231,53 +247,53 @@ namespace FISIR{
 		};
 
 		vkGetPhysicalDeviceFeatures2(mData->mPhysicalDevice, &deviceFeatures2);
+		VkDeviceCreateInfo deviceCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+		};
 
 		if (DescriptorHeapFeatures.descriptorHeap == VK_TRUE && supportedFeatures.bufferDeviceAddress == VK_TRUE) {
 			//extensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
-			extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+			extensions.push_back("VK_EXT_descriptor_heap");
 			Debug("Device Support Descriptor Heap, Enable Descriptor Heap Extension!");
 			mData->DescriptorHeapSupport = true;
-			DescriptorHeapFeatures.pNext = &supportedFeatures;
-			supportedFeatures.pNext = nullptr;
-			
+
+			DescriptorHeapFeatures.pNext = &supportedFeatures;  
+			supportedFeatures.bufferDeviceAddress = VK_TRUE;
+			deviceCreateInfo.pNext = &DescriptorHeapFeatures;
 		}
 		else {
 			Warn("Device Not Support Descriptor Buffer, Fallback To Normal Descriptor Set!");
 		}
 
-		VkDeviceCreateInfo deviceCreateInfo = {
-			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-			.pNext = &DescriptorHeapFeatures,
-			.enabledExtensionCount = uint32_t(extensions.size()),
-			.ppEnabledExtensionNames = extensions.data(),
-			
-		};
+		deviceCreateInfo.enabledExtensionCount = uint32_t(extensions.size()),
+		deviceCreateInfo.ppEnabledExtensionNames = extensions.data(),
 
-		int GQueFamilyIndex = -1;
-		int CQueFamilyIndex = -1;
-		int TQueFamilyIndex = -1;
+		mData->GQueFamilyIndex = -1;
+		mData->CQueFamilyIndex = -1;
+		mData->TQueFamilyIndex = -1;
 		uint32_t NumProrities = 0;
 		std::vector<VkDeviceQueueCreateInfo> QueInfos;
 		for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) {
 			const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
 			bool IsVaild = false;
-			if ((Prpos.queueFlags & VK_QUEUE_GRAPHICS_BIT) && GQueFamilyIndex == -1) {
-				GQueFamilyIndex = FamilyIndex;
+			if (!IsVaild && (Prpos.queueFlags & VK_QUEUE_GRAPHICS_BIT) && mData->GQueFamilyIndex == -1) {
+				mData->GQueFamilyIndex = FamilyIndex;
 				IsVaild = 1;
 			}
 
-			if ((Prpos.queueFlags & VK_QUEUE_COMPUTE_BIT) && CQueFamilyIndex == -1) {
-				CQueFamilyIndex = FamilyIndex;
+			if (!IsVaild && (Prpos.queueFlags & VK_QUEUE_COMPUTE_BIT) && mData->CQueFamilyIndex == -1) {
+				mData->CQueFamilyIndex = FamilyIndex;
 				IsVaild = 1;
+
 			}
 
-			if ((Prpos.queueFlags & VK_QUEUE_TRANSFER_BIT) && TQueFamilyIndex == -1) {
-				TQueFamilyIndex = FamilyIndex;
+			if (!IsVaild && (Prpos.queueFlags & VK_QUEUE_TRANSFER_BIT) && mData->TQueFamilyIndex == -1) {
+				mData->TQueFamilyIndex = FamilyIndex;
 				IsVaild = 1;
+
 			}
 
 			if (!IsVaild) continue;
-			uint32_t QueIndex = QueInfos.size();
 			VkDeviceQueueCreateInfo Que = {
 				.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
 				.queueFamilyIndex = FamilyIndex,
@@ -286,12 +302,66 @@ namespace FISIR{
 			QueInfos.push_back(Que);
 			NumProrities += Prpos.queueCount;
 		}
-		if (CQueFamilyIndex == -1) {
+
+		std::unordered_set<uint32_t> PresentQueIndex;
+		for (auto viewport : viewports) {
+			bool Done = 0;
+			for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) 
+				if (FamilyIndex != mData->GQueFamilyIndex && FamilyIndex != mData->CQueFamilyIndex && FamilyIndex != mData->TQueFamilyIndex && !PresentQueIndex.contains(FamilyIndex)){
+					VkBool32 supportPresent = 0;
+					vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, FamilyIndex, viewport->getVkSurface(), &supportPresent);
+					if (supportPresent) {
+						PresentQueIndex.insert(FamilyIndex);
+						ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, FamilyIndex);
+						const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
+						VkDeviceQueueCreateInfo Que = {
+							.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+							.queueFamilyIndex = FamilyIndex,
+							.queueCount = Prpos.queueCount
+						};
+						QueInfos.push_back(Que);
+						NumProrities += Prpos.queueCount;
+						break;
+					}
+
+					else if(!PresentQueIndex.empty()){
+						for (auto& i : PresentQueIndex) {
+							vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, i, viewport->getVkSurface(), &supportPresent);
+							if (supportPresent) {
+								PresentQueIndex.insert(i);
+								ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, i);
+								break;
+							}
+						}
+					}
+				
+					if (!supportPresent) {
+						
+						if (mData->GQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->GQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
+						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->GQueFamilyIndex);break;}
+
+						if (mData->CQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->CQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
+						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->CQueFamilyIndex);break;}
+
+
+						if (mData->TQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->TQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
+						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->TQueFamilyIndex);break;}
+
+					}
+
+					Error("Can Not Find  a Present Que For Viewport: 0x{:x}", (size_t)viewport);
+				}
+		}
+
+
+		if (mData->CQueFamilyIndex == -1) {
 			Error("Error Device The Graphic Que haven't found");
 			return false;
 		}
 		std::vector<float> QueuePriorities(NumProrities);
 		float* CurrentQuePriority = QueuePriorities.data();
+		
+		
 		for (auto& info : QueInfos) {
 			info.pQueuePriorities = CurrentQuePriority;
 			const auto& Props = mData->mQueueFamilyProperties[info.queueFamilyIndex];
@@ -299,9 +369,15 @@ namespace FISIR{
 		}
 		deviceCreateInfo.queueCreateInfoCount = (uint32_t)QueInfos.size();
 		deviceCreateInfo.pQueueCreateInfos = QueInfos.data();
+
+		Debug("=== Before vkCreateDevice ===");
+		Debug("descriptorHeap = {}", DescriptorHeapFeatures.descriptorHeap);
+		Debug("bufferDeviceAddress = {}", supportedFeatures.bufferDeviceAddress);
+		Debug("pNext chain: {} -> {}", (size_t)deviceCreateInfo.pNext,
+			deviceCreateInfo.pNext ? (size_t)deviceCreateInfo.pNext : 0);
 		auto res = vkCreateDevice(mData->mPhysicalDevice, &deviceCreateInfo, nullptr, &(mData->mLogicalDevice));
 		if (res != VK_SUCCESS) {
-			Error("Device Create failed!");
+			Error("Device Create failed! : {}", (uint32_t)res);
 			switch(res) {
 			case VK_ERROR_OUT_OF_HOST_MEMORY:
 				Error("Device  Out of host memory!");
@@ -316,11 +392,11 @@ namespace FISIR{
 			}
 			return false;
 		}
-		mGraphicQue = getVulkaQue(this, GQueFamilyIndex, "Graphic");
-		if (CQueFamilyIndex == -1) CQueFamilyIndex = GQueFamilyIndex;
-		mComputeQue = getVulkaQue(this, CQueFamilyIndex, "Compute");
-		if (TQueFamilyIndex == -1) TQueFamilyIndex = CQueFamilyIndex;
-		mTransferQueue = getVulkaQue(this, TQueFamilyIndex, "Transfer");
+		mGraphicQue = getVulkanQue(this, mData->GQueFamilyIndex, "Graphic");
+		if (mData->CQueFamilyIndex == -1) mData->CQueFamilyIndex = mData->GQueFamilyIndex;
+		mComputeQue = getVulkanQue(this, mData->CQueFamilyIndex, "Compute");
+		if (mData->TQueFamilyIndex == -1) mData->TQueFamilyIndex = mData->CQueFamilyIndex;
+		mTransferQueue = getVulkanQue(this, mData->TQueFamilyIndex, "Transfer");
 
 		if (!mGraphicQue) Error("Error GraphicQue is null");
 		if (!mComputeQue) Error("Error ComputeQue is null");
@@ -328,6 +404,7 @@ namespace FISIR{
 
 		mAllocator = new VulkanMemoryAllocator();
 		mAllocator->init(this);
+		mImageViewManager = new VulkanImageViewManager(this);
 		Debug("Well vulkan Device Create Success!");
 
 		return true;

@@ -36,11 +36,11 @@ namespace FISIR {
 
 		void init(VulkanDevice* device);
 
-		GpuBlock* create(size_t Size, MemType visable = MemTypeDeviceLocal, RHIResource* resource = nullptr, void** CpuSetPtr = nullptr);
+		GpuBlock* create(size_t Size, size_t align, MemType visable = MemTypeDeviceLocal, RHIResource* resource = nullptr, void** CpuSetPtr = nullptr);
 		
 		void free(GpuBlock* Block);
 
-		void bindMemoryFor(GpuBlock* block, RHIResource* resource, void** CpuSetPtr = nullptr);
+		void bindMemoryFor(GpuBlock* block, size_t align, RHIResource* resource, void** CpuSetPtr = nullptr);
 
 
 
