@@ -62,8 +62,8 @@ namespace FISIR {
     static RHIShader* FShader = nullptr;
     
     struct __VkSwapChainData {
-        VkSwapchainKHR swapchain;
-        VkImage swapChainImageHandles[MAX_SWAPCHAIN_FRAME];
+        VkSwapchainKHR swapchain {VK_NULL_HANDLE};
+        VkImage swapChainImageHandles[MAX_SWAPCHAIN_FRAME] {VK_NULL_HANDLE};
     };
 
     
@@ -85,6 +85,9 @@ namespace FISIR {
             FShader = usingRHI->RHICreateShader(ShaderTYP::__FRAGMENTSHADER__, psCompiler.getShaderData(), psCompiler.getShaderDataSize());
         }
         
+        if (!PresentQueue) PresentQueue = new VulkanQueue(mDevice, mPresentQueFamilyIndex, "SwapChainPresentQue");
+
+        
         return createPipelineandRenderPass() && createSwapChian();
     }
 
@@ -94,12 +97,18 @@ namespace FISIR {
             delete SwapChainFrameBuffers[i];
             
         }
-        if (!mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
+        if (mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
         delete PresentQueue;
     }
 
 
     uint32_t VulkanSwapChain::acquireGetImageInfoID() {
+        
+        
+        if (!mData->swapchain || needReBuildSwapChain.load(std::memory_order_acquire)) {
+            if (!recreateSwapChain()) return RHISwapChain::FAILEID;
+        }
+        
         uint32_t frameidx = RHISwapChain::FAILEID;
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) if (!SwapChainFrameInfos[i].inUse) {
             frameidx = i;
@@ -115,18 +124,15 @@ namespace FISIR {
 
 
         auto start = std::chrono::steady_clock::now();
-        if (fence->isSignaled()) fence->reset();
-        else {
-            fence->waitFor(2*1e9);
-            fence->reset();
-        }
+        if (!fence->isSignaled()) return RHISwapChain::FAILEID; 
+        
         auto end = std::chrono::steady_clock::now();
         Debug("Acquire Frame Fence Duration: {}", std::chrono::duration<double>(end - start).count() * 1e9);
 
         auto res = vkAcquireNextImageKHR(
             mDevice->getLogicalDevice(), 
             mData->swapchain,
-            (uint64_t)(1e9 * 2),
+            (uint64_t)(0),
             static_cast<VkSemaphore>(available->getSemaphoreHandle()),
             VK_NULL_HANDLE,
             &index
@@ -135,7 +141,7 @@ namespace FISIR {
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
             Error("SwapChain Out Of Data!");
-            createSwapChian();
+            needReBuildSwapChain.store(1,std::memory_order_release);
             return RHISwapChain::FAILEID;
         }
 
@@ -145,10 +151,11 @@ namespace FISIR {
             return RHISwapChain::FAILEID;
         }
 
+        fence->reset();
         inUse = true;
         return frameidx;
     }
-    
+
     void VulkanSwapChain::present(uint32_t infoid) {
         if (infoid >= MaxSwapChianFramCount) return;
 
@@ -175,10 +182,6 @@ namespace FISIR {
         vkQueuePresentKHR(PresentQueue->getQueueHandle(), &presentInfo); 
     }
 
-    void VulkanSwapChain::resize(uint32_t width, uint32_t height) {
-        createSwapChian();
-    }
-
     RHITexture* VulkanSwapChain::getSwapChainFrameTexture(uint32_t imageindex) const {
         if (imageindex < MaxSwapChianFramCount) return SwapChainTextures[imageindex];
         else return nullptr;
@@ -202,18 +205,14 @@ namespace FISIR {
     }
 
 
-    bool VulkanSwapChain::createSwapChian() {
-        if (!mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
+    bool VulkanSwapChain::recreateSwapChain() {
 
-        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
-            delete SwapChainTextures[i];
-            delete SwapChainFrameBuffers[i];
-            auto& [fence, available, finish, index, inUsed] = SwapChainFrameInfos[i];
-            if (fence)  usingRHI->RHIDestroyFence(fence);
-            if(available) usingRHI->RHIDestroySemaphore(available);
-            if(finish) usingRHI->RHIDestroySemaphore(finish);
-            inUsed = false;
-        }
+
+        usingRHI->RHIFlushAndWaitAfterCommand(CmdType::Render);
+        return createSwapChian();
+    }
+
+    bool VulkanSwapChain::createSwapChian() {
 
         auto Surface = Surfaceviewport->getVkSurface();
         //getCapabilities
@@ -250,13 +249,14 @@ namespace FISIR {
         }
         Surfaceviewport->setViewportResize(actualExtent.width, actualExtent.height);
 
-        PresentQueue = new VulkanQueue(mDevice, mPresentQueFamilyIndex,"SwapChainPresentQue");
 
 
         uint32_t QuefamilyIndex[] = { mDevice->getGraphicQueue()->getFamilyIndex(), PresentQueue->getFamilyIndex() };
         bool isCxclusive = (QuefamilyIndex[0] == QuefamilyIndex[1]);
         Debug("Cxclusive Mode : {}",(isCxclusive ? "Yes" : "No"));
 
+        auto oldSwapChain = mData->swapchain;
+        uint32_t LstMaxCount = MaxSwapChianFramCount;
         VkSwapchainCreateInfoKHR swapChainInfo{
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = Surface,
@@ -271,23 +271,36 @@ namespace FISIR {
             .pQueueFamilyIndices = QuefamilyIndex,
             .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .presentMode = VK_PRESENT_MODE_FIFO_KHR
+            .presentMode = VK_PRESENT_MODE_MAILBOX_KHR,
+            .oldSwapchain = oldSwapChain,
         };
+
 
         if (vkCreateSwapchainKHR(mDevice->getLogicalDevice(), &swapChainInfo, nullptr, &mData->swapchain) != VK_SUCCESS) {
             Error("SwapChain Creat Failed");
             return false;
         }
+
         //Create Texture and Frame
         vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, nullptr);
         vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, mData->swapChainImageHandles);
         Debug("Max Image Cout Can Swapchian Use {}", MaxSwapChianFramCount);
 
+        for (uint32_t i = 0; i < LstMaxCount; i++) {
+            delete SwapChainFrameBuffers[i];
+            SwapChainFrameBuffers[i] = nullptr;
+            delete SwapChainTextures[i];
+            SwapChainTextures[i] = nullptr;
+        }
+        if (oldSwapChain) {
+            vkDestroySwapchainKHR(mDevice->getLogicalDevice(), oldSwapChain, nullptr);
+        }
+
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
             auto& [fence, available, finish, index, inUsed] = SwapChainFrameInfos[i];
-            fence = usingRHI->RHICreateFence(true, "SwapChainFence");
-            available = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
-            finish = usingRHI->RHICreateSemaphore("FinishSemphore");
+            if (!fence) fence = usingRHI->RHICreateFence(true, "SwapChainFence");
+            if (!available) available = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
+            if (!finish) finish = usingRHI->RHICreateSemaphore("FinishSemphore");
             inUsed = false;
         }
 
@@ -295,16 +308,17 @@ namespace FISIR {
             SwapChainTextures[i] = new VulkanTexture(mDevice, 
                 mData->swapChainImageHandles[i], 
                 Surfaceviewport->getVulkanColorFormat(), 
-                {actualExtent.height, actualExtent.width, 1}, 
+                {actualExtent.width, actualExtent.height, 1},
                 1);
             SwapChainFrameBuffers[i] = new VulkanFrameBuffer(
                 mDevice, { SwapChainTextures[i] },
-                Surfaceviewport->getViewportWidth(), Surfaceviewport->getViewportHeight(),
+                actualExtent.width,  
+                actualExtent.height,
                 (RHIRenderPass*)VulkanSwapChainRednerPass
                );
         }
 
-
+        needReBuildSwapChain.store(0, std::memory_order_release);
         return true;
     }
     bool VulkanSwapChain::createPipelineandRenderPass() {
@@ -363,7 +377,6 @@ namespace FISIR {
             Error("SwapChain : 0x{:x} Pipeline Create Failed", (size_t)VulkanSwapChainRednerPass);
             return false;
         }
-
 
         return true;
     }

@@ -70,6 +70,7 @@ namespace FISIR{
 		inline static void freeCurrentRenderInterfaceApi() {
 			if (Rhi) destroyRenderInterface();
 			DynamicLibLoader::freeDLib(hDll);
+
 		}
 
 		inline static RHIAPI getCrrentRenderInterfaceApi() {

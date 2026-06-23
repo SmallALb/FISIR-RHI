@@ -30,7 +30,11 @@ namespace FISIR{
 
 		for (auto& texture : mTextures) {
 			if (texture->getTextureUseFor() & TextureUseForDepthStencilAttachment) mDepthStencilEntry = static_cast<VulkanTexture*>(texture);
-			auto view = mDevice->getImageView(texture);
+			mViews.push_back(new VulkanImageView(mDevice, static_cast<VulkanTexture*>(texture)));
+			Debug("FB 0x{:x} : width={} height={}, attachment (0x{:x}) size={} x {}",(size_t)this, width, height, (size_t)texture, width, height);
+		}
+
+		for (auto& view : mViews) {
 			mData->views.push_back(view->getImageViewHandle());
 		}
 
@@ -52,7 +56,15 @@ namespace FISIR{
 	}
 	
 	VulkanFrameBuffer::~VulkanFrameBuffer() {
-	
+		if (mData) {
+			if (mData->mBuffer) {
+				vkDestroyFramebuffer(mDevice->getLogicalDevice(), mData->mBuffer, nullptr);
+			}
+			for (auto& view : mViews) {
+				delete view;
+			}
+			delete mData;
+		}
 	}
 
 	RHIRenderPass* VulkanFrameBuffer::getFrameRenderPass() const {

@@ -15,7 +15,7 @@ namespace FISIR{
 #ifdef _DEBUG
 	static PFN_vkSetDebugUtilsObjectNameEXT    __SetDebugUtilsObjectName = nullptr;
 #endif // _DEBUG
-
+	
 	static sparse_map<uint32_t, VulkanQueue*> FamilyIndexToQue;
 
 	static VulkanQueue* getVulkanQue(VulkanDevice* device, uint32_t familyIndex, const char* name) {
@@ -189,14 +189,6 @@ namespace FISIR{
 		return TextureLayout::Undefined;
 	}
 
-	VulkanImageView* VulkanDevice::getImageView(RHITexture* texture) {
-		return mImageViewManager->getViewToTexture(static_cast<VulkanTexture*>(texture));
-	}
-
-	void VulkanDevice::freeImageView(RHITexture* texture) {
-		mImageViewManager->freeViewToTexture(static_cast<VulkanTexture*>(texture));
-	}
-
 	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, 
 		const std::vector<RHISemaphore*>& SignalSemaphores, 
 		const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
@@ -223,8 +215,42 @@ namespace FISIR{
 		return mData->DescriptorHeapSupport;
 	}
 
+	DescriptorSizes& VulkanDevice::getHeapSizeInfo() {
+		if (!HeapSizes.isInit) QueryDescriptorSizes();
+		return HeapSizes;
+	}
+
 	VkPhysicalDeviceDescriptorHeapPropertiesEXT& VulkanDevice::getDescriptorHeapProperties() {
 		return mData->mDescriptorHeapProperties;
+	}
+
+	void VulkanDevice::QueryDescriptorSizes(){
+		VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProps{};
+		heapProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
+
+		VkPhysicalDeviceProperties2 props2{};
+		props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		props2.pNext = &heapProps;
+		vkGetPhysicalDeviceProperties2(getPhysicalDevice(), &props2);
+
+		HeapSizes.resourceHeapAlignment = heapProps.resourceHeapAlignment;
+		HeapSizes.samplerHeapAlignment = heapProps.samplerHeapAlignment;
+		HeapSizes.bufferAlignment = heapProps.bufferDescriptorAlignment;
+		HeapSizes.imageAlignment = heapProps.imageDescriptorAlignment;
+		HeapSizes.samplerAlignment = heapProps.samplerDescriptorAlignment;
+
+		HeapSizes.bufferDescriptorSize = static_cast<uint32_t>(heapProps.bufferDescriptorSize);
+		HeapSizes.imageDescriptorSize = static_cast<uint32_t>(heapProps.imageDescriptorSize);
+		HeapSizes.samplerDescriptorSize = static_cast<uint32_t>(heapProps.samplerDescriptorSize);
+
+		HeapSizes.maxResourceHeapSize = heapProps.maxResourceHeapSize;
+		HeapSizes.maxSamplerHeapSize = heapProps.maxSamplerHeapSize;
+		HeapSizes.minResourceReserved = heapProps.minResourceHeapReservedRange;
+		HeapSizes.minSamplerReserved = heapProps.minSamplerHeapReservedRange;
+		HeapSizes.maxEmbeddedSamplers = heapProps.maxDescriptorHeapEmbeddedSamplers;
+		HeapSizes.isInit = 1;
+		Debug("Descriptor Heap Sizes: minResourceReserved = {}, minSamplerReserved = {}",
+			HeapSizes.minResourceReserved, HeapSizes.minSamplerReserved);
 	}
 
 	bool VulkanDevice::InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
@@ -404,7 +430,6 @@ namespace FISIR{
 
 		mAllocator = new VulkanMemoryAllocator();
 		mAllocator->init(this);
-		mImageViewManager = new VulkanImageViewManager(this);
 		Debug("Well vulkan Device Create Success!");
 
 		return true;

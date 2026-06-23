@@ -1,5 +1,5 @@
 #pragma once
-
+#include <atomic>
 #include "../RHISwapChain.h"
 namespace FISIR {
 	class VulkanDevice;
@@ -26,8 +26,6 @@ namespace FISIR {
 
 		virtual void present(uint32_t infoid) override;
 
-		virtual void resize(uint32_t width, uint32_t height) override;
-
 		virtual RHITexture* getSwapChainFrameTexture(uint32_t imageindex) const override;
 
 		virtual uint32_t getImageCount() const override;
@@ -39,6 +37,8 @@ namespace FISIR {
 		virtual RHIPipeline* getSwapChainRenderPipeline() const override;
 
 	private:
+		bool recreateSwapChain();
+		
 		bool createSwapChian();
 
 		bool createPipelineandRenderPass();
@@ -58,12 +58,13 @@ namespace FISIR {
 
 		uint32_t mPresentQueFamilyIndex{0};
 
-		VulkanQueue* PresentQueue;
+		VulkanQueue* PresentQueue {nullptr};
 
 		DynamicRHI* usingRHI;
 
 		__VkSwapChainData* mData;
 
+		std::atomic_bool needReBuildSwapChain {0};
 	};
 
 

@@ -200,10 +200,11 @@ namespace FISIR {
     };
 
     struct BufferInfo {
-        void* data_CPU = nullptr;
-        uint64_t size = 0, stride = 0;
-        BufferLayoutFlags bufferlayout = UndefinedBuffer;
-        MemType memoryType = MemType::MemTypNone;
+        void*               data_CPU = nullptr;
+        uint64_t            size = 0;
+        uint64_t            stride = 0;
+        BufferLayoutFlags   bufferlayout = UndefinedBuffer;
+        MemType             memoryType = MemType::MemTypNone;
     };
 
     struct BufferTransitionInfo {

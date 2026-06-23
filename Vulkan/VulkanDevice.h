@@ -8,7 +8,30 @@
 	struct VkDevice_T;
 	struct VkPhysicalDeviceDescriptorHeapPropertiesEXT;
 	struct VkSurfaceKHR_T;
+	using VkDeviceSize = uint64_t;
 namespace FISIR {
+	struct DescriptorSizes {
+		// 对齐值
+		VkDeviceSize resourceHeapAlignment = 0;
+		VkDeviceSize samplerHeapAlignment = 0;
+		VkDeviceSize bufferAlignment = 0;
+		VkDeviceSize imageAlignment = 0;
+		VkDeviceSize samplerAlignment = 0;
+
+		// 三类描述符的字节大小
+		uint32_t bufferDescriptorSize = 0;   // UBO, SSBO, TexelBuffer, Dynamic UBO/SSBO
+		uint32_t imageDescriptorSize = 0;   // SampledImage, StorageImage, InputAttachment
+		uint32_t samplerDescriptorSize = 0;   // Sampler, CombinedImageSampler 中的采样器部分
+
+		// 堆的限制
+		VkDeviceSize maxResourceHeapSize = 0;
+		VkDeviceSize maxSamplerHeapSize = 0;
+		VkDeviceSize minResourceReserved = 0;
+		VkDeviceSize minSamplerReserved = 0;
+		uint32_t     maxEmbeddedSamplers = 0;
+		bool isInit = 0;
+	};
+
 	class VulkanMemoryAllocator;
 	class VulkanCommandPool;
 	class VulkanImageViewManager;
@@ -62,25 +85,24 @@ namespace FISIR {
 
 		TextureLayout getTextureLayout(RHITexture* texture);
 
-		VulkanImageView* getImageView(RHITexture* texture);
-	
-		void freeImageView(RHITexture* texture);
-
 		void submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence = nullptr);
 
 		bool isDescriptorHeapSupported() const;
 
+		DescriptorSizes& getHeapSizeInfo();
 
 		VkPhysicalDeviceDescriptorHeapPropertiesEXT& getDescriptorHeapProperties();
 	private:
+		void QueryDescriptorSizes();
+
 		bool InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache);
 	private:
 		__VkDeviceData* mData;
 		VulkanMemoryAllocator* mAllocator;
-		VulkanImageViewManager* mImageViewManager;
 		VulkanQueue* mGraphicQue;
 		VulkanQueue* mComputeQue;
 		VulkanQueue* mTransferQueue;
+		DescriptorSizes HeapSizes;
 	};
 
 

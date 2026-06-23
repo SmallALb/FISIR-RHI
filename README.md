@@ -6,7 +6,7 @@
     <h3>目标</h3>
     <p>此项目为对现代图形API（Vulkan/dx）的接口抽象，目的是对底层调用进行简化抽象的同时保持高性能，能够进行更好的多线程渲染，以及对资源高效管理调度，同时减少对第三方库的依赖，能够直接部署执行。</p>
     <h3>目前实现和未来计划 （2026.6.7）</h3>
-    <p>目前正逐步实现Vulkan RHI, dx12 RHI的实现将会在Vulkan RHI做完后面进行更新，现已经实现大部分基本的命令提交和资源调度功能，但是Vulkan RHI的显存屏障，以及画面输出这一部分还在逐步考虑执行设计中。（ps：因为是学生，所以还在边学习API边思考架构进行参考设计，如有任何设计不好的地方欢迎大佬指出(❁´◡`❁)）</p>
+    <p>目前正逐步实现Vulkan RHI, dx12 RHI的实现将会在Vulkan RHI做完后面进行更新，现已经实现大部分基本的命令提交和资源调度功能。（ps：因为是学生，所以还在边学习API边思考架构进行参考设计，如有任何设计不好的地方欢迎大佬指出(❁´◡`❁)）</p>
   </details>
 
   <details>
@@ -14,7 +14,7 @@
     <h3>Goal</h3>
     <p>This project Abstracts modern Graphic APIs(Vulkan/DirectX 12).It aims to provide a simplified, hight-performance interface for using Graphic API while enabling better multithreading, effcient resource management and scheduling, and reducing thrid-party dependencies. The RHI is designed for direct deployment with minimal runtime overhead.</p>
     <h3>Now and Future （2026.6.7）</h3>
-    <p>I'm currently implementing the Vulkan RHI backend. The DirectX 12 backend will follow after Vulkan is compele.Most basic command submission and resource scheduling functions have been compeleted.However,memory barrier and the presentation/output subsystem are still being designed. (Note: I'm a Student learning both graphics APIs and system design.if you see any poor design choices,please point them out. Tku!(❁´◡`❁))</p>
+    <p>I'm currently implementing the Vulkan RHI backend. The DirectX 12 backend will follow after Vulkan is compele.Most basic command submission and resource scheduling functions have been compeleted. (Note: I'm a Student learning both graphics APIs and system design.if you see any poor design choices,please point them out. Tku!(❁´◡`❁))</p>
   </details>
 
 ## 目录 Contents
@@ -49,9 +49,11 @@
 
 - ### [11.VulkanRHI Details](./Design/VulkanRHIDetails.md)
 
-  - #### [11.1 Texture Layout and Barrier](./Design/VulkanRHIDetails.md##texture-layout-and-barrier)
+  - ### [11.1 VulkanRHI Threads](./Design/VulkanRHIDetails.md##Vulkan-RHI-Threads)
 
-  -###[11.2 Present and SwapChain](./Design/VulkanRHIDetails.md##Present-and-SwapChain)
+  - #### [11.2 Texture Layout and Barrier](./Design/VulkanRHIDetails.md##Texture-layout-and-barrier)
+
+  - ### [11.3 Present and SwapChain](./Design/VulkanRHIDetails.md##Present-and-SwapChain)
 
 ---------------------------------
 <details>
@@ -85,7 +87,7 @@
 - [x] 修改DynamicLoader为内联头文件 (2026-6-8)
 - [x] 优化Vulkan Device中VkQueue的创建 (2026-6-8)
 - [x] 设计Layout转换和Barrier (2026-6-11)
-- [] 设计RHIViewPort，RHIFrameBuffer，并实现Vulkan的特化
+- [x] 设计RHIViewPort，RHIFrameBuffer，并实现Vulkan的特化
 - [] 修改编译脚本为CMake
 <a id="CN_Task_FIX-RHIDLL_PATH_FOUND_MEOTH"></a>
 - [] 修改RHIDLL自动路径匹配的方式[[DynamicRHI.md](./Design/DynamicRHI.md#CN-RHIDLL_PATH_FOUND_MEOTH_PROBLEM)][[RHICreator.h](RHICreator.h#19)]
@@ -100,7 +102,7 @@
 - [x] Fix DynamicLoader.cpp to inline head file (2026-6-8)
 - [x] Optimize the VkQueue Creation (2026-6-8)
 - [x] Design Layout Transition and Memory Barrier (2026-6-11)
-- [] Designing RHIViewPort, and implementing Vulkan version
+- [x] Designing RHIViewPort, and implementing Vulkan version
 - [] Modifying to CMake
 
 </details>

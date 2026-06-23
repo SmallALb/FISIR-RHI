@@ -31,8 +31,6 @@ namespace FISIR {
 
 		virtual void present(uint32_t infoid) = 0;
 
-		virtual void resize(uint32_t width, uint32_t height) = 0;
-
 		virtual RHITexture* getSwapChainFrameTexture(uint32_t imageindex) const = 0;
 
 		virtual uint32_t getImageCount() const = 0;

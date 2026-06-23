@@ -25,25 +25,6 @@ namespace FISIR {
 		VulkanDevice* mDevice;
 	};
 
-	struct __VkImageViewManagerData;
-
-
-	class VulkanImageViewManager {
-	public:
-		VulkanImageViewManager(VulkanDevice* device);
-
-		~VulkanImageViewManager();
-
-		VulkanImageView* getViewToTexture(VulkanTexture* texture);
-
-		void freeViewToTexture(VulkanTexture* texture);
-
-	private:
-
-		VulkanDevice* mDevice;
-		std::vector<VulkanImageView*> ImageViews;
-		__VkImageViewManagerData* mData;
-	};
 
 
 }

@@ -38,7 +38,12 @@ namespace FISIR {
 
 		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) override;
 
-		virtual void RHISubmitCommandList(RHICommandListBase* cmdList, RHIFence* fence, const std::vector<RHISemaphore*>& waitSemaphore, const std::vector<RHISemaphore*>& singalSemaphore, std::atomic_bool* tag) override;
+		virtual void RHISubmitCommandList(
+			RHICommandListBase* cmdList,
+			RHIFence* fence,
+			const std::vector<RHISemaphore*>& waitSemaphore,
+			const std::vector<RHISemaphore*>& singalSemaphore,
+			std::atomic_bool* submitTag, std::atomic_bool* gpuDoneTag) override;
 
 		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) override;
 
@@ -55,6 +60,8 @@ namespace FISIR {
 		virtual RHISampler* RHICreateSampler(const SamplerInfo& info) override;
 
 		virtual RHIFence* RHICreateFence(bool signaled, const char* name) override;
+
+		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) override;
 
 		virtual void RHICreateContext(RHICommandListBase* cmdlist) override;
 

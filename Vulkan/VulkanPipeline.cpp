@@ -12,10 +12,46 @@ namespace FISIR{
 	extern std::unordered_map<PieplineLayoutHash, VkPipelineLayout_T*>& getPipelineLayoutMap();
 
 
+
+	static uint32_t GetDescriptorSize(VulkanDevice* device, VkDescriptorType type) {
+		const auto& sizes = device->getHeapSizeInfo();
+		switch (type) {
+			// --- Buffer 类：统一用 bufferDescriptorSize ---
+		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+		case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+		case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+			return sizes.bufferDescriptorSize;
+
+			// --- Image 类：统一用 imageDescriptorSize ---
+		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+		case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+			return sizes.imageDescriptorSize;
+
+			// --- Sampler 类 ---
+		case VK_DESCRIPTOR_TYPE_SAMPLER:
+			return sizes.samplerDescriptorSize;
+
+			// --- Combined Image Sampler = Image + Sampler 拼在一起 ---
+		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+			return sizes.imageDescriptorSize + sizes.samplerDescriptorSize;
+
+			// --- 加速结构：规范里和 Buffer 一样 ---
+		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+			return sizes.bufferDescriptorSize;
+
+		default:
+			return 0;
+		}
+	}
+
 	static VkDescriptorType choiceDescriptorType(RHIDescriptorTyp typ) {
 		switch (typ) {
 		case RHIDescriptorTyp::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
-		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		}
@@ -138,10 +174,46 @@ namespace FISIR{
 		VkPipeline mPipeline;
 	};
 
-	static std::vector<VkDescriptorSetAndBindingMappingEXT> BuildDescriptorMappings(const RHIPipelineDescribeInfo& describeInfo) {
+	static std::vector<VkDescriptorSetAndBindingMappingEXT> BuildDescriptorMappings(VulkanDevice* device, const RHIPipelineDescribeInfo& describeInfo) {
 		std::vector<VkDescriptorSetAndBindingMappingEXT> mappings;
-
+		uint32_t CurrentResourceoffset = 0;
+		uint32_t CurrentSampleroffset = 0;
+		const auto& sizes = device->getHeapSizeInfo();
 		for (const auto& binding : describeInfo.Bindings) {
+			VkDescriptorType vkType = choiceDescriptorType(binding.descriptorTyp);
+			uint32_t descSize = GetDescriptorSize(device, vkType);
+
+			// 获取该描述符类型的对齐要求
+			VkDeviceSize alignment = 0;
+			switch (binding.descriptorTyp) {
+			case RHIDescriptorTyp::Sampler:
+				alignment = sizes.samplerAlignment;
+				break;
+			case RHIDescriptorTyp::SamplerImage:
+			case RHIDescriptorTyp::Image:
+				alignment = sizes.imageAlignment;
+				break;
+			case RHIDescriptorTyp::UniformBuffer:
+				alignment = sizes.bufferAlignment;
+				break;
+			default:
+				alignment = 16;
+				break;
+			}
+
+			uint32_t& currentOffset = (binding.descriptorTyp == RHIDescriptorTyp::Sampler)
+				? CurrentSampleroffset
+				: CurrentResourceoffset;
+
+			if (alignment > 0) {
+				currentOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
+			}
+
+			uint32_t arrayStride = (binding.descriptorTyp == RHIDescriptorTyp::SamplerImage ||
+				binding.descriptorTyp == RHIDescriptorTyp::Image)
+				? alignment
+				: descSize;
+
 			VkDescriptorSetAndBindingMappingEXT mapping = {
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
 				.descriptorSet = 0,  // 当前统一使用 set 0
@@ -151,8 +223,8 @@ namespace FISIR{
 				.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
 				.sourceData = {
 					.constantOffset = {
-						.heapOffset = 0,      // 实际偏移由 ResourcePack 决定，这里填 0
-						.heapArrayStride = 0, // 如果是数组，每个元素步长，这里填 0 表示连续
+						.heapOffset = currentOffset,
+						.heapArrayStride = arrayStride, // 如果是数组，每个元素步长，这里填 0 表示连续
 					}
 				}
 			};
@@ -177,6 +249,7 @@ namespace FISIR{
 			}
 
 			mappings.push_back(mapping);
+			currentOffset += descSize * binding.count;
 		}
 
 		return mappings;
@@ -311,7 +384,7 @@ namespace FISIR{
 
 		//MappingInfo
 		std::vector<VkDescriptorSetAndBindingMappingEXT> mappingInfo;
-		if (mDevice->isDescriptorHeapSupported()) mappingInfo = std::move(BuildDescriptorMappings(State.describeInfo));
+		if (mDevice->isDescriptorHeapSupported()) mappingInfo = std::move(BuildDescriptorMappings(mDevice, State.describeInfo));
 
 		VkShaderDescriptorSetAndBindingMappingInfoEXT shaderMappingInfo = {
 			.sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,

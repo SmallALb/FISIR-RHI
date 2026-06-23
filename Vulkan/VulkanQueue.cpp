@@ -28,6 +28,7 @@ namespace FISIR{
 	}
 
 	VulkanQueue::~VulkanQueue() {
+		QueIndexOfFamilyIndex[mFamilyIndex]--;
 		delete mData;
 	}
 

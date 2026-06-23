@@ -82,7 +82,7 @@ namespace FISIR {
 			//Debug("ExecuteList START : this = 0x{:X}, Pool = 0x{:x}, Root = 0x{:x}", (size_t)this, (size_t)Pool, (size_t)Root);
 			auto ctx = getContext();
 			if (!ctx || DontExecuteAndSubmit || Executed) {
-				//Error("Ctx is Null or List had Been executed");
+				Error("Ctx is Null or List had Been executed or can not execute");
 				return;
 			}
 			RHICommand* cmd = Root;

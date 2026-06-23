@@ -99,6 +99,8 @@ namespace FISIR{
 	};
 	
 
+	struct ThreadCommanPoolListener;
+
     class VulkanCommandPoolManager {
         std::vector<VulkanCommandPool*>& getPool(CommandPoolType type);
 
@@ -127,6 +129,7 @@ namespace FISIR{
     };
 
     struct ThreadCommanPoolListener {
+
         ThreadCommanPoolListener(VulkanCommandPoolManager* manager, CommandPoolType type, uint32_t familyIndex = UINT32_MAX) {
             mManager = manager;
 			if (familyIndex != UINT32_MAX) {
@@ -139,12 +142,14 @@ namespace FISIR{
         }
 
         ~ThreadCommanPoolListener() {
+			if (!commandPoolRunning.load(std::memory_order_acquire)) return;
             mCommandPool->UsedInThread.store(false, std::memory_order_release);
             mManager->reBackCommandPool(mCommandPool);
         }
 
         VulkanCommandPool* mCommandPool{ nullptr };
         VulkanCommandPoolManager* mManager{ nullptr };
+		static std::atomic_bool commandPoolRunning;
     };
 
 }

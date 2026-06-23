@@ -5,6 +5,7 @@
 namespace FISIR {
 	class VulkanDevice;
 	class VulkanTexture;
+	class VulkanImageView;
 	class VulkanRenderPass;
 
 	struct __VkFrameBufferData;
@@ -29,6 +30,7 @@ namespace FISIR {
 		VulkanDevice* mDevice;
 		VulkanTexture* mDepthStencilEntry;
 		std::vector<RHITexture*> mTextures;
+		std::vector<VulkanImageView*> mViews;
 		RHIRenderPass* mRenderPass;
 		uint32_t mHeight{0};
 		uint32_t mWidth{0};

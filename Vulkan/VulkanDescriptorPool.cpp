@@ -13,28 +13,6 @@
 namespace FISIR{
 
 
-	struct DescriptorSizes {
-		// 对齐值
-		VkDeviceSize resourceHeapAlignment = 0;
-		VkDeviceSize samplerHeapAlignment = 0;
-		VkDeviceSize bufferAlignment = 0;
-		VkDeviceSize imageAlignment = 0;
-		VkDeviceSize samplerAlignment = 0;
-
-		// 三类描述符的字节大小
-		uint32_t bufferDescriptorSize = 0;   // UBO, SSBO, TexelBuffer, Dynamic UBO/SSBO
-		uint32_t imageDescriptorSize = 0;   // SampledImage, StorageImage, InputAttachment
-		uint32_t samplerDescriptorSize = 0;   // Sampler, CombinedImageSampler 中的采样器部分
-
-		// 堆的限制
-		VkDeviceSize maxResourceHeapSize = 0;
-		VkDeviceSize maxSamplerHeapSize = 0;
-		VkDeviceSize minResourceReserved = 0;
-		VkDeviceSize minSamplerReserved = 0;
-		uint32_t     maxEmbeddedSamplers = 0;
-	} sizes;
-
-	
 	static VkShaderStageFlags ChoiceDescriptorStage(RHIUsingStageFlags stage) {
 		Debug("ChoiceDescriptorStage called with stage = {}", (uint32_t)stage);
 		VkShaderStageFlags res = 0;
@@ -45,36 +23,8 @@ namespace FISIR{
 	}
 
 
-	static void QueryDescriptorSizes(VulkanDevice* Device) {
-		VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProps{};
-		heapProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
-
-		VkPhysicalDeviceProperties2 props2{};
-		props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-		props2.pNext = &heapProps;
-		vkGetPhysicalDeviceProperties2(Device->getPhysicalDevice(), &props2);
-
-		sizes.resourceHeapAlignment = heapProps.resourceHeapAlignment;
-		sizes.samplerHeapAlignment = heapProps.samplerHeapAlignment;
-		sizes.bufferAlignment = heapProps.bufferDescriptorAlignment;
-		sizes.imageAlignment = heapProps.imageDescriptorAlignment;
-		sizes.samplerAlignment = heapProps.samplerDescriptorAlignment;
-
-		sizes.bufferDescriptorSize = static_cast<uint32_t>(heapProps.bufferDescriptorSize);
-		sizes.imageDescriptorSize = static_cast<uint32_t>(heapProps.imageDescriptorSize);
-		sizes.samplerDescriptorSize = static_cast<uint32_t>(heapProps.samplerDescriptorSize);
-
-		sizes.maxResourceHeapSize = heapProps.maxResourceHeapSize;
-		sizes.maxSamplerHeapSize = heapProps.maxSamplerHeapSize;
-		sizes.minResourceReserved = heapProps.minResourceHeapReservedRange;
-		sizes.minSamplerReserved = heapProps.minSamplerHeapReservedRange;
-		sizes.maxEmbeddedSamplers = heapProps.maxDescriptorHeapEmbeddedSamplers;
-
-		Debug("Descriptor Heap Sizes: minResourceReserved = {}, minSamplerReserved = {}",
-			sizes.minResourceReserved, sizes.minSamplerReserved);
-	}
-
-	uint32_t GetDescriptorSize(VkDescriptorType type) {
+	static uint32_t GetDescriptorSize(VulkanDevice* device, VkDescriptorType type) {
+		const auto& sizes = device->getHeapSizeInfo();
 		switch (type) {
 			// --- Buffer 类：统一用 bufferDescriptorSize ---
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -108,7 +58,8 @@ namespace FISIR{
 		}
 	}
 
-	VkDeviceSize GetDescriptorAlignment(const DescriptorSizes& sizes, VkDescriptorType type) {
+	VkDeviceSize GetDescriptorAlignment(VulkanDevice* device, VkDescriptorType type) {
+		const auto& sizes = device->getHeapSizeInfo();
 		switch (type) {
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
@@ -150,7 +101,7 @@ namespace FISIR{
 		uint32_t caculateAndCheck(Type ResTyp, const std::vector<RHIResource*>& resources) {
 			uint32_t res = 0;
 			for (auto& resource : resources) {
-				res += GetDescriptorSize((VkDescriptorType)(resource->as<VulkanResource>()->getVkDescriptorType()));
+				res += GetDescriptorSize(mDevice, (VkDescriptorType)(resource->as<VulkanResource>()->getVkDescriptorType()));
 			}
 			
 			return res;
@@ -161,7 +112,13 @@ namespace FISIR{
 			for (auto& resource : resources) {
 				auto VkHandle = resource->as<VulkanResource>();
 				uint32_t currentSize = resource->getSize();
-				uint32_t descriptorsize = GetDescriptorSize((VkDescriptorType)VkHandle->getVkDescriptorType());
+				uint32_t descriptorsize = GetDescriptorSize(mDevice, (VkDescriptorType)VkHandle->getVkDescriptorType());
+				uint32_t alignment = GetDescriptorAlignment(mDevice, (VkDescriptorType)VkHandle->getVkDescriptorType());
+
+				if (alignment > 0) {
+					offset = (offset + alignment - 1) & ~(alignment - 1);
+				}
+
 				if (resource->getResourceType() == Type::Buffer) {
 					VkBufferDeviceAddressInfo addrInfo{
 					.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
@@ -260,6 +217,7 @@ namespace FISIR{
 	public:
 
 		DescriptorHeap(VulkanDevice* Device, Type typ, const std::vector<RHIResource*>& resources) {
+			const auto& sizes = Device->getHeapSizeInfo();
 			//Create Heap
 			mDevice = Device;
 			resourceType = typ;
@@ -315,7 +273,6 @@ namespace FISIR{
 	VulkanDescriptorPool::VulkanDescriptorPool(VulkanDevice* device) {
 		mDevice = device;
 		mData = new __VKDescriptorPoolData();
-		QueryDescriptorSizes(mDevice);
 		mData->HeapEnable = mDevice->isDescriptorHeapSupported();
 		if (!mData->HeapEnable) {
 			
@@ -411,11 +368,14 @@ namespace FISIR{
 		
 	
 	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) {
+		const auto& sizes = device->getHeapSizeInfo();
 		if (Resourcepack) {
 			if (device->isDescriptorHeapSupported()) {
 				auto PackHandle = static_cast<DescriptorHeap*>(Resourcepack);
 				Debug("PackHandle->resourceType = {}", (int)PackHandle->resourceType);
 				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+				VkDeviceSize alignment = (PackHandle->resourceType == Type::Sampler) ? sizes.samplerHeapAlignment : sizes.resourceHeapAlignment;
+				VkDeviceSize alignedOffset = (PackHandle->UseDataSize + alignment - 1) & ~(alignment - 1);
 				VkBindHeapInfoEXT info{
 					.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
 					.heapRange = {
@@ -423,7 +383,7 @@ namespace FISIR{
 						.size = PackHandle->mHeadBuffer->getSize(),
 
 					},
-					.reservedRangeOffset = PackHandle->UseDataSize,
+					.reservedRangeOffset = alignedOffset,
 					.reservedRangeSize = reservedSize
 				};
 				fpCmdBindResourceHeap(cmd, &info);

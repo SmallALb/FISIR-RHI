@@ -107,7 +107,6 @@ namespace FISIR{
 		if (stage & RHIUsingStage::PipelineTransferStage){
 			flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
-		return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 		return flags;
 		
 	}
@@ -210,7 +209,7 @@ namespace FISIR{
 			.clearValueCount = (uint32_t)(clearValues.size()),
 			.pClearValues = clearValues.data(),
 		};
-		vkCmdBeginRenderPass(usingCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+ 		vkCmdBeginRenderPass(usingCommandBuffer.buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
 	}
 
 	void VulkanRenderContext::RHIEndRenderPass() {
@@ -268,8 +267,7 @@ namespace FISIR{
 	void VulkanRenderContext::RHITransitionTextures(std::initializer_list<TextureTransitionInfo> textureTransitions, RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone) {
 		std::vector<VkImageMemoryBarrier> Barriers;
 		for (auto& [texture, waitForAccessDone, beginAccessWhenDone, oldlayout, newlayout] : textureTransitions) {
-			if (usingCommandBuffer.QuoteResources.contains(texture) && usingCommandBuffer.QuoteResources[texture].access == beginAccessWhenDone && usingCommandBuffer.QuoteResources[texture].layout == newlayout)
-			usingCommandBuffer.QuoteResources[texture] = { beginAccessWhenDone, newlayout };
+			if (usingCommandBuffer.QuoteResources.contains(texture) && usingCommandBuffer.QuoteResources[texture].access == beginAccessWhenDone && usingCommandBuffer.QuoteResources[texture].layout == newlayout) continue;
 			VkImageMemoryBarrier barrier {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 				.srcAccessMask = getVulkanAccessFlags(waitForAccessDone),
@@ -282,8 +280,10 @@ namespace FISIR{
 				.subresourceRange = {getVulkanAspectFlagsForUsing(texture->getTextureUseFor()), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS},
 			};
 			Barriers.push_back(barrier);
+			usingCommandBuffer.QuoteResources[texture] = { beginAccessWhenDone, newlayout };
 			//texture->setWait();
 		}
+		if (Barriers.empty()) return;
 		vkCmdPipelineBarrier(usingCommandBuffer.buffer, 
 			getVulkanPipelineSatgeFlags(waitForStageDone), 
 			getVulkanPipelineSatgeFlags(beginStageWhenDone),
@@ -334,6 +334,7 @@ namespace FISIR{
 	}
 
 	void VulkanRenderContext::RHICopyTexture(RHIBuffer* src, RHITexture* dst, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset, TextureSize dstOffset) {
+	
 		if (usingCommandBuffer.QuoteResources[dst].layout != TextureLayout::TransferDstOptimal) {
 			TextureTransitionInfo tranInfo {
 				.texture = dst,
@@ -345,11 +346,17 @@ namespace FISIR{
 			RHITransitionTextures({tranInfo}, RHIUsingStage::PipelinTopStage, RHIUsingStage::PipelineTransferStage);
 		
 		}
+		uint32_t bytesPerPixel = 4;
+		uint32_t rowLength = size.width;
+		uint32_t alignedRowLength = ((rowLength + 3) & ~3);
+
+		Debug("RHICopyTexture: size.width={}, size.height={}, alignedRowLength={}, bufferRowLength={}, bufferImageHeight={}",
+			size.width, size.height, alignedRowLength, alignedRowLength, size.height);
 		VkBufferImageCopy2 sizeinfo {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
 			.bufferOffset= srcOffset,
-			.bufferRowLength = 0,
-			.bufferImageHeight = 0,
+			.bufferRowLength = alignedRowLength,
+			.bufferImageHeight = size.height,
 			.imageSubresource = {
 				.aspectMask = getVulkanAspectFlagsForUsing(dst->getTextureUseFor()),
 				.mipLevel = miplevel,

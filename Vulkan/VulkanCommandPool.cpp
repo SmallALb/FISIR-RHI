@@ -173,6 +173,8 @@ namespace FISIR{
 		ComputeCommandPools.resize(10, nullptr);
 		TransferCommandPools.resize(10, nullptr);
 
+		if (!ThreadCommanPoolListener::commandPoolRunning.load(std::memory_order_acquire)) ThreadCommanPoolListener::commandPoolRunning.store(1, std::memory_order_release);
+
 		for (auto& pool : RenderCommandPools) {
 			pool = new VulkanCommandPool(mDevice, CommandPoolType::_Graphics_);
 			FreeRenderCommandPools.push(pool);
@@ -190,6 +192,8 @@ namespace FISIR{
 	}
 
 	VulkanCommandPoolManager::~VulkanCommandPoolManager() {
+		ThreadCommanPoolListener::commandPoolRunning.store(0, std::memory_order_release);
+		
 		for (auto& pool : RenderCommandPools) {
 			delete pool;
 		}
@@ -244,6 +248,9 @@ namespace FISIR{
 		auto& Que = getQue(pool->mPoolType);
 		Que.push(pool);
 	}
+
+
+	std::atomic_bool ThreadCommanPoolListener::commandPoolRunning {0};
 
 
 }

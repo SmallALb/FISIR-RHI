@@ -72,7 +72,7 @@ namespace FISIR {
 
 		virtual void RHICopyBuffer(RHIBuffer* srcBuffer, RHIBuffer* dstBuffer, uint64_t size, uint64_t srcOffset = 0, uint64_t dstOffset = 0) = 0;
 
-		virtual void RHICopyTexture(RHIBuffer* dst, RHITexture* src, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset = 0, TextureSize dstOffset = {0,0,0}) = 0;
+		virtual void RHICopyTexture(RHIBuffer* src, RHITexture* dst, TextureSize size, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcOffset = 0, TextureSize dstOffset = {0,0,0}) = 0;
 
 		virtual CmdType getCmdType() const override {return CmdType::Render;}
 	};

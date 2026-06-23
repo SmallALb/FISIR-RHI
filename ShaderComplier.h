@@ -1,6 +1,5 @@
 #pragma once
 
-#pragma comment(lib, "vulkan-1.lib")
 #include "../Log/Logger.h"
 
 #ifdef _WIN32

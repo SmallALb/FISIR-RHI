@@ -71,38 +71,61 @@
     //初始化
 		virtual bool Init() = 0;
 
-    //创建GPU纹理
+    //创建Gpu纹理
 		virtual RHITexture* RHICreateTexture(const TextureInfo& textureInfo) = 0;
 
-    //创建GPU缓存
+    //创建Gpu缓存
 		virtual RHIBuffer* RHICreateBuffer(const BufferInfo& bufferInfo) = 0;
 
-    //创建视口
-		virtual RHIViewport* RHICreateViewport() = 0;
+    //创建链接窗口的RHIViewPort
+		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type, void* WindowHandle) = 0;
 
     //创建管线
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) = 0;
 
-    //获取指令上下文
-		virtual RHIContext* RHIGetContext(CmdType type) = 0;
-
     //创建着色器
 		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) = 0;
 
-    //提交命令列表
-		virtual void RHISubmitCommandList(RHICommandListBase* cmdList) = 0;
+    //提交渲染指令
+		virtual void RHISubmitCommandList(RHICommandListBase* cmdList, RHIFence* fence, const std::vector<RHISemaphore*>& waitSemaphore, const std::vector<RHISemaphore*>& singalSemaphore, std::atomic_bool* tag) = 0;
 
-    //创建资源引用包
-		virtual RHIResourcePack* RHICreateResourcePack(Type restyp, const std::vector<RHIResource*>& resources) = 0;
+    //创建静态资源包
+		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) = 0;
 
     //创建渲染通道
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) = 0;
+
+    //创建帧缓冲
+		virtual RHIFrameBuffer* RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) = 0;
+
+    //创建信号量
+		virtual RHISemaphore* RHICreateSemaphore(const char* name = "Unnamed Semaphore") = 0;
+		
+    //销毁信号量
+		virtual void RHIDestroySemaphore(RHISemaphore* semaphore) = 0;
+
+    //创建纹理采样器
+		virtual RHISampler* RHICreateSampler(const SamplerInfo& info) = 0;
+
+    //创建命令链表的上下文
+		virtual void RHICreateContext(RHICommandListBase* cmdlist) = 0;
+
+    //创建命令同步信号
+		virtual RHIFence* RHICreateFence(bool signaled = false, const char* name = "Unnamed Fence") = 0;
+
+    //创建交换链
+		virtual RHISwapChain* RHIGetSwapChain(RHIViewport* viewport) = 0;
+
+    //销毁命令同步信号
+		virtual void RHIDestroyFence(RHIFence* fence) = 0;
   ```
   成功创建rhi后调用Init()
 
   ```cpp
    rhi->Init();
   ```
+  之后所有的资源创建销毁都将通过rhi->RHIxxx来进行
+
   如何创建资源，进行渲染这些将会在后面的章节解释，以及为何这样设计
   </details>
 

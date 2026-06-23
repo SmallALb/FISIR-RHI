@@ -23,13 +23,6 @@ namespace FISIR {
 
 		virtual MemType getResourceMemType() const {return MemType::MemTypNone;}
 		
-		
-		bool isWaitting() const { return waitTag.load(std::memory_order_acquire); }
-
-		virtual void setWait() { waitTag .store(1, std::memory_order_release); }
-
-		virtual void endWait() { waitTag.store(0, std::memory_order_release); }
-
 		template<class T>
 		T* as() {
 			return static_cast<T*>(changeOtherHandle(typeid(T)));
