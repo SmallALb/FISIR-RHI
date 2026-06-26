@@ -73,8 +73,8 @@ namespace FISIR {
 
 	VulkanBuffer::~VulkanBuffer() {
 		auto allocater = mDevice->getAllocator();
-		allocater->free(mData->mBlock);
 		vkDestroyBuffer(mDevice->getLogicalDevice(), mData->buffer, nullptr);
+		allocater->free(mData->mBlock);
 		delete mData;
 	}
 

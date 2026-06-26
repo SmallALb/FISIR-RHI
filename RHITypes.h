@@ -208,17 +208,23 @@ namespace FISIR {
     };
 
     struct BufferTransitionInfo {
-        class RHIBuffer* buffer; 
+        class RHIBuffer** buffer; 
+        size_t count;
         ResourceAccess waitForAccessDone;
         ResourceAccess beginAccessWhenDone;
+        RHIUsingStage waitForStageDone;
+        RHIUsingStage beginStageWhenDone;
     };
 
     struct TextureTransitionInfo {
-        class RHITexture* texture;
+        class RHITexture** texture;
+        size_t count;
         ResourceAccess waitForAccessDone {ResourceAccess::Undefined};
         ResourceAccess beginAccessWhenDone;
         TextureLayout oldLayout {TextureLayout::Undefined};
         TextureLayout newLayout;
+        RHIUsingStage waitForStageDone;
+        RHIUsingStage beginStageWhenDone;
     };
 
     struct RHIResourcePackResult {

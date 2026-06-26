@@ -61,9 +61,9 @@ namespace FISIR {
 
 		virtual RHIFence* RHICreateFence(bool signaled, const char* name) override;
 
-		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) override;
+		virtual RingCommandStack& RHIGetCommandStack() override;
 
-		virtual void RHICreateContext(RHICommandListBase* cmdlist) override;
+		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) override;
 
 		virtual void RHIDestroyFence(RHIFence* fence) override;
 
@@ -82,6 +82,7 @@ namespace FISIR {
 		VulkanSemaphorePool* mSemaphorePool;
 		VulkanDescriptorPool* mDescriptorPool;
 		VulkanCommandPoolManager* mCmdPoolManager;
+		RingCommandStack* CommandStack;
 		std::atomic_bool stopTag {0};
 		
   };

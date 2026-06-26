@@ -10,7 +10,6 @@ namespace FISIR {
 	class RHIBuffer;
 	class RHIViewport;
 	class RHIPipeline;
-	class RHIContext;
 	class RHIShader;
 	class RHICommandListBase;
 	class RHIResourcePack;
@@ -23,6 +22,7 @@ namespace FISIR {
 	class RHISampler;
 	struct RHIPipelineState;
 	struct RHIRenderPassInfo;
+	struct RingCommandStack;
 	
 	
 	class DynamicRHI {
@@ -61,12 +61,12 @@ namespace FISIR {
 
 		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) = 0;
 
-		virtual void RHICreateContext(RHICommandListBase* cmdlist) = 0;
-
 		virtual RHIFence* RHICreateFence(bool signaled = false, const char* name = "Unnamed Fence") = 0;
 
 		virtual RHISwapChain* RHIGetSwapChain(RHIViewport* viewport) = 0;
 		
+		virtual RingCommandStack& RHIGetCommandStack() = 0;
+
 		virtual void RHIDestroyFence(RHIFence* fence) = 0;
 
 	};

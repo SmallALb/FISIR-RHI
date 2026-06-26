@@ -9,7 +9,6 @@
 #include "../LockFreeQue.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
-#include "VulkanCommandContext.h"
 #include "VulkanShader.h"
 #include "VulkanBuffer.h"
 #include "VulkanTexture.h"
@@ -175,6 +174,8 @@ namespace FISIR {
 		Error("Failed to initialize Vulkan Device!");
         return false;
     }
+    CommandStack = new RingCommandStack();
+
 	mFencePool = new VulkanFencePool(mDevice);
 	mSemaphorePool = new VulkanSemaphorePool(mDevice);
 	mDescriptorPool = new VulkanDescriptorPool(mDevice);
@@ -319,6 +320,10 @@ namespace FISIR {
       return mFencePool->createFence(signaled, name);
   }
 
+  RingCommandStack& VulkanRHI::RHIGetCommandStack() {
+      return *CommandStack;
+  }
+
   void VulkanRHI::RHIFlushAndWaitAfterCommand(CmdType cmdtype) {
     RHICommandListBase* cmdList = nullptr;
     switch(cmdtype) {
@@ -395,6 +400,8 @@ namespace FISIR {
 
   void VulkanRHI::VulkanRHILoop() {
     Debug("RHI Thread ID: {}", std::this_thread::get_id());
+    const int BATCH_SIZE = 8;  // 积累 8 个任务后提交
+    const float MAX_BATCH_WAIT_MS = 2.0f;  // 最多等待 2ms
     
     std::vector<VkCommandBuffer> RenderCMDs, TransferCMDs, ComputeCMDs;
     std::vector<CBInfo> RenderCMDInfos, TransferCMDInfos, ComputeCMDInfos;
@@ -404,9 +411,21 @@ namespace FISIR {
         RenderCMDs.clear(), TransferCMDs.clear(), ComputeCMDs.clear();
         RenderCMDInfos.clear(), TransferCMDInfos.clear(), ComputeCMDInfos.clear();
         ctxs.clear(); submitTags.clear(); gpuDoneTags.clear();
-        while (!CmdListNeedExecute.empty()) {
+
+        auto batchStart = std::chrono::steady_clock::now();
+        int collected = 0;
+
+        while (collected < BATCH_SIZE && !stopTag) {
             ExecuteTask task = {};
-            if (!CmdListNeedExecute.pop(task)) continue;
+            if (!CmdListNeedExecute.pop(task))  {
+                auto now = std::chrono::steady_clock::now();
+                float elapsed = std::chrono::duration<float, std::milli>(now - batchStart).count();
+                if (elapsed > MAX_BATCH_WAIT_MS && collected > 0) break;  
+                continue;
+            }
+            else {
+                collected++;
+            }
             auto& [context, waitSems, singalSems, fence, submitTag, gpuDoneTag] = task;
             
             if (!context) {

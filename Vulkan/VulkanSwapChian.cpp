@@ -132,7 +132,7 @@ namespace FISIR {
         auto res = vkAcquireNextImageKHR(
             mDevice->getLogicalDevice(), 
             mData->swapchain,
-            (uint64_t)(0),
+            (uint64_t)(2*1e9),
             static_cast<VkSemaphore>(available->getSemaphoreHandle()),
             VK_NULL_HANDLE,
             &index

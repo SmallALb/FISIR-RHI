@@ -427,7 +427,6 @@ namespace FISIR{
 		if (!mGraphicQue) Error("Error GraphicQue is null");
 		if (!mComputeQue) Error("Error ComputeQue is null");
 		if (!mTransferQueue) Error("Error TransferQue is null");
-
 		mAllocator = new VulkanMemoryAllocator();
 		mAllocator->init(this);
 		Debug("Well vulkan Device Create Success!");

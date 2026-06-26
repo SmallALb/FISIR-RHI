@@ -40,15 +40,15 @@ namespace FISIR {
 		
 		void free(GpuBlock* Block);
 
-		void bindMemoryFor(GpuBlock* block, size_t align, RHIResource* resource, void** CpuSetPtr = nullptr);
 
 
 
 	private:
-		std::pair<uint32_t, uint32_t> make_sure_type_exits(MemType require, RHIResource* resource);
+		GpuBlock* make_sure_type_exits_and_new(size_t Size, size_t align, MemType require, RHIResource* resource, void** CpuSetPtr);
 
 		uint32_t get_suitable_type(uint32_t MemBits, MemType require);
 
+		void bindMemoryFor(GpuBlock* block, size_t align, RHIResource* resource, void** CpuSetPtr = nullptr);
 	private:
 		VulkanDevice* mDevice;	
 		__VkMemoryData* mData;
