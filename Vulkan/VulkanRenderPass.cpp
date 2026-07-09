@@ -116,6 +116,7 @@ namespace FISIR{
 
 		uint32_t DepthStencilAttachmentIndex = -1;
 		uint32_t DepthStencilResolveAttachmentIndex = -1;
+		uint32_t subpassCount{ 0 };
 		std::vector<VkAttachmentDescription> attachmentDescriptions;
 
 	};
@@ -254,6 +255,7 @@ namespace FISIR{
 		std::vector<VkAttachmentReference> DepthStencilRefs;
 		std::vector<std::vector<VkAttachmentReference>> InputRefs;
 
+		mData->subpassCount = (uint32_t)renderPassinfo.SubPasses.size();
 		//subpass
 		for (auto& subpass : renderPassinfo.SubPasses) {
 			std::vector<VkAttachmentReference> colorRefs;
@@ -358,6 +360,7 @@ namespace FISIR{
 		};
 
 		if (vkCreateRenderPass(mDevice->getLogicalDevice(), &renderPassCreateInfo, nullptr, &mData->renderpass) != VK_SUCCESS) {
+			Error("Failed to create Vulkan Render Pass!");
 		}
 	}
 
@@ -368,5 +371,8 @@ namespace FISIR{
 
 	uint32_t VulkanRenderPass::getAttachmentCount() const {
 		return static_cast<uint32_t>(mData->attachmentDescriptions.size());
+	}
+	uint32_t VulkanRenderPass::getSubPassCount() const {
+		return mData->subpassCount;
 	}
 }

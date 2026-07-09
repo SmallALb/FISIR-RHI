@@ -18,7 +18,7 @@ namespace FISIR {
 
 		virtual std::vector<RHITexture*>& getFrameTextures() = 0;
 
-		virtual Type getResourceType() const override {return Type::FrmeBuffer;}
+		virtual Type getResourceType() const override {return Type::FrameBuffer;}
 	};
 
 }

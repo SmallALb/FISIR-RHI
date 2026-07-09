@@ -16,6 +16,7 @@ namespace FISIR {
   class VulkanPipeline;
   class VulkanDevice;
   class VulkanCommandPool;
+  class CommandExecuteThreadPool;
   class VulkanViewport;
   class VulkanSwapChain;
   class VulkanShader;
@@ -38,13 +39,6 @@ namespace FISIR {
 
 		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) override;
 
-		virtual void RHISubmitCommandList(
-			RHICommandListBase* cmdList,
-			RHIFence* fence,
-			const std::vector<RHISemaphore*>& waitSemaphore,
-			const std::vector<RHISemaphore*>& singalSemaphore,
-			std::atomic_bool* submitTag, std::atomic_bool* gpuDoneTag) override;
-
 		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) override;
 
 		virtual RHIRenderPass* RHICreateRenderPass(const RHIRenderPassInfo& info) override;
@@ -61,16 +55,13 @@ namespace FISIR {
 
 		virtual RHIFence* RHICreateFence(bool signaled, const char* name) override;
 
-		virtual RingCommandStack& RHIGetCommandStack() override;
+		virtual RingCommandPool::Page* RHIGetCommandPoolPage(CmdType cmdtype) override;
 
 		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) override;
 
 		virtual void RHIDestroyFence(RHIFence* fence) override;
 
-		ThreadCommanPoolListener* choiceCommandPool(CmdType type);
-
-		ThreadCommanPoolListener* choiceCommandPool(uint32_t FamilyIndex);
-
+		virtual void RHISubmitPage(RingCommandPool::Page* page, RHIFence* fence, const std::vector<RHISemaphore*>& SignalSemaphores = {}, const std::vector<RHISemaphore*>& WaitSemaphores = {}) override;
 
 	private:
 		void VulkanRHILoop();
@@ -82,9 +73,9 @@ namespace FISIR {
 		VulkanSemaphorePool* mSemaphorePool;
 		VulkanDescriptorPool* mDescriptorPool;
 		VulkanCommandPoolManager* mCmdPoolManager;
-		RingCommandStack* CommandStack;
 		std::atomic_bool stopTag {0};
-		
+		RingCommandPool CmdMemoryPool[3];
+		CommandExecuteThreadPool* ThreadPool;
   };
 
 

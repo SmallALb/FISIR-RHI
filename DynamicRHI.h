@@ -22,7 +22,6 @@ namespace FISIR {
 	class RHISampler;
 	struct RHIPipelineState;
 	struct RHIRenderPassInfo;
-	struct RingCommandStack;
 	
 	
 	class DynamicRHI {
@@ -39,13 +38,6 @@ namespace FISIR {
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) = 0;
 
 		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) = 0;
-
-		virtual void RHISubmitCommandList(
-			RHICommandListBase* cmdList, 
-			RHIFence* fence = nullptr, 
-			const std::vector<RHISemaphore*>& waitSemaphore = {},
-			const std::vector<RHISemaphore*>& singalSemaphore = {},
-			std::atomic_bool* submitTag = nullptr, std::atomic_bool* gpuDoneTag = nullptr) = 0;
 
 		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) = 0;
 
@@ -65,9 +57,12 @@ namespace FISIR {
 
 		virtual RHISwapChain* RHIGetSwapChain(RHIViewport* viewport) = 0;
 		
-		virtual RingCommandStack& RHIGetCommandStack() = 0;
+		virtual RingCommandPool::Page* RHIGetCommandPoolPage(CmdType cmdtype) = 0;
 
 		virtual void RHIDestroyFence(RHIFence* fence) = 0;
+
+		virtual void RHISubmitPage(RingCommandPool::Page* page, RHIFence* fence, const std::vector<RHISemaphore*>& SignalSemaphores = {}, const std::vector<RHISemaphore*>& WaitSemaphores = {}) = 0;
+
 
 	};
 

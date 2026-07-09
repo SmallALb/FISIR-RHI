@@ -31,22 +31,34 @@ namespace FISIR{
 		return mFence;
 	}
 
+	RHIFence::Statue VulkanFence::getFenceStage() const {
+		return fenceStatue.load();
+	}
+
 	void VulkanFence::reset() {
 		if (mFence) {
 			vkResetFences(mDevice->getLogicalDevice(), 1, &mFence);
+			fenceStatue.store(Statue::UnSignaled);
 		}
 	}
 	
 	void VulkanFence::wait() {
-		vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, UINT64_MAX);
+		fenceStatue.store(Statue::Pendding);
+		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, UINT64_MAX) == VK_SUCCESS);
+		if (res) fenceStatue.store(Statue::Signaled);
 	}
 	
 	bool VulkanFence::isSignaled() {
-		return  vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, 0) == VK_SUCCESS;
+		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, 0) == VK_SUCCESS);
+		if (res) fenceStatue.store(Statue::Signaled);
+		return res;
 	}
 
 	bool VulkanFence::waitFor(uint64_t timeout) {
-		return vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, timeout) == VK_SUCCESS;
+		fenceStatue.store(Statue::Pendding);
+		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, timeout) == VK_SUCCESS);
+		if (res) fenceStatue.store(Statue::Signaled);
+		return res;
 	}
 
 	void VulkanFence::reName(const char* name) {

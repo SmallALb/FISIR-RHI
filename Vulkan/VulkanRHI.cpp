@@ -29,18 +29,16 @@ namespace FISIR {
     //Pending Release Command Buffers
     struct PendingReleaseCBInfo {
         PendingReleaseCBInfo() {}
-        PendingReleaseCBInfo(RHIFence* f, std::vector<CBInfo>&& c, std::vector<RHIContext*>&& ctxs, std::vector<std::atomic_bool*>&& gpuDoneTags, bool infence = 0) :
+        PendingReleaseCBInfo(VulkanFence* f, std::vector<CBInfo>&& c, bool infence = 0) :
             fence(f), 
             cbInfos(std::move(c)), 
-            inputFence(infence),
-            Ctxs(std::move(ctxs)),
-            GpuDoneTags(std::move(gpuDoneTags))
+            inputFence(infence)
             {}
-        PendingReleaseCBInfo(RHIFence* f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
+        PendingReleaseCBInfo(VulkanFence* f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
 
 
         PendingReleaseCBInfo(PendingReleaseCBInfo&& other) noexcept
-            : fence(other.fence), cbInfos(std::move(other.cbInfos)), Ctxs(std::move(other.Ctxs)), inputFence(other.inputFence), GpuDoneTags(std::move(other.GpuDoneTags)){
+            : fence(other.fence), cbInfos(std::move(other.cbInfos)), inputFence(other.inputFence) {
             other.fence = nullptr;
         }
 
@@ -49,37 +47,26 @@ namespace FISIR {
                 fence = other.fence;
                 cbInfos = std::move(other.cbInfos);
                 inputFence = other.inputFence;
-                Ctxs = std::move(other.Ctxs);              
-                GpuDoneTags = std::move(other.GpuDoneTags); 
                 other.fence = nullptr;
             }
             return *this;
         }
 
-        RHIFence* fence{ nullptr };
+        VulkanFence* fence{ nullptr };
         std::vector<CBInfo> cbInfos{};
         bool inputFence {0};
-        std::vector<RHIContext*> Ctxs;
-        std::vector<std::atomic_bool*> GpuDoneTags;
     };
 
-
+ 
     static LockFreeQue<PendingReleaseCBInfo> PendingReleaseCBs;
     static std::vector<PendingReleaseCBInfo> PendingReleaseCBsInThread;
+    static LockFreeQue<RingCommandPool::Page*> NeedUsingPages;
 
     //Pending Upload Command Buffers
-    struct ExecuteTask {
-        RHIContext* Ctx {nullptr};
-        std::vector<RHISemaphore*> waitSeams {};
-        std::vector<RHISemaphore*> singalSeams {};
-        RHIFence* fence {nullptr};
-        std::atomic_bool* submitTag {nullptr};
-        std::atomic_bool* GpuDoneTag{ nullptr };
-
-    };
-    LockFreeQue<ExecuteTask> CmdListNeedExecute;
-    static std::mutex ContextCreateMutex;
     std::thread RHIThread, RHIResourceThread;
+
+
+
     /*
         ViewPort SwapChain Cache
     
@@ -174,13 +161,16 @@ namespace FISIR {
 		Error("Failed to initialize Vulkan Device!");
         return false;
     }
-    CommandStack = new RingCommandStack();
 
 	mFencePool = new VulkanFencePool(mDevice);
 	mSemaphorePool = new VulkanSemaphorePool(mDevice);
 	mDescriptorPool = new VulkanDescriptorPool(mDevice);
     
     mCmdPoolManager = new VulkanCommandPoolManager(mDevice);
+
+    for (int i=0; i<3; i++) {
+		CmdMemoryPool[i].cmdType = static_cast<CmdType>(i + 1);
+    }
 
     if (ViewPortSwapChainCache.empty()) Error("ViewPortSwapChainCache is empty!");
     
@@ -222,20 +212,6 @@ namespace FISIR {
       return PipelineCacheMap[PipelineState];
   }
 
-  static RHIContext* GetContext(VulkanRHI* rhi, VulkanDevice* device, CmdType type) {
-      switch (type) {
-      case CmdType::Render:
-          return new VulkanRenderContext(rhi, device);
-      case CmdType::Compute:
-          return new VulkanComputeContext(rhi, device);
-      case CmdType::Transfer:
-          return new VulkanTransferContext(rhi, device);
-      default:
-          Error("Can Not Find the Type Of This Context!");
-          return nullptr;
-	  }
-  }
-
 
   RHIShader* VulkanRHI::RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) {
       Debug("Create Vulkan Shader");
@@ -245,25 +221,6 @@ namespace FISIR {
       }
       ShadersPool.push_back(new VulkanShader(mDevice, Data, size));
       return ShadersPool.back();
-  }
-
-  void VulkanRHI::RHISubmitCommandList(RHICommandListBase* cmdList, RHIFence* fence, const std::vector<RHISemaphore*>& waitSemaphore, const std::vector<RHISemaphore*>& singalSemaphore, std::atomic_bool* submitTag, std::atomic_bool* gpuDoneTag) {
-    if (cmdList->DontExecuteAndSubmit)  {
-        if (auto ctx = cmdList->getContext()) {
-            delete ctx;
-            cmdList->setContext(nullptr);
-        }
-        Warn("CmdList Drop");
-        return;
-    }
-
-    if (!cmdList->Executed) {
-        if (!cmdList->getContext()) RHICreateContext(cmdList);
-        cmdList->ExectueList();
-    }
-    Info("Submit Cmd To Queue");
-    ExecuteTask task{cmdList->getContext(), waitSemaphore, singalSemaphore, fence, submitTag, gpuDoneTag};
-    CmdListNeedExecute.push(task);
   }
 
   RHIResourcePackResult VulkanRHI::RHICreateResourcePack(const std::vector<RHIResource*>& resources) {
@@ -320,72 +277,27 @@ namespace FISIR {
       return mFencePool->createFence(signaled, name);
   }
 
-  RingCommandStack& VulkanRHI::RHIGetCommandStack() {
-      return *CommandStack;
+  RingCommandPool::Page* VulkanRHI::RHIGetCommandPoolPage(CmdType cmdtype) {
+      return CmdMemoryPool[static_cast<int>(cmdtype)-1].acquireQue();
   }
 
+  
   void VulkanRHI::RHIFlushAndWaitAfterCommand(CmdType cmdtype) {
-    RHICommandListBase* cmdList = nullptr;
-    switch(cmdtype) {
-        case CmdType::Render:
-            cmdList = new RHIRenderCommandList(); break;
-        case CmdType::Transfer:
-            cmdList = new RHIRenderCommandList(); break;
-        case CmdType::Compute:
-            cmdList = new RHIRenderCommandList(); break;
-    }
-
-    if (!cmdList) return;
-    std::atomic_bool tag = 0;
-    RHICreateContext(cmdList);
-    cmdList->ExectueList();
-    ExecuteTask task {
-        .Ctx = cmdList->getContext(),
-        .GpuDoneTag = &tag,
-    };
-    CmdListNeedExecute.push(task);
-        
-    Warn("Waitting after Command Done...");
     
-    
-    while(!tag.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
-    }
-    
-    Warn("after Command had been Done");
-
-    delete cmdList;
-  }
-
-  void VulkanRHI::RHICreateContext(RHICommandListBase* cmdlist) {
-    cmdlist->setContext(GetContext(this, mDevice, cmdlist->getCommandListType()));
   }
 
   void VulkanRHI::RHIDestroyFence(RHIFence* fence) {
       mFencePool->release(static_cast<VulkanFence*>(fence));
   }
 
-  ThreadCommanPoolListener* VulkanRHI::choiceCommandPool(CmdType type) {
-      CommandPoolType typ;
-
-      switch(type) {
-        case CmdType::Render :typ = _Graphics_; break;
-        case CmdType::Transfer:typ = _Transfer_; break;
-        case CmdType::Compute:typ = _Compute_; break;
-      }
-      return new ThreadCommanPoolListener(mCmdPoolManager, typ);
-  }
-
-  ThreadCommanPoolListener* VulkanRHI::choiceCommandPool(uint32_t FamilyIndex) {
-      return new ThreadCommanPoolListener(mCmdPoolManager, _Presnet_ , FamilyIndex);
-  }
-
+  void VulkanRHI::RHISubmitPage(RingCommandPool::Page* page, RHIFence* fence, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores) {
   
+  }
 
   template<class T_, class F_>
   bool TwoPointerSwapPop(std::vector<T_>& Target, F_ Judgefunc) {
       for (int l = 0, r = Target.size() - 1; l <= r; ) {
-          if (Judgefunc(Target, r)) {
+          if (Judgefunc(Target[r])) {
               Target.pop_back();
               r--;
           }
@@ -400,98 +312,36 @@ namespace FISIR {
 
   void VulkanRHI::VulkanRHILoop() {
     Debug("RHI Thread ID: {}", std::this_thread::get_id());
-    const int BATCH_SIZE = 8;  // 积累 8 个任务后提交
-    const float MAX_BATCH_WAIT_MS = 2.0f;  // 最多等待 2ms
     
-    std::vector<VkCommandBuffer> RenderCMDs, TransferCMDs, ComputeCMDs;
-    std::vector<CBInfo> RenderCMDInfos, TransferCMDInfos, ComputeCMDInfos;
-    std::vector<RHIContext*> ctxs; std::vector<std::atomic_bool*> submitTags, gpuDoneTags;
-    
-    while (!stopTag || !CmdListNeedExecute.empty()) {
-        RenderCMDs.clear(), TransferCMDs.clear(), ComputeCMDs.clear();
-        RenderCMDInfos.clear(), TransferCMDInfos.clear(), ComputeCMDInfos.clear();
-        ctxs.clear(); submitTags.clear(); gpuDoneTags.clear();
+    std::vector<SubmitPageTask> PendingReadDonePages;
+    std::vector<CBInfo> Cbs;
+    while(!stopTag) {
+		TwoPointerSwapPop(PendingReadDonePages, [](SubmitPageTask& task)->bool {
+			if () {
+				return false;
+			}
+			else {
+				SubmitPageTasks.push(task);
+				return true;
+			}
+		}); 
 
-        auto batchStart = std::chrono::steady_clock::now();
-        int collected = 0;
 
-        while (collected < BATCH_SIZE && !stopTag) {
-            ExecuteTask task = {};
-            if (!CmdListNeedExecute.pop(task))  {
-                auto now = std::chrono::steady_clock::now();
-                float elapsed = std::chrono::duration<float, std::milli>(now - batchStart).count();
-                if (elapsed > MAX_BATCH_WAIT_MS && collected > 0) break;  
-                continue;
-            }
-            else {
-                collected++;
-            }
-            auto& [context, waitSems, singalSems, fence, submitTag, gpuDoneTag] = task;
-            
-            if (!context) {
-                Error("Context null");
-                continue;
-            }
-            auto vkctx = context->as<VulkanContextBase>();
-
-            CBInfo cmdBuffer = vkctx->getBackCBInfo();
-            
-
-            switch (cmdBuffer.poolType) {
-            case CommandPoolType::_Graphics_:
-                if (!fence){
-                    RenderCMDs.push_back(cmdBuffer.buffer);
-                    RenderCMDInfos.push_back(std::move(cmdBuffer));
-                    if (submitTag) submitTags.push_back(submitTag);
-                    if (gpuDoneTag) gpuDoneTags.push_back(gpuDoneTag);
-                    ctxs.push_back(context);
-                }
-                else {
-                    mDevice->submitCommandBuffer(
-                        { cmdBuffer.buffer }, 
-                        CommandPoolType::_Graphics_, 
-                        !singalSems.empty() ? singalSems : std::vector<RHISemaphore*>{},
-                        !waitSems.empty() ? waitSems : std::vector<RHISemaphore*>{},
-                        fence
-                    );
-                    Debug("Emplace to PendingReleaseCBs with fence: 0x{:x}, gpuDoneTag: 0x{:x}",
-                        (size_t)fence, (size_t)gpuDoneTag);
-                    PendingReleaseCBs.emplace(
-                        fence, 
-                        std::vector{ std::move(cmdBuffer) }, 
-                        std::vector{ context },  
-                        gpuDoneTag ? std::vector{gpuDoneTag} : std::vector<std::atomic_bool*>{},
-                        1
-                    );
-                    if (submitTag) submitTag->store(1, std::memory_order_release);
-                }
-                break;
-            case CommandPoolType::_Transfer_:
-                TransferCMDs.push_back(cmdBuffer.buffer);
-                TransferCMDInfos.push_back(std::move(cmdBuffer));
-                break;
-            case CommandPoolType::_Compute_:
-                ComputeCMDs.push_back(cmdBuffer.buffer);
-                ComputeCMDInfos.push_back(std::move(cmdBuffer));
-                break;
-            }
-            
+		SubmitPageTask task;
+        if (!SubmitPageTasks.pop(task)) {
+			std::this_thread::yield();
+            continue;
         }
 
-        if (!RenderCMDs.empty()) {
-			auto fence = mFencePool->createFence(false, "RenderFence");
-            mDevice->submitCommandBuffer(RenderCMDs, CommandPoolType::_Graphics_, {}, {}, fence);
-            Debug("Emplace to PendingReleaseCBs with fence: 0x{:x}, gpuDoneTags count: {}",
-                (size_t)fence, gpuDoneTags.size());
-            PendingReleaseCBs.emplace(fence, std::move(RenderCMDInfos), std::move(ctxs), std::move(gpuDoneTags));
-            for (auto& tag : submitTags) tag->store(1, std::memory_order_release);
+        if (task.page->Flags.load(std::memory_order_acquire) & RingCommandPool::IsReading) { 
+			PendingReadDonePages.push_back(task);
+            std::this_thread::yield();
+            continue;
         }
-
-
-	    //Create CBArray from CmdBufferNeedUpload
-
 
     }
+
+    
   }
 
 
@@ -505,14 +355,11 @@ namespace FISIR {
             PendingReleaseCBsInThread.shrink_to_fit();
         }
 
-        TwoPointerSwapPop(PendingReleaseCBsInThread, [this](std::vector<PendingReleaseCBInfo>& target, int idx)->bool {
-            auto& [fence, cbs, fromframe, ctxs, gpuDoneTags] = target[idx];
-            Debug("Thread Info: fence=0x{:x}, gpuDoneTags.size={}", (size_t)fence, gpuDoneTags.size());
+        TwoPointerSwapPop(PendingReleaseCBsInThread, [this](PendingReleaseCBInfo& value)->bool {
+            auto& [fence, cbs, inputFence] = value;
 
             if (!fence || fence->isSignaled()) {
-                for (auto& gpuDoneTag : gpuDoneTags) gpuDoneTag->store(1, std::memory_order_release), Debug("gpuDoneTag set to 1 In ResourceThreadVector");
-                if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
-                for (auto ctx : ctxs) delete ctx;
+                if (fence && !inputFence) mFencePool->release(static_cast<VulkanFence*>(fence));
                 for (auto& cb : cbs) {
                     cb.pool->releaseCommandBuffer(cb);
                     for (auto& [resource, change] : cb.QuoteResources) {
@@ -521,7 +368,7 @@ namespace FISIR {
                         }
                     }
                 }
-                cbs.clear();
+				cbs.clear();
                 return true;
             }
             return stopTag;
@@ -535,10 +382,9 @@ namespace FISIR {
                 Warn("PendingReleaseCBs Pop Failed");
                 continue;
             }
-            auto& [fence, cbs, fromframe, ctxs, gpuDoneTags] = Info;
+            auto& [fence, cbs, fromframe] = Info;
             
             if (!fence || fence->isSignaled()) {
-                for (auto& gpuDoneTag : gpuDoneTags) gpuDoneTag->store(1, std::memory_order_release);
                 for (auto& cb : cbs) {
                     cb.pool->releaseCommandBuffer(cb);
                     for (auto& [resource, change] : cb.QuoteResources) {

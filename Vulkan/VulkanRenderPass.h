@@ -23,6 +23,8 @@ namespace FISIR {
 
 		virtual uint32_t getAttachmentCount() const override;
 
+		uint32_t getSubPassCount() const;
+
 		__VKRenderPassData* mData;
 		VulkanDevice* mDevice;
 	};

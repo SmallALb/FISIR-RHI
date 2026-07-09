@@ -19,13 +19,15 @@ namespace FISIR{
 
 		virtual  void* getFenceHandle() const override;
 
-		virtual  void reset() override;
+		virtual Statue getFenceStage() const override;
 
-		virtual void wait() override;
+		virtual void reset() override;
 
-		virtual  bool isSignaled() override;
+		void wait() ;
 
-		virtual  bool waitFor(uint64_t timeout = UINT64_MAX) override;
+		bool isSignaled() ;
+
+		bool waitFor(uint64_t timeout = UINT64_MAX) ;
 
 #ifdef _DEBUG
 	const char* getName() const {return mName;}
@@ -36,8 +38,7 @@ namespace FISIR{
 	private:
 		VulkanDevice* mDevice;
 		VkFence_T* mFence;
-		std::mutex fenceMtx;
-
+		std::atomic<Statue> fenceStatue;
 #ifdef _DEBUG
 	const char* mName {nullptr};
 #endif 

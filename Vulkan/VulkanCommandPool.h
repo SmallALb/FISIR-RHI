@@ -6,6 +6,7 @@
 #include <atomic>
 #include "../LockFreeQue.h"
 #include <mutex>
+#include "../RHICommandList.h"
 struct VkCommandBuffer_T;
 
 namespace FISIR{
@@ -15,6 +16,7 @@ namespace FISIR{
 	class VulkanViewport;
 	class VulkanFence;
 	class VulkanSwapChain;
+	class VulkanRenderPass;
 	struct __VKCommandPoolData;
 
 	
@@ -22,14 +24,6 @@ namespace FISIR{
 		_Primary_,
 		_Secondary_,
 		COMMAND_BUFFER_TYPE_COUNT
-	};
-	
-	enum CommandPoolType {
-		_Graphics_,
-		_Compute_,
-		_Transfer_,
-		_Presnet_,
-		COMMAND_POOL_TYPE_COUNT
 	};
 	
 
@@ -42,7 +36,7 @@ namespace FISIR{
 	struct CBInfo {
 		VkCommandBuffer_T* buffer{ nullptr };
 		CommandBufferType type;
-		CommandPoolType poolType;
+		CmdType poolType;
 		VulkanCommandPool* pool{ nullptr };
 		std::unordered_map<RHIResource*, ResourceWillBeLayout_Access> QuoteResources;
 	
@@ -51,7 +45,7 @@ namespace FISIR{
 		CBInfo(
 			VkCommandBuffer_T* buffer_,
 			CommandBufferType type_,
-			CommandPoolType poolType_,
+			CmdType poolType_,
 			VulkanCommandPool* pool_
 		): buffer(buffer_), type(type_), poolType(poolType_), pool(pool_) {}
 
@@ -82,7 +76,7 @@ namespace FISIR{
 
 	class VulkanCommandPool {
 	public:
-		VulkanCommandPool(VulkanDevice* device, CommandPoolType mType, uint32_t FamilyIndex = UINT32_MAX);
+		VulkanCommandPool(VulkanDevice* device, CmdType mType, uint32_t FamilyIndex = UINT32_MAX);
 		~VulkanCommandPool();
 
 		CBInfo createCommandBuffer(CommandBufferType cbType);
@@ -93,27 +87,25 @@ namespace FISIR{
 
 		__VKCommandPoolData* mData;
 		VulkanDevice* mDevice;
-		CommandPoolType mPoolType;
+		CmdType mPoolType;
 		std::atomic_bool UsedInThread{0};
 
 	};
 	
 
-	struct ThreadCommanPoolListener;
-
     class VulkanCommandPoolManager {
-        std::vector<VulkanCommandPool*>& getPool(CommandPoolType type);
+        std::vector<VulkanCommandPool*>& getPool(CmdType type);
 
-        LockFreeQue<VulkanCommandPool*>& getQue(CommandPoolType type);
+        LockFreeQue<VulkanCommandPool*>& getQue(CmdType type);
 
-        std::mutex& getMutex(CommandPoolType type);
+        std::mutex& getMutex(CmdType type);
 
     public:
         VulkanCommandPoolManager(VulkanDevice* device);
 
         ~VulkanCommandPoolManager();
 
-        VulkanCommandPool* getCommandPool(CommandPoolType type);
+        VulkanCommandPool* getCommandPool(CmdType type);
 
 		VulkanCommandPool* getCommandPool(uint32_t FamilyIndex);
         
@@ -128,29 +120,41 @@ namespace FISIR{
 		VulkanDevice* mDevice;
     };
 
-    struct ThreadCommanPoolListener {
+	class CommandExecuteThreadPool {
+		struct ThreadData {
+			VulkanRenderPass* renderPass{ nullptr };
+			CBInfo ExecutedCB {};
+		};
+	
+		struct ExecutedPageTask {
+			RingCommandPool::Page::BatchInfo Batch;
+			std::atomic_int* ThreadID;
+		};
 
-        ThreadCommanPoolListener(VulkanCommandPoolManager* manager, CommandPoolType type, uint32_t familyIndex = UINT32_MAX) {
-            mManager = manager;
-			if (familyIndex != UINT32_MAX) {
-				mCommandPool = mManager->getCommandPool(familyIndex);
-			}
-			else {
-				mCommandPool = mManager->getCommandPool(type);
-			}
-            if (mCommandPool) mCommandPool->UsedInThread.store(true, std::memory_order_release);
-        }
+	public:
+		CommandExecuteThreadPool(VulkanDevice* device, VulkanCommandPoolManager* VkCmdPoolManager);
 
-        ~ThreadCommanPoolListener() {
-			if (!commandPoolRunning.load(std::memory_order_acquire)) return;
-            mCommandPool->UsedInThread.store(false, std::memory_order_release);
-            mManager->reBackCommandPool(mCommandPool);
-        }
+		~CommandExecuteThreadPool();
 
-        VulkanCommandPool* mCommandPool{ nullptr };
-        VulkanCommandPoolManager* mManager{ nullptr };
-		static std::atomic_bool commandPoolRunning;
-    };
+		void pushCommandBatch(RingCommandPool::Page* page, std::atomic_int* threadId);
+
+		CBInfo getExecutedCB(uint32_t ThreadId, VulkanRenderPass** renderPass = nullptr);
+		
+	private:
+		void ThreadLoop(int ThreadID);
+
+		LockFreeQue<ExecutedPageTask> NeedExecutePages;
+		
+
+		std::vector<std::thread> Threads;
+		std::vector<std::atomic_bool> ThreadFlags;
+		std::vector<ThreadData> ThreadExecutedCBs;
+		std::atomic_bool StopTag {0};
+		
+		VulkanCommandPoolManager* usingManager;
+		VulkanDevice* mDevice;
+ 	};
+
 
 }
 

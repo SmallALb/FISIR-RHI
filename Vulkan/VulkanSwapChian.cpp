@@ -124,7 +124,7 @@ namespace FISIR {
 
 
         auto start = std::chrono::steady_clock::now();
-        if (!fence->isSignaled()) return RHISwapChain::FAILEID; 
+        if (fence->getFenceStage() != RHIFence::Statue::Signaled) return RHISwapChain::FAILEID; 
         
         auto end = std::chrono::steady_clock::now();
         Debug("Acquire Frame Fence Duration: {}", std::chrono::duration<double>(end - start).count() * 1e9);
