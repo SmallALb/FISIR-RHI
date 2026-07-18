@@ -540,7 +540,6 @@ namespace FISIR {
         Debug("Resource Thread ID: {}", std::this_thread::get_id());
         while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
             static int shrink_counter = 0;
-                Debug("Pending CB sets waiting for fence: {}", PendingReleaseCBsInThread.size());
             if (++shrink_counter % 60 == 0 && PendingReleaseCBsInThread.empty()) {
                 PendingReleaseCBsInThread.shrink_to_fit();
             }
