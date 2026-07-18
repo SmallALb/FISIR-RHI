@@ -85,7 +85,7 @@ namespace FISIR {
 
 		TextureLayout getTextureLayout(RHITexture* texture);
 
-		void submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence = nullptr);
+		void submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence = nullptr);
 
 		bool isDescriptorHeapSupported() const;
 

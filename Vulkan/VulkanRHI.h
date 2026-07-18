@@ -57,13 +57,10 @@ namespace FISIR {
 
 		virtual RingCommandPool::Page* RHIGetCommandPoolPage(CmdType cmdtype) override;
 
-		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) override;
-
 		virtual void RHIDestroyFence(RHIFence* fence) override;
-
-		virtual void RHISubmitPage(RingCommandPool::Page* page, RHIFence* fence, const std::vector<RHISemaphore*>& SignalSemaphores = {}, const std::vector<RHISemaphore*>& WaitSemaphores = {}) override;
-
 	private:
+		void PagePrepareLoop();
+
 		void VulkanRHILoop();
 
 		void VulkanResourceLoop();

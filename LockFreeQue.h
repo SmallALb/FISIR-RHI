@@ -1,5 +1,7 @@
 #pragma once
 #include <optional>
+#include <semaphore>
+#include <chrono>
 #include <atomic>
 
 namespace FISIR {
@@ -29,26 +31,26 @@ namespace FISIR {
 		LockFreeQue(const LockFreeQue&) = delete;
 		LockFreeQue& operator=(const LockFreeQue&) = delete;
 
-		
-
-		LockFreeQue(LockFreeQue&& other) {
-			clear();
-			head_(other.head_.exchange(nullptr, std::memory_order_acq_rel)),
-			tail_(other.tail_.exchange(nullptr, std::memory_order_acq_rel)), Size(other.Size.load());
-		}
-		LockFreeQue& operator=(LockFreeQue&& other) {
-			if (this != &other) {
-				clear();
-				head_(other.head_.exchange(nullptr, std::memory_order_acq_rel)),
-				tail_(other.tail_.exchange(nullptr, std::memory_order_acq_rel)), Size(other.Size.load());
-			}
-			return *this;
-		}
+		LockFreeQue(LockFreeQue&&) = delete;
+		LockFreeQue& operator=(LockFreeQue&&) = delete;
 
 		~LockFreeQue() {
-			if (!getPtr(head_.load())) return;
-			clear();
-			delete getPtr(head_.load());
+			stop_.store(true, std::memory_order_release);
+
+			for (int i=0; i<1024; i++) sem_.release();
+
+			uintptr_t headVal = head_.exchange(0, std::memory_order_acq_rel);
+			tail_.store(0, std::memory_order_release);
+			if (headVal == 0) return;
+
+			Node* node = getPtr(headVal);
+			while (node) {
+				Node* next = getPtr(node->nxt.load(std::memory_order_acquire));
+				delete node;
+				node = next;
+			}
+			head_.store(0, std::memory_order_release);
+			tail_.store(0, std::memory_order_release);
 		}
 
 		void push(const T& val) {
@@ -111,12 +113,26 @@ namespace FISIR {
 			}
 		}
 
+		bool pop_wait(T& ret) {
+			while(!stop_.load(std::memory_order_acquire)) {
+				if (pop(ret)) return true;
+				sem_.try_acquire_for(std::chrono::milliseconds(1));
+			}
+			return false;
+		}
+
+		void forceClear() {
+			head_.store(0, std::memory_order_release);
+			tail_.store(0, std::memory_order_release);
+			Size.store(0, std::memory_order_release);
+		}
 
 		size_t size() const {return Size;}
 
 		bool empty() const {
 			Node_T headVal = head_.load(std::memory_order_acquire);
 			Node* head = getPtr(headVal);
+			if (head == nullptr) return true;
 			Node_T nextVal = head->nxt.load(std::memory_order_acquire);
 			return getPtr(nextVal) == nullptr;
 		}
@@ -124,6 +140,10 @@ namespace FISIR {
 		void clear() {
 			T tmp;
 			while(pop(tmp));
+		}
+
+		void stopQue() {
+			stop_.store(true, std::memory_order_release);
 		}
 
 	private:
@@ -147,6 +167,7 @@ namespace FISIR {
 						auto NewTail_T = createNode(getPtr(NewNode_T), (OldTag + 1));
 						tail_.compare_exchange_weak(OldTail_T, NewTail_T, std::memory_order_release);
 						Size++;
+						sem_.release();
 						return;
 					}
 				}
@@ -168,5 +189,7 @@ namespace FISIR {
 	private:
 		Node_T head_{0}, tail_{0};
 		std::atomic<size_t> Size{0};
+		std::binary_semaphore sem_{ 0 };          
+		std::atomic<bool> stop_{ false };         
 	};
 }

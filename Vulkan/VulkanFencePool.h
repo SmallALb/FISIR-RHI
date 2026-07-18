@@ -25,9 +25,10 @@ namespace FISIR{
 
 		void wait() ;
 
+		bool waitFor(uint64_t timeout = UINT64_MAX) ;
+
 		bool isSignaled() ;
 
-		bool waitFor(uint64_t timeout = UINT64_MAX) ;
 
 #ifdef _DEBUG
 	const char* getName() const {return mName;}

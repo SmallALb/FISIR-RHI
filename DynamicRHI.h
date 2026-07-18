@@ -23,7 +23,6 @@ namespace FISIR {
 	struct RHIPipelineState;
 	struct RHIRenderPassInfo;
 	
-	
 	class DynamicRHI {
 	public:
 		virtual ~DynamicRHI() {}
@@ -51,8 +50,6 @@ namespace FISIR {
 
 		virtual RHISampler* RHICreateSampler(const SamplerInfo& info) = 0;
 
-		virtual void RHIFlushAndWaitAfterCommand(CmdType cmdtype) = 0;
-
 		virtual RHIFence* RHICreateFence(bool signaled = false, const char* name = "Unnamed Fence") = 0;
 
 		virtual RHISwapChain* RHIGetSwapChain(RHIViewport* viewport) = 0;
@@ -60,8 +57,6 @@ namespace FISIR {
 		virtual RingCommandPool::Page* RHIGetCommandPoolPage(CmdType cmdtype) = 0;
 
 		virtual void RHIDestroyFence(RHIFence* fence) = 0;
-
-		virtual void RHISubmitPage(RingCommandPool::Page* page, RHIFence* fence, const std::vector<RHISemaphore*>& SignalSemaphores = {}, const std::vector<RHISemaphore*>& WaitSemaphores = {}) = 0;
 
 
 	};

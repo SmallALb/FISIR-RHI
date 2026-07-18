@@ -189,19 +189,19 @@ namespace FISIR{
 		return TextureLayout::Undefined;
 	}
 
-	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CommandPoolType poolType, 
+	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType,
 		const std::vector<RHISemaphore*>& SignalSemaphores, 
 		const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
 		switch (poolType) {
-			case _Graphics_:
+			case CmdType::Render:
 				Debug("Submit In Graphic Queue");
 				mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;
-			case _Compute_:
+			case CmdType::Compute:
 				Debug("Submit In Compute Queue");
 				mComputeQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;
-			case _Transfer_:
+			case CmdType::Transfer:
 				Debug("Submit In Transfer Queue");
 				mTransferQueue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;

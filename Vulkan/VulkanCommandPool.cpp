@@ -4,6 +4,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanRenderPass.h"
 #include "VulkanFrameBuffer.h"
+#include "VulkanFencePool.h"
 #include "VulkanDescriptorPool.h"
 #include <vulkan/vulkan.h>
 #include <vector>
@@ -106,10 +107,8 @@ namespace FISIR{
 		VkCommandPool mPool;
 		std::vector<VkCommandBuffer> PrimaryCommandBufferPool;
 		std::vector<VkCommandBuffer> SecondaryCommandBufferPool;
-		std::unordered_map<VkCommandBuffer, size_t> PrimaryCommandBufferUsage; 
-		std::unordered_map<VkCommandBuffer, size_t> SecondaryCommandBufferUsage;
-		std::queue<size_t> FreePrimaryCommandBuffers;
-		std::queue<size_t> FreeSecondaryCommandBuffers;
+		LockFreeQue<size_t> FreePrimaryCommandBuffers;
+		LockFreeQue<size_t> FreeSecondaryCommandBuffers;
 	};
 
 	
@@ -141,12 +140,10 @@ namespace FISIR{
 		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->SecondaryCommandBufferPool.data());
 	
 		for (size_t i = 0; i < mData->PrimaryCommandBufferPool.size(); ++i) {
-			mData->PrimaryCommandBufferUsage[mData->PrimaryCommandBufferPool[i]] = i;
 			mData->FreePrimaryCommandBuffers.push(i);
 		}
 
 		for (size_t i = 0; i < mData->SecondaryCommandBufferPool.size(); ++i) {
-			mData->SecondaryCommandBufferUsage[mData->SecondaryCommandBufferPool[i]] = i;
 			mData->FreeSecondaryCommandBuffers.push(i);
 		}
 	}
@@ -176,19 +173,24 @@ namespace FISIR{
 			}
 			if (cbType == _Primary_) {
 				mData->PrimaryCommandBufferPool.push_back(newCB);
-				mData->FreePrimaryCommandBuffers.push(mData->PrimaryCommandBufferPool.size() - 1);
+				size_t index = mData->PrimaryCommandBufferPool.size()-1;
+				CBInfo cbInfo(mData->PrimaryCommandBufferPool[index], cbType, mPoolType, this, index);
+				return cbInfo;
 			}
 			else {
 				mData->SecondaryCommandBufferPool.push_back(newCB);
-				mData->FreeSecondaryCommandBuffers.push(mData->SecondaryCommandBufferPool.size() - 1);
+				size_t index = mData->SecondaryCommandBufferPool.size() - 1;
+				CBInfo cbInfo(mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this, index);
+				return cbInfo;
 			}
-			(cbType == _Primary_ ? mData->PrimaryCommandBufferUsage[newCB] : mData->SecondaryCommandBufferUsage[newCB]) 
-				= (cbType == _Primary_ ? mData->FreePrimaryCommandBuffers.size()-1 : mData->FreeSecondaryCommandBuffers.size()-1);
 		}
-		uint32_t index = (cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.front() : mData->FreeSecondaryCommandBuffers.front();
-		(cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.pop() : mData->FreeSecondaryCommandBuffers.pop();
-		
-		CBInfo cbInfo((cbType == _Primary_) ? mData->PrimaryCommandBufferPool[index] : mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this);
+		size_t index = SIZE_MAX;
+		(cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.pop(index) : mData->FreeSecondaryCommandBuffers.pop(index);
+		if (index == SIZE_MAX) {
+			Error("Can't give a Free CmdBuffer");
+			return CBInfo();
+		}
+		CBInfo cbInfo((cbType == _Primary_) ? mData->PrimaryCommandBufferPool[index] : mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this, index);
 
 		if (cbInfo.buffer == VK_NULL_HANDLE) {
 			Error("Failed to allocate command buffer!");
@@ -203,8 +205,9 @@ namespace FISIR{
 			return;
 		}
 		vkResetCommandBuffer(cbInfo.buffer, 0);
-		(cbInfo.type == _Primary_) ? mData->FreePrimaryCommandBuffers.push(mData->PrimaryCommandBufferUsage[cbInfo.buffer]) : mData->FreeSecondaryCommandBuffers.push(mData->SecondaryCommandBufferUsage[cbInfo.buffer]);
-
+		(cbInfo.type == _Primary_) ? 
+			mData->FreePrimaryCommandBuffers.push(cbInfo.index) : 
+			mData->FreeSecondaryCommandBuffers.push(cbInfo.index);
 	}
 
 
@@ -320,9 +323,6 @@ namespace FISIR{
 
 	CommandExecuteThreadPool::CommandExecuteThreadPool(VulkanDevice* device, VulkanCommandPoolManager* VkCmdPoolManager) : usingManager(VkCmdPoolManager), mDevice(device) {
 		Threads.resize(5);
-		ThreadFlags.resize(5, 0);
-		ThreadExecutedCBs.resize(5);
-
 		for (size_t i=0; i<Threads.size(); ++i) {
 			Threads[i] = std::thread(&CommandExecuteThreadPool::ThreadLoop, this, static_cast<int>(i));
 		}
@@ -330,49 +330,29 @@ namespace FISIR{
 
 	CommandExecuteThreadPool::~CommandExecuteThreadPool() {
 		StopTag = 1;
-
+		Debug("Thread Pool Stop");
+		NeedExecutePages.stopQue();
 		for (auto& t : Threads) t.join();
 	}
 
-	void CommandExecuteThreadPool::pushCommandBatch(RingCommandPool::Page* page, std::atomic_int* threadId) {
-		RingCommandPool::Page::BatchInfo batchInfo;
-		if (page->BatchQueue.pop(batchInfo)) {
-			NeedExecutePages.push({ batchInfo, threadId });
-		}
+	void CommandExecuteThreadPool::pushCommandBatch(RingCommandPool::Page::BatchInfo batch, ExecuteResultData* result, std::atomic_uint32_t* finishCount) {
+		NeedExecutePages.push({ batch, result, finishCount });
 	}
 
-	
-	CBInfo&& CommandExecuteThreadPool::getExecutedCB(uint32_t ThreadId, VulkanRenderPass** renderPass) {
-		if (ThreadFlags[ThreadId].load(std::memory_order_acquire)) {
-			ThreadData& data = ThreadExecutedCBs[ThreadId];
-			ThreadFlags[ThreadId].store(0, std::memory_order_release);
-			if (renderPass) *renderPass = data.renderPass;
-			return std::move(data.ExecutedCB);
-		}
-		return CBInfo();
-	}
-
-
-	void CommandExecuteThreadPool::ThreadLoop(int ThreadID) {
+	void CommandExecuteThreadPool::ThreadLoop(uint32_t ThreadID) {
 		
 		while(!StopTag.load()) {
-			if (ThreadFlags[ThreadID].load(std::memory_order_acquire)) {
-				std::this_thread::yield();
-				continue;
-			}
-
 			ExecutedPageTask exeTask;
-			if (NeedExecutePages.empty() || !NeedExecutePages.pop(exeTask)) {
-				std::this_thread::yield();
+
+			if (!NeedExecutePages.pop_wait(exeTask) || StopTag.load()) {
 				continue;
 			}
 
-			auto& [batchInfo, threadId] = exeTask;
-			threadId->store(ThreadID, std::memory_order_release);
+			auto& [batchInfo, result, finishCount] = exeTask;
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
 			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
-			auto& [renderPass, cmdInfo] = ThreadExecutedCBs[ThreadID];
+			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals] = *result;
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
@@ -381,20 +361,22 @@ namespace FISIR{
 			if (currentCmd == RHICommandT::BeginRenderPass) {
 				BeginRenderPass_CmdInfo info;
 				batchInfo.getBatchData(info);
-				renderPass = static_cast<VulkanRenderPass*>(info.frame->getFrameRenderPass());
-				inheritanceInfo.renderPass = static_cast<VkRenderPass>(renderPass->getRenderPassHandle());
+				framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
+				inheritanceInfo.renderPass = static_cast<VkRenderPass>(framebuffer->getFrameRenderPass()->getRenderPassHandle());
 				inheritanceInfo.framebuffer = static_cast<VkFramebuffer>(info.frame->getResourceAPIHandle());
-				inheritanceInfo.subpass = 0;
+				inheritanceInfo.subpass = info.subpassIndex;
+				subpassIndex = info.subpassIndex;
+				framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
+				clearval = info.clearValue;
 			}
-
 
 			VkCommandBufferBeginInfo BeginInfo{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | (currentCmd == RHICommandT::BeginRenderPass ? VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT : (VkCommandBufferUsageFlagBits)0),
-				.pInheritanceInfo = currentCmd == RHICommandT::BeginRenderPass ? &inheritanceInfo : nullptr
+				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | (currentCmd == RHICommandT::BeginRenderPass ? VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT : (VkCommandBufferUsageFlags)0),
+				.pInheritanceInfo = &inheritanceInfo
 			};
 			vkBeginCommandBuffer(cmdInfo.buffer, &BeginInfo);
-			while(currentCmd != RHICommandT::End && currentCmd != RHICommandT::EndRenderPass) {
+			while(batchInfo.ReadBegin < batchInfo.ReadEnd) {
 
 				switch (currentCmd) {
 					case RHICommandT::BeginRenderPass: {
@@ -403,6 +385,7 @@ namespace FISIR{
 					case RHICommandT::EndRenderPass: {
 						ReserveInput_CmdInfo info;
 						batchInfo.getBatchData(info);
+						renderPassEndTag = true;
 						break;
 					}
 					case RHICommandT::DrawPrimitive: {
@@ -418,14 +401,17 @@ namespace FISIR{
 						break;
 					}
 					case RHICommandT::BindPipeline: {
-						RHIPipeline* info;
+						BindPipeline_CmdInfo info;
 						batchInfo.getBatchData(info);
-						vkCmdBindPipeline(cmdInfo.buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, static_cast<VkPipeline>(info->getPipelineHandle()));
+						Debug("Thread {}: BindPipeline, pipeline ptr = 0x{:x}", ThreadID, (size_t)(info.pipeline));
+						vkCmdBindPipeline(cmdInfo.buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));
 						break;
 					}
 					case RHICommandT::BindVertexBuffer: {
 						BindVertextBuffer_CmdInfo info;
 						batchInfo.getBatchData(info);
+						Debug("Thread {}: BindVertexBuffer, buffer ptr = 0x{:x}, binding = {}, offset = {}",
+							ThreadID, (size_t)info.buffer, info.binding, info.offset);
 						VkBuffer buffer = static_cast<VkBuffer>(info.buffer->getResourceAPIHandle());
 						vkCmdBindVertexBuffers(cmdInfo.buffer, info.binding, 1, &buffer, &info.offset);
 						break;
@@ -470,8 +456,8 @@ namespace FISIR{
 								.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 								.srcAccessMask = getVulkanAccessFlags(info.waitForAccessDone),
 								.dstAccessMask = getVulkanAccessFlags(info.beginAccessWhenDone),
-								.oldLayout = static_cast<VkImageLayout>(info.texture[i]->getCurrentLayout()),
-								.newLayout = static_cast<VkImageLayout>(info.newLayout),
+								.oldLayout = getVulkanImageLayout(info.texture[i]->getCurrentLayout()),
+								.newLayout = getVulkanImageLayout(info.newLayout),
 								.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 								.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 								.image = static_cast<VkImage>(info.texture[i]->getResourceAPIHandle()),
@@ -481,6 +467,7 @@ namespace FISIR{
 							};
 							cmdInfo.QuoteResources[info.texture[i]] = { info.beginAccessWhenDone, info.newLayout };
 						}
+						free(info.texture);
 						vkCmdPipelineBarrier(
 							cmdInfo.buffer, 
 							VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
@@ -505,6 +492,7 @@ namespace FISIR{
 							};
 							cmdInfo.QuoteResources[info.buffer[i]] = { info.beginAccessWhenDone, TextureLayout::Undefined };
 						}
+						free(info.buffer);
 						vkCmdPipelineBarrier(
 							cmdInfo.buffer, 
 							VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
@@ -555,15 +543,29 @@ namespace FISIR{
 						break;
 					}
 					case RHICommandT::End: {
-						ReserveInput_CmdInfo info;
+						End_CmdInfo info;
 						batchInfo.getBatchData(info);
+						fence.store(static_cast<VulkanFence*>(info.fence), std::memory_order_release);
+						if (info.waits != nullptr) {
+							waits = std::vector<RHISemaphore*>(info.waits, info.waits + info.waitcount);
+							free(info.waits);
+						}
+						if (info.signals != nullptr) {
+							signals = std::vector<RHISemaphore*>(info.signals, info.signals + info.signalcount);
+							free(info.signals);
+						}
+						Debug("ThreadLoop: result对象地址 = 0x{:x}, fence地址 = 0x{:x}, 写入值 = 0x{:x}",
+							(size_t)result,
+							(size_t)&fence,
+							(size_t)static_cast<VulkanFence*>(info.fence));
+						commandsEndTag = true;
 						break;
 					}
 				}		
 				currentCmd = batchInfo.getCommandType();
 			}
 			vkEndCommandBuffer(cmdInfo.buffer);
-			ThreadFlags[ThreadID].store(1, std::memory_order_release);
+			finishCount->fetch_add(1, std::memory_order_release);
 
 			usingManager->reBackCommandPool(cmdPool);
 		}

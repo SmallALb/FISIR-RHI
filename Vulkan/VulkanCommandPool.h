@@ -17,6 +17,7 @@ namespace FISIR{
 	class VulkanFence;
 	class VulkanSwapChain;
 	class VulkanRenderPass;
+	class VulkanFrameBuffer;
 	struct __VKCommandPoolData;
 
 	
@@ -39,6 +40,7 @@ namespace FISIR{
 		CmdType poolType;
 		VulkanCommandPool* pool{ nullptr };
 		std::unordered_map<RHIResource*, ResourceWillBeLayout_Access> QuoteResources;
+		size_t index {SIZE_MAX};
 	
 		CBInfo() {}
 
@@ -46,15 +48,17 @@ namespace FISIR{
 			VkCommandBuffer_T* buffer_,
 			CommandBufferType type_,
 			CmdType poolType_,
-			VulkanCommandPool* pool_
-		): buffer(buffer_), type(type_), poolType(poolType_), pool(pool_) {}
+			VulkanCommandPool* pool_,
+			uint32_t idx
+		): buffer(buffer_), type(type_), poolType(poolType_), pool(pool_), index(idx) {}
 
 		CBInfo(const CBInfo& other) :
 			buffer(other.buffer),
 			type(other.type),
 			poolType(other.poolType),
 			pool(other.pool),
-			QuoteResources(other.QuoteResources)  
+			QuoteResources(other.QuoteResources),
+			index(other.index)
 		{}
 
 
@@ -63,14 +67,34 @@ namespace FISIR{
 			pool(other.pool), 
 			QuoteResources(std::move(other.QuoteResources)),
 			type(other.type),
-			poolType(other.poolType)
+			poolType(other.poolType),
+			index(other.index)
 		{
 			other.buffer = nullptr;
 			other.pool = nullptr;
 		}
 
-		CBInfo& operator=(CBInfo&& other) noexcept = default;
-		CBInfo& operator=(const CBInfo& other) = default;
+		CBInfo& operator=(CBInfo&& other) noexcept {
+			buffer = other.buffer;
+			type = other.type;
+			poolType = other.poolType;
+			pool = other.pool;
+			QuoteResources = std::move(other.QuoteResources);
+			index = other.index;  
+			other.buffer = nullptr;
+			other.pool = nullptr;
+			return *this;
+		}
+
+		CBInfo& operator=(const CBInfo& other) {
+			buffer = other.buffer;
+			type = other.type;
+			poolType = other.poolType;
+			pool = other.pool;
+			QuoteResources = other.QuoteResources;
+			index = other.index;  
+			return *this;
+		}
 	};
 
 
@@ -120,35 +144,51 @@ namespace FISIR{
 		VulkanDevice* mDevice;
     };
 
-	class CommandExecuteThreadPool {
-		struct ThreadData {
-			VulkanRenderPass* renderPass{ nullptr };
-			CBInfo ExecutedCB {};
-		};
+
+
+	struct ExecuteResultData {
+		VulkanFrameBuffer* frameBuffer{ nullptr };
+		ClearValue clearValue{};
+		bool renderPassEndTag{ false };
+		bool commandsEndTag {false};
+		uint32_t subpassIndex{ 0 };
+		CBInfo ExecutedCB {};
+		std::atomic<VulkanFence*> fence { nullptr };
+		std::vector<RHISemaphore*> waits;
+		std::vector<RHISemaphore*> signals;
+
+		ExecuteResultData& operator=(ExecuteResultData&& other) noexcept {
+			frameBuffer = other.frameBuffer;
+			clearValue = other.clearValue;
+			renderPassEndTag = other.renderPassEndTag;
+			subpassIndex = other.subpassIndex;
+			ExecutedCB = std::move(other.ExecutedCB);
+			waits = std::move(other.waits);
+			signals = std::move(other.signals);
+			fence.store(other.fence, std::memory_order_release);
+			return *this;
+		}
+	};
 	
+	class CommandExecuteThreadPool {	
 		struct ExecutedPageTask {
 			RingCommandPool::Page::BatchInfo Batch;
-			std::atomic_int* ThreadID;
+			ExecuteResultData* result;
+			std::atomic_uint32_t* finishCount;
 		};
-
 	public:
 		CommandExecuteThreadPool(VulkanDevice* device, VulkanCommandPoolManager* VkCmdPoolManager);
 
 		~CommandExecuteThreadPool();
 
-		void pushCommandBatch(RingCommandPool::Page* page, std::atomic_int* threadId);
-
-		CBInfo getExecutedCB(uint32_t ThreadId, VulkanRenderPass** renderPass = nullptr);
-		
+		void pushCommandBatch(RingCommandPool::Page::BatchInfo batch, ExecuteResultData* result, std::atomic_uint32_t* finishCount);
 	private:
-		void ThreadLoop(int ThreadID);
+		void ThreadLoop(uint32_t ThreadID);
 
 		LockFreeQue<ExecutedPageTask> NeedExecutePages;
 		
 
 		std::vector<std::thread> Threads;
-		std::vector<std::atomic_bool> ThreadFlags;
-		std::vector<ThreadData> ThreadExecutedCBs;
 		std::atomic_bool StopTag {0};
 		
 		VulkanCommandPoolManager* usingManager;

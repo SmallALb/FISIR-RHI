@@ -120,11 +120,14 @@ namespace FISIR {
             return RHISwapChain::FAILEID;
         }
 
-        auto& [fence, available, finish, index, inUse] = SwapChainFrameInfos[frameidx];
+        auto& [available, finish, index, inUse] = SwapChainFrameInfos[frameidx];
 
 
         auto start = std::chrono::steady_clock::now();
-        if (fence->getFenceStage() != RHIFence::Statue::Signaled) return RHISwapChain::FAILEID; 
+        //if (fence->getFenceStage() != RHIFence::Statue::Signaled) {
+        //    Debug("acquire frame fence not signaled");
+        //    return RHISwapChain::FAILEID;
+        //}
         
         auto end = std::chrono::steady_clock::now();
         Debug("Acquire Frame Fence Duration: {}", std::chrono::duration<double>(end - start).count() * 1e9);
@@ -151,7 +154,7 @@ namespace FISIR {
             return RHISwapChain::FAILEID;
         }
 
-        fence->reset();
+        //fence->reset();
         inUse = true;
         return frameidx;
     }
@@ -159,7 +162,7 @@ namespace FISIR {
     void VulkanSwapChain::present(uint32_t infoid) {
         if (infoid >= MaxSwapChianFramCount) return;
 
-        auto& [fence, available, finish,  imageindex, inUse] = SwapChainFrameInfos[infoid];
+        auto& [available, finish,  imageindex, inUse] = SwapChainFrameInfos[infoid];
 
         if (!PresentQueue || !mData->swapchain) {
             Error("PresentQueue is empty or swapchainHandle not exits!");
@@ -206,9 +209,7 @@ namespace FISIR {
 
 
     bool VulkanSwapChain::recreateSwapChain() {
-
-
-        usingRHI->RHIFlushAndWaitAfterCommand(CmdType::Render);
+        vkDeviceWaitIdle(mDevice->getLogicalDevice());
         return createSwapChian();
     }
 
@@ -297,14 +298,13 @@ namespace FISIR {
         }
 
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
-            auto& [fence, available, finish, index, inUsed] = SwapChainFrameInfos[i];
-            if (!fence) fence = usingRHI->RHICreateFence(true, "SwapChainFence");
+            auto& [available, finish, index, inUsed] = SwapChainFrameInfos[i];
             if (!available) available = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
             if (!finish) finish = usingRHI->RHICreateSemaphore("FinishSemphore");
             inUsed = false;
         }
 
-        for (int i = 0; i < MaxSwapChianFramCount; i++) {
+        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
             SwapChainTextures[i] = new VulkanTexture(mDevice, 
                 mData->swapChainImageHandles[i], 
                 Surfaceviewport->getVulkanColorFormat(), 

@@ -13,7 +13,6 @@ namespace FISIR {
 	constexpr int MAX_SWAPCHAIN_FRAME = 3;
 
 	struct SwapChainGetImageInfo {
-		RHIFence* frameFence {nullptr};
 		RHISemaphore* avaliable{ nullptr };
 		RHISemaphore* renderFinish{ nullptr };
 		uint32_t imageIndex {0};

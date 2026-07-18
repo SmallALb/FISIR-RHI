@@ -11,6 +11,8 @@ namespace FISIR{
 			.pNext = nullptr,
 			.flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : (VkFenceCreateFlags)0
 		};
+			
+		fenceStatue.store(signaled ? Statue::Signaled : Statue::UnSignaled);
 
 		if (vkCreateFence(device->getLogicalDevice(), &fenceCreateInfo, nullptr, &mFence) != VK_SUCCESS) {	
 			Error("Failed to create Vulkan Fence!");
@@ -49,7 +51,7 @@ namespace FISIR{
 	}
 	
 	bool VulkanFence::isSignaled() {
-		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, 0) == VK_SUCCESS);
+		auto res = (vkGetFenceStatus(mDevice->getLogicalDevice(), mFence) == VK_SUCCESS);
 		if (res) fenceStatue.store(Statue::Signaled);
 		return res;
 	}
@@ -101,7 +103,6 @@ namespace FISIR{
 			}
 			if (name != nullptr) fence->reName(name);
 			if (!signaled) {
-				fence->wait();
 				fence->reset();
 
 			}

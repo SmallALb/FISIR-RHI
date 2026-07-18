@@ -125,7 +125,8 @@ namespace FISIR {
 		mutable uint32_t HashVal {0}; 
 
 		bool operator == (const RHIRenderPassInfo& other) const {
-			if (ColorEntries != other.ColorEntries) return false;
+			//if (ColorEntries != other.ColorEntries) return false;
+			for (int i=0; i<64; i++) if (ColorEntries[i] != other.ColorEntries[i]) return false;
 			
 			if (!(DepthStencilEntry == other.DepthStencilEntry &&
 				SubPasses == other.SubPasses)) {
