@@ -35,7 +35,6 @@ namespace FISIR{
 	}
 
 	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
-		Warn("Cmd Submit!");
 		// ��֤ queue �Ƿ���Ч
 		if (mData->mQue == VK_NULL_HANDLE) {
 			Error("Queue is VK_NULL_HANDLE!");
@@ -73,7 +72,6 @@ namespace FISIR{
 			.signalSemaphoreCount = (uint32_t)semaphoresToSignal.size(),
 			.pSignalSemaphores = (semaphoresToSignal.empty()) ? nullptr : semaphoresToSignal.data(),
 		};
-		Warn("Wait Cmd Submit!");
 
 		if (vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE) != VK_SUCCESS) {
 			Error("Failed to submit command buffer to queue!");

@@ -1,17 +1,25 @@
 #include "Logger.h"
 #include <cstdio>
 #include <thread>
-#include <string>
 #include <mutex>
 #include <condition_variable>
 #include <array>
 #include <chrono>
+#include <ctime>
 
 namespace FISIR {
+	static std::atomic_bool stopTag = false;
+	static std::mutex*              Tlock     = nullptr;
+	static std::condition_variable* Cv        = nullptr;
+	static std::thread*             MsgThread = nullptr;
+	static std::atomic_bool initTag = false;
+	static const char* colors[] = {
+		"\033[32m", "\033[33m", "\033[31m", "\033[4;36m"
+	};
 
 
 	struct MsgData {
-		MsgData():level(LogLevel::INFO_){Msg[0] = '\0';}
+		MsgData():level(LogLevel::INFO_){Msg[0] = '\0'; file[0] = '\0'; function[0] = '\0';}
 
 		MsgData(LogLevel l, std::string_view f, std::string_view fn, std::string_view s): level(l) {
 			size_t len = std::min(s.size(), sizeof(Msg) - 1);
@@ -21,7 +29,7 @@ namespace FISIR {
 			len = std::min(f.size(), sizeof(file) - 1);
 			std::copy_n(f.data(), len, file);
 			file[len] = '\0';
-	
+
 			len = std::min(fn.size(), sizeof(function) - 1);
 			std::copy_n(fn.data(), len, function);
 			function[len] = '\0';
@@ -29,16 +37,33 @@ namespace FISIR {
 		LogLevel level;
 		char file[256];
 		char function[256];
-		char Msg[4*1024];
+		char Msg[2*1024];
 	};
 
 	class MsgQue {
 	public:
-		MsgQue() {}
+		MsgQue() {
+			Datas = static_cast<MsgData*>(malloc(sizeof(MsgData) * Capacity));
+			if (!Datas) Datas = Fallback_Datas;
+		}
+
+
+		~MsgQue() {
+			{
+				std::lock_guard<std::mutex> lock(Qlock);
+			}
+			cv_empty.notify_all();
+			cv_full.notify_all();
+			if (Datas != Fallback_Datas) free(Datas);
+
+		}
 
 		void push(const MsgData& Data) {
 			std::unique_lock<std::mutex> lock(Qlock);
-			cv_full.wait(lock, [this]{return !full();});
+			cv_full.wait(lock, [this]{return !full() || stopTag.load();});
+			if (stopTag.load()) {
+				return;
+			}
 			Datas[tail % Capacity] = Data;
 			++tail;
 			cv_empty.notify_one();
@@ -46,7 +71,10 @@ namespace FISIR {
 
 		bool pop(MsgData& Data) {
 			std::unique_lock<std::mutex> lock(Qlock);
-			cv_empty.wait(lock, [this]{return !empty();});
+			cv_empty.wait(lock, [this]{return !empty() || stopTag.load();});
+			if (stopTag.load() || empty()) {
+				return false;
+			}
 			Data = Datas[head % Capacity];
 			++head;
 			cv_full.notify_one();
@@ -62,93 +90,127 @@ namespace FISIR {
 		}
 
 	private:
-		const size_t Capacity = 64;
-		std::array<MsgData, 64> Datas;
-		std::atomic_size_t head, tail;
+		static constexpr size_t Capacity = 128;
+		MsgData*  Datas {nullptr};
+		MsgData Fallback_Datas[16];
+		std::atomic_size_t head{0}, tail{0};
 		std::condition_variable cv_empty;
 		std::condition_variable cv_full;
 		std::mutex Qlock;
-	}MessageQue;
-
-	static std::mutex Tlock;
-	static std::condition_variable cv;
-	static std::thread MsgThread;
-	static std::atomic_bool stopTag = 0;
-	static std::atomic_bool initTag = 0;
-	const char* colors[] = {
-		"\033[32m", "\033[33m", "\033[31m", "\033[4;36m"
 	};
+
+	static MsgQue* MessageQue = nullptr;
 
 
 	Logger::Logger() {
-		MsgThread = std::move(std::thread([&]() {
-			while (1) {
-				std::array<char, 5*1024> buffer;
-				std::unique_lock<std::mutex> lock(Tlock);
-				cv.wait(lock, [] {return !MessageQue.empty() || stopTag; });
-				if (stopTag) break;
+		MessageQue = static_cast<MsgQue*>(malloc(sizeof(MsgQue)));
+		if (MessageQue) {
+			new (MessageQue) MsgQue();
+		}
+		Tlock  = static_cast<std::mutex*>(malloc(sizeof(std::mutex)));
+		Cv     = static_cast<std::condition_variable*>(malloc(sizeof(std::condition_variable)));
+		MsgThread = static_cast<std::thread*>(malloc(sizeof(std::thread)));
+		if (Tlock)  new (Tlock)  std::mutex();
+		if (Cv)     new (Cv)     std::condition_variable();
+		if (MsgThread) {
+			new (MsgThread) std::thread([]() {
+			while (true) {
+				if (!MessageQue || !Tlock || !Cv) break;
+				std::unique_lock<std::mutex> lock(*Tlock);
+				Cv->wait(lock, [] { return !MessageQue->empty() || stopTag.load(); });
+				if (stopTag.load()) break;
 				MsgData Data;
-				if (!MessageQue.pop(Data)) continue;
-				printf(colors[(int)Data.level]);
-				const char* levelName = [&]()->const char*{
-					switch (Data.level) {
-					case LogLevel::INFO_: return "INFO"; 
-					case LogLevel::WARN_: return "WARN"; 
-					case LogLevel::ERROR_: return "ERROR"; 
-					case LogLevel::DEBUG_: return "DEBUG"; 
-					}
-				}();
+				if (!MessageQue->pop(Data)) continue;
+				if (stopTag.load()) break;
+
+				printf("%s", colors[(int)Data.level]);
+				const char* levelName = "????";
+				switch (Data.level) {
+					case LogLevel::INFO_:  levelName = "INFO";  break;
+					case LogLevel::WARN_:  levelName = "WARN";  break;
+					case LogLevel::ERROR_: levelName = "ERROR"; break;
+					case LogLevel::DEBUG_: levelName = "DEBUG"; break;
+				}
 
 				auto now = std::chrono::system_clock::now();
-
-				// 转换为 time_t
 				std::time_t now_time = std::chrono::system_clock::to_time_t(now);
 
-				// 转换为本地时间（获取年月日时分秒）
-				std::tm* local_time = std::localtime(&now_time);
+#ifdef _WIN32
+				std::tm local_tm{};
+				if (::localtime_s(&local_tm, &now_time) != 0) {
+					// fallback to UTC
+					local_tm = *std::gmtime(&now_time);
+				}
+#else
+				std::tm local_tm{};
+				if (!::localtime_r(&now_time, &local_tm)) {
+					local_tm = *std::gmtime(&now_time);
+				}
+#endif
 
-				// 分别获取各个部分
-				int year = local_time->tm_year + 1900;   
-				int month = local_time->tm_mon + 1;      
-				int day = local_time->tm_mday;           
-				int hour = local_time->tm_hour;          
-				int minute = local_time->tm_min;         
-				int second = local_time->tm_sec;         
-
-				snprintf(buffer.data(), buffer.size(), "\033[0mFISIRLOG[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s%s\033[0m]: %s",
-					year, month, day, hour, minute, second, Data.file, Data.function, colors[(int)Data.level], levelName, Data.Msg);
+				std::array<char, 5*1024> buffer;
+				snprintf(buffer.data(), buffer.size(),
+					"\033[0mFISIRLOG[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s%s\033[0m]: %s",
+					local_tm.tm_year + 1900,
+					local_tm.tm_mon + 1,
+					local_tm.tm_mday,
+					local_tm.tm_hour,
+					local_tm.tm_min,
+					local_tm.tm_sec,
+					Data.file, Data.function,
+					colors[(int)Data.level], levelName, Data.Msg);
 				printf("%s\n", buffer.data());
 				fflush(stdout);
 			}
-		}));
+			});
+		}
+
+		// atexit: stop the log thread.  Do NOT destroy mutex/cv
+		// (their destructors call DeleteCriticalSection which crashes
+		// during DLL unload on MinGW).  The OS reclaims everything.
+		std::atexit([]() {
+			stopTag.store(true);
+			if (Cv)        Cv->notify_all();
+			if (MsgThread && MsgThread->joinable()) MsgThread->join();
+		});
 	}
 
 	Logger::~Logger() {
-		stop();
+		stopTag.store(true);
+		if (Cv)        Cv->notify_all();
+		if (MsgThread && MsgThread->joinable()) MsgThread->join();
+		// Intentionally leak MessageQue/Tlock/Cv/MsgThread —
+		// calling their destructors → DeleteCriticalSection → crash during DLL unload
 	}
 
 	Logger& Logger::instance() {
 		static Logger logger;
-		if (initTag) {
+		if (initTag.load()) {
 			return logger;
 		}
-		
-		initTag = 1;
+		initTag.store(true);
 		return logger;
 	}
 
 	void Logger::stop() {
-		stopTag = 1;
-		cv.notify_one();
-		MsgThread.join();
+		stopTag.store(true);
+		if (Cv)        Cv->notify_all();
+		if (MsgThread && MsgThread->joinable()) MsgThread->join();
 	}
 
 	void Logger::PushMessageFormat(LogLevel level, std::string_view fmt, std::string_view file, std::string_view function, std::format_args args) {
-		std::array<char, 4*1024> buffer;
-		auto it =  std::vformat_to(buffer.begin(), fmt, args);
-		*it = '\0';
-		MessageQue.push(MsgData(level, file, function, std::vformat(fmt, args)));
-		cv.notify_one();
+		if (stopTag.load() || !MessageQue) {
+			return;
+		}
+		std::array<char, 4*1024> buf{};
+		char* end = std::vformat_to(buf.data(), fmt, args);
+		size_t len = static_cast<size_t>(end - buf.data());
+		if (len >= buf.size()) len = buf.size() - 1;
+		buf[len] = '\0';
+		if (MessageQue) {
+			MessageQue->push(MsgData(level, file, function, std::string_view(buf.data())));
+			Cv->notify_one();
+		}
 	}
 
 }

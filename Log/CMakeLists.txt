@@ -12,4 +12,6 @@ target_include_directories(Log
 
 if(WIN32)
     target_compile_definitions(Log PRIVATE NOMINMAX)
+    # MinGW adds "lib" prefix — suppress it on Windows
+    set_target_properties(Log PROPERTIES PREFIX "")
 endif()

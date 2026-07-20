@@ -1,4 +1,7 @@
 #pragma once
+
+#include <cstdint>
+
 namespace FISIR {
 	inline uint32_t HashCombine(uint32_t seed, uint32_t val) {
 		return seed ^ (val + 0x9e3779b9 + (seed << 6) + (seed >> 2));

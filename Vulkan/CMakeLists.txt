@@ -33,4 +33,6 @@ if(WIN32)
         VK_USE_PLATFORM_WIN32_KHR
         NOMINMAX
     )
+    # MinGW adds "lib" prefix — suppress it on Windows
+    set_target_properties(RHIVK PROPERTIES PREFIX "")
 endif()

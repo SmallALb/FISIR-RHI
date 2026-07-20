@@ -43,7 +43,7 @@ namespace FISIR {
 				memcpy(copyDataS, toSignals.data(), toSignals.size() * sizeof(RHISemaphore*));
 			}
 			else copyDataS = nullptr;
-			End_CmdInfo info {0, fence, copyDataW, waits.size(), copyDataS, toSignals.size()};
+			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size())};
 			usingPage->WriteData(RHICommandT::End, info);
 		}
 

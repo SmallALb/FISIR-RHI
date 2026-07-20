@@ -10,6 +10,18 @@
 
 #include <dxcapi.h>
 
+// MinGW can't resolve __uuidof for DXC from MSVC-format dxcompiler.lib.
+// Define the required IIDs inline.
+#ifdef __MINGW32__
+inline const GUID _IID_DxcLibrary  = {0xe5204dc7, 0xd18c, 0x4c3c, {0xbd, 0xfb, 0x85, 0x16, 0x73, 0x98, 0x0f, 0xe7}};
+inline const GUID _IID_DxcCompiler = {0x8c210bf3, 0x011f, 0x4422, {0x8d, 0x70, 0x6f, 0x9a, 0xcb, 0x8d, 0xb6, 0x17}};
+#define DXC_IID_LIBRARY  _IID_DxcLibrary
+#define DXC_IID_COMPILER _IID_DxcCompiler
+#else
+#define DXC_IID_LIBRARY  __uuidof(IDxcLibrary)
+#define DXC_IID_COMPILER __uuidof(IDxcCompiler)
+#endif
+
 #include "DynamicLibLoader.h"
 #include "Log/Logger.h"
 #include "RHICreator.h"
@@ -63,14 +75,14 @@ namespace FISIR {
 
             InitCompiler();
             mData = new ShaderComplierData();
-            HRESULT hr = DxcCreateInstance2(nullptr, CLSID_DxcLibrary, __uuidof(IDxcLibrary), (void**)&(mData->dxcLibrary));
+            HRESULT hr = DxcCreateInstance2(nullptr, CLSID_DxcLibrary, DXC_IID_LIBRARY, (void**)&(mData->dxcLibrary));
             if (FAILED(hr) || !(mData->dxcLibrary)) {
                 Error("Failed to create DxcLibrary instance, Error: 0x{:x}", (size_t)hr);
                 return;
             }
             else Debug("DxcLibrary instance created successfully");
 
-            hr = DxcCreateInstance2(nullptr, CLSID_DxcCompiler, __uuidof(IDxcCompiler), (void**)&(mData->dxcCompiler));
+            hr = DxcCreateInstance2(nullptr, CLSID_DxcCompiler, DXC_IID_COMPILER, (void**)&(mData->dxcCompiler));
             if (FAILED(hr) || !(mData->dxcCompiler)) {
                 Error("Failed to create DxcCompiler instance, Error: 0x{:x}", (size_t)hr);
                 if (mData->dxcLibrary) {

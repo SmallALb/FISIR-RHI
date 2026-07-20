@@ -32,7 +32,6 @@ int main() {
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
 #endif
 
-    try {
     Debug("Main Thread 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
     // 1. 创建 RHI
@@ -346,7 +345,6 @@ int main() {
             continue;
         }
         auto CurrentFence = rhi->RHICreateFence();
-        Info("Before Frame");
         // 渲染到离屏 Framebuffer
         FISIR::RHIRenderCommandList cmdList(rhi);
 
@@ -373,8 +371,6 @@ int main() {
             cmdList.EndRenderPass();
         }
         cmdList.End(CurrentFence, { info.avaliable }, { info.renderFinish });
-
-        Info("MTag2");
         swapchain->present(infoid);
         lstWaitFence = CurrentFence;
         angle += 0.02f;
@@ -396,14 +392,8 @@ cleanup:
     delete uploadBuffer;
     if (inputTexture) delete inputTexture;
 
-    FISIR::RHICreator::destroyRenderInterface();
     Info("Destroy RHI Done!");
+    FISIR::RHICreator::destroyRenderInterface();
     FISIR::RHICreator::freeCurrentRenderInterfaceApi();
-
-    } catch (const std::exception& e) {
-        Error("FATAL: {}", e.what());
-    } catch (...) {
-        Error("FATAL: unknown exception!");
-    }
     return 0;
 }

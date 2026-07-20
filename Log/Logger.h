@@ -41,12 +41,12 @@ namespace FISIR {
 
 }
 
-#define Info(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::INFO_, fmt, __FILE__, __FUNCTION__, __VA_ARGS__)
-#define Error(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::ERROR_, fmt, __FILE__, __FUNCTION__, __VA_ARGS__)
-#define Warn(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::WARN_, fmt, __FILE__, __FUNCTION__, __VA_ARGS__)
+#define Info(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::INFO_, fmt, __FILE__, __FUNCTION__, ##__VA_ARGS__)
+#define Error(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::ERROR_, fmt, __FILE__, __FUNCTION__,##__VA_ARGS__)
+#define Warn(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::WARN_, fmt, __FILE__, __FUNCTION__, ##__VA_ARGS__)
 
 #ifdef _DEBUG
-#define Debug(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::DEBUG_, fmt, __FILE__, __FUNCTION__, __VA_ARGS__)
+#define Debug(fmt, ...) FISIR::Logger::instance().PushMessage(FISIR::LogLevel::DEBUG_, fmt, __FILE__, __FUNCTION__, ##__VA_ARGS__)
 #else
 #define Debug(fmt, ...)
 #endif // _DEBUG

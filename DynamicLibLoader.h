@@ -50,7 +50,7 @@ namespace FISIR {
     private:
         static inline DLibFuncPtr getFunction_(DLibHandle handle, const char* funcName) {
 #ifdef _WIN32
-            return GetProcAddress((HMODULE)handle, funcName);
+            return reinterpret_cast<DLibFuncPtr>(GetProcAddress((HMODULE)handle, funcName));
 #elif __linux__
             return dlsym(handle, funcName);
 #else
