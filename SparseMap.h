@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <utility>
 #include <memory>
@@ -10,7 +11,7 @@
  namespace FISIR{   //稀疏集合
     template<class EntityType = uint32_t, class T = size_t, size_t PAGE_SHIFT = 7>
     class sparse_map {
-      static_assert(std::is_unsigned_v<EntityType>, "EntityType must be an unsigned integer!");
+      static_assert(std::is_unsigned<EntityType>::value, "EntityType must be an unsigned integer!");
     public:
       using EntityType_ = EntityType;
       using DataType_ = T;

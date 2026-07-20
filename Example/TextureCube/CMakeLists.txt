@@ -22,6 +22,7 @@ target_compile_definitions(TextureCube
 target_link_libraries(TextureCube
     PRIVATE
         Log
+        $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
 )
 
 # ── Copy runtime dependencies ─────────────────────────────────

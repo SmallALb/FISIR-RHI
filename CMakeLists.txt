@@ -12,21 +12,40 @@ if(WIN32)
     set(CMAKE_VS_SOLUTION_EXTENSION ".sln")
 endif()
 
+# ── MSVC: force UTF-8 source encoding ─────────────────────────
+# Without this, MSVC treats UTF-8 files as the system code page
+# (e.g. 936/GBK), corrupting non-ASCII characters in comments/strings.
+if(MSVC)
+    add_compile_options("/utf-8")
+endif()
+
 # ── Unified output directory ──────────────────────────────────
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# ── Build options (visible in CMake GUI) ──────────────────────
+option(BUILD_VULKAN_RHI "Build Vulkan RHI backend" ON)
+option(BUILD_EXAMPLES   "Build example projects"    ON)
+
 # ── Dependencies ──────────────────────────────────────────────
-find_package(Vulkan REQUIRED)
+if(BUILD_VULKAN_RHI)
+    find_package(Vulkan REQUIRED)
+endif()
 
 # ══════════════════════════════════════════════════════════════
 # Sub-projects
 # ══════════════════════════════════════════════════════════════
 add_subdirectory(Log)
-add_subdirectory(Vulkan)
-add_subdirectory(Example/TextureCube)
+
+if(BUILD_VULKAN_RHI)
+    add_subdirectory(Vulkan)
+endif()
+
+if(BUILD_EXAMPLES)
+    add_subdirectory(Example/TextureCube)
+endif()
 
 # VS startup project (Windows only)
-if(WIN32)
+if(WIN32 AND BUILD_EXAMPLES)
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         PROPERTY VS_STARTUP_PROJECT TextureCube
     )

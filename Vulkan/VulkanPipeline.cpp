@@ -186,7 +186,7 @@ namespace FISIR{
 			VkDescriptorType vkType = choiceDescriptorType(binding.descriptorTyp);
 			uint32_t descSize = GetDescriptorSize(device, vkType);
 
-			// 获取该描述符类型的对齐要求
+			// Get alignment requirement for this descriptor type
 			VkDeviceSize alignment = 0;
 			switch (binding.descriptorTyp) {
 			case RHIDescriptorTyp::Sampler:
