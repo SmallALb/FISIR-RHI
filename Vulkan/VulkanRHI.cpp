@@ -1,24 +1,26 @@
-﻿#define VK_USE_PLATFORM_WIN32_KHR
+﻿
 
 #include "VulkanRHI.h"
-#include <vector>
-#include <cstdio>
+
 #include <algorithm>
+#include <cstdio>
 #include <string>
-#include "../../Log/Logger.h"
+#include <vector>
+
+#include "../Log/Logger.h"
 #include "../LockFreeQue.h"
-#include "VulkanDevice.h"
-#include "VulkanPipeline.h"
-#include "VulkanShader.h"
-#include "VulkanBuffer.h"
-#include "VulkanTexture.h"
-#include "VulkanRenderPass.h"
-#include "VulkanFrameBuffer.h"
-#include "VulkanViewport.h"
-#include "VulkanSwapChian.h"
 #include "../RHICommandList.h"
-#include "VulkanSampler.h"
 #include "ChangeImageFlagsToVulkanFlags.h"
+#include "VulkanBuffer.h"
+#include "VulkanDevice.h"
+#include "VulkanFrameBuffer.h"
+#include "VulkanPipeline.h"
+#include "VulkanRenderPass.h"
+#include "VulkanSampler.h"
+#include "VulkanShader.h"
+#include "VulkanSwapChian.h"
+#include "VulkanTexture.h"
+#include "VulkanViewport.h"
 namespace FISIR {
 
     /*
@@ -340,7 +342,7 @@ namespace FISIR {
     }
 
     void VulkanRHI::VulkanRHILoop() {
-        Debug("RHI Thread ID: {}", std::this_thread::get_id());
+        Debug("RHI Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
         struct ResultInfo {
             std::unique_ptr<std::atomic_uint32_t> FinishCount{ std::make_unique<std::atomic_uint32_t>(0) };
@@ -537,7 +539,7 @@ namespace FISIR {
 
 
     void VulkanRHI::VulkanResourceLoop() {
-        Debug("Resource Thread ID: {}", std::this_thread::get_id());
+        Debug("Resource Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
         while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
             static int shrink_counter = 0;
             if (++shrink_counter % 60 == 0 && PendingReleaseCBsInThread.empty()) {

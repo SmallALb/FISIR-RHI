@@ -1,18 +1,18 @@
 #pragma once
 
-#include "../Log/Logger.h"
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
 #elif _LINUX
 #include <dlfcn.h>
 #endif
+
 #include <dxcapi.h>
 
-#include "RHICreator.h"
-
-#include <mutex>
 #include "DynamicLibLoader.h"
+#include "Log/Logger.h"
+#include "RHICreator.h"
 
 namespace FISIR {
 
@@ -37,7 +37,7 @@ namespace FISIR {
                 std::lock_guard<std::mutex> lock(initMutex);
                 if (!dxcLoaded) {
                     DxilHandle = DynamicLibLoader::loadDLib("dxil.dll");
-                    if (!DxilHandle) { Error("Failed to load dxil.dll"); return false; }
+                    // dxil.dll merged into dxcompiler.dll in newer DXC; optional
                     DHandle = DynamicLibLoader::loadDLib("dxcompiler.dll");
                     if (DHandle) {
                         DynamicLibLoader::getFunction(DHandle, "DxcCreateInstance2", &DxcCreateInstance2);

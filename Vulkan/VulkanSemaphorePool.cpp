@@ -1,7 +1,10 @@
 #include "VulkanSemaphorePool.h"
+
 #include <vulkan/vulkan.h>
+
+#include "../Log/Logger.h"
 #include "VulkanDevice.h"
-#include "../../Log/Logger.h"
+
 
 namespace FISIR {
 	VulkanSemaphorePool::VulkanSemaphorePool(VulkanDevice* device, uint32_t initalSize) {

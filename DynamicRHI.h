@@ -1,9 +1,10 @@
 #pragma once
-#include "RHITypes.h"
-#include <vector>
-#include <cstdint>
 
 #include <atomic>
+#include <cstdint>
+#include <vector>
+
+#include "RHITypes.h"
 
 namespace FISIR {	
 	class RHITexture;

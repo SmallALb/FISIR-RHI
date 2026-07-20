@@ -1,15 +1,18 @@
 #include "VulkanDescriptorPool.h"
-#include <vulkan/vulkan.h>
-#include "VulkanDevice.h"
-#include "../../Log/Logger.h"
-#include "../SparseMap.h"
-#include "../RHIResourcePack.h"
+
 #include <unordered_map>
+
+#include <vulkan/vulkan.h>
+
+#include "../Log/Logger.h"
+#include "../RHIResourcePack.h"
+#include "../SparseMap.h"
+#include "ChangeImageFlagsToVulkanFlags.h"
 #include "VulkanBuffer.h"
-#include "VulkanTexture.h"
+#include "VulkanDevice.h"
 #include "VulkanMemory.h"
 #include "VulkanSampler.h"
-#include "ChangeImageFlagsToVulkanFlags.h"
+#include "VulkanTexture.h"
 namespace FISIR{
 
 
@@ -336,6 +339,10 @@ namespace FISIR{
 			std::vector<RHIResource*> samplerList;    // Sampler
 
 			for (auto res : resources) {
+				if (!res) {
+					Error("createResourcePack: null resource in list, skipping");
+					continue;
+				}
 				if (res->getResourceType() == Type::Sampler) {
 					samplerList.push_back(res);
 				}

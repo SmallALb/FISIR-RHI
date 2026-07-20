@@ -1,8 +1,10 @@
 #include "VulkanQueue.h"
-#include "VulkanDevice.h"
+
 #include <vulkan/vulkan.h>
-#include "../../Log/Logger.h"
+
+#include "../Log/Logger.h"
 #include "VulkanDebugNameSet.h"
+#include "VulkanDevice.h"
 
 namespace FISIR{
 
@@ -34,13 +36,13 @@ namespace FISIR{
 
 	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
 		Warn("Cmd Submit!");
-		// 验证 queue 是否有效
+		// 锟斤拷证 queue 锟角凤拷锟斤拷效
 		if (mData->mQue == VK_NULL_HANDLE) {
 			Error("Queue is VK_NULL_HANDLE!");
 			return;
 		}
 
-		// 验证 command buffer 是否有效
+		// 锟斤拷证 command buffer 锟角凤拷锟斤拷效
 		if (cmds.size() == 0) {
 			Error("Command buffers are null!");
 			return;

@@ -1,10 +1,12 @@
 #pragma once
-#include "ExclusiveDepthStencil.h"
-#include "RHITypes.h"
-#include "RHITexture.h"
+
 #include <vector>
-#include "../DataBase/HashCreate.h"
-#include "../Log/Logger.h"
+
+#include "ExclusiveDepthStencil.h"
+#include "HashCreate.h"
+#include "Log/Logger.h"
+#include "RHITexture.h"
+#include "RHITypes.h"
 namespace FISIR {
 	
 

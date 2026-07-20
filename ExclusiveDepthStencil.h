@@ -1,7 +1,5 @@
 #pragma once
 
-#include "ExclusiveDepthStencil.h"
-
 namespace FISIR {
 	class ExclusiveDepthStencil {
 	public:

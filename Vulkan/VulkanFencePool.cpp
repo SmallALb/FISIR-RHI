@@ -1,8 +1,10 @@
 #include "VulkanFencePool.h"
+
 #include <vulkan/vulkan.h>
-#include "VulkanDevice.h"
-#include "../../Log/Logger.h"
+
+#include "../Log/Logger.h"
 #include "VulkanDebugNameSet.h"
+#include "VulkanDevice.h"
 
 namespace FISIR{
 	VulkanFence::VulkanFence(VulkanDevice* device, bool signaled, const char* name) {
@@ -125,10 +127,16 @@ namespace FISIR{
 		for (auto& fence : mFences) {
 
 			if (!fence->isSignaled()) {
+#ifdef _DEBUG
 				Debug("Waiting for fence {} to be signaled before destruction...", fence->getName());
+#endif
 				bool signaled = fence->waitFor(2*1000000000);
 				if (!signaled) {
+#ifdef _DEBUG
 					Error("Fence {} did not signal in time before destruction!", fence->getName());
+#else
+					Error("Fence did not signal in time before destruction!");
+#endif
 				}
 			}
 			delete fence;

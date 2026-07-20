@@ -1,14 +1,18 @@
-# Visual Studio build output directory
-x64/
+# ── CMake build output ────────────────────────────────────────
+build/
+out/
 
-# Visual Studio user settings folder
+# ── Visual Studio user settings ───────────────────────────────
 .vs/
 .VSCodeCounter
 
-# Visual Studio project files
+# ── Visual Studio generated project files ─────────────────────
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user
+*.sln
+*.slnx
 
-# Specific RHI Vulkan folder
+# ── Legacy build artifacts ────────────────────────────────────
+x64/
 RHIVK/

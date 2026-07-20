@@ -2,7 +2,7 @@
 
 #include "DynamicLibLoader.h"
 #include "DynamicRHI.h"
-#include "../Log/Logger.h"
+#include "Log/Logger.h"
 
 
 namespace FISIR{
@@ -17,14 +17,10 @@ namespace FISIR{
 
 
 		inline static std::string choicePath(RHIAPI api) {
-			std::string res = "../../RHI/";
+			std::string res = "RHI/";
 			switch (api) {
 			case RHIAPI::Vulkan:
-			#if defined(_DEBUG) && defined(_WIN32)
-				return res + "Vulkan/x64/Debug/RHIVK.dll";
-			#elif defined(_WIN32)
-				return res + "Vulkan/x64/Release/RHIVK.dll";
-			#endif
+				return res + "Vulkan/RHIVK.dll";
 			default:
 				return res;
 			}
@@ -35,6 +31,21 @@ namespace FISIR{
 			currentApi = api;
 			auto path = inPath == nullptr ? choicePath(currentApi) : inPath;
 			hDll = DynamicLibLoader::loadDLib(path.c_str());
+
+#ifdef _WIN32
+			// If relative path failed, retry from the .exe directory
+			if (!hDll && path[0] != '\\' && path[0] != '/' && !(path[0] && path[1] == ':')) {
+				char exePath[MAX_PATH];
+				GetModuleFileNameA(NULL, exePath, MAX_PATH);
+				char* lastSep = strrchr(exePath, '\\');
+				if (lastSep) {
+					*(lastSep + 1) = '\0';
+					std::string absPath = std::string(exePath) + path;
+					hDll = DynamicLibLoader::loadDLib(absPath.c_str());
+				}
+			}
+#endif
+
 			if (!hDll) {
 				Error("Error RHI API include {}!\n", path.c_str());
 				return DllLoaded = false;
@@ -48,7 +59,7 @@ namespace FISIR{
 			if (!RHIDestroy_PTR) {
 				Error("RHIDESTROY FUNC NOT FOUND!\n");
 				return DllLoaded = false;
-			}	
+			}
 			return DllLoaded = true;
 		}
 

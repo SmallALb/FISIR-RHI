@@ -1,8 +1,10 @@
 #include "VulkanSampler.h"
+
 #include <vulkan/vulkan.h>
+
+#include "ChangeImageFlagsToVulkanFlags.h"
 #include "VulkanDevice.h"
 #include "VulkanTexture.h"
-#include "ChangeImageFlagsToVulkanFlags.h"
 namespace FISIR{
 	
 

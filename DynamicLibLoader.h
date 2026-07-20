@@ -1,13 +1,14 @@
 #pragma once
 
-#include <cstring>      // for memcpy
-#include "../Log/Logger.h"  // 如果 Debug/Error 宏依赖它
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
 #elif __linux__
 #include <dlfcn.h>
 #endif
+
+#include "Log/Logger.h"
 
 namespace FISIR {
 

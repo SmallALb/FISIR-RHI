@@ -1,9 +1,12 @@
-#include "VulkanDevice.h"
 #include "VulkanImageView.h"
-#include "VulkanTexture.h"
+
 #include <vulkan/vulkan.h>
+
 #include "../LockFreeQue.h"
-#include "../../Log/Logger.h"
+#include "../Log/Logger.h"
+#include "VulkanDevice.h"
+#include "VulkanTexture.h"
+
 namespace FISIR {
 	static VkImageViewType getVulkanViewTypeFromTextureType(TextureType typ) {
 		switch (typ) {

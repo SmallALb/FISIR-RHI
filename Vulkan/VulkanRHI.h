@@ -2,9 +2,8 @@
 
 #include "../DynamicRHI.h"
 #include "VulkanViewport.h"
-#include "../../DataBase/AutoPtr.h"
 
-#include "../../DLLheader.h"
+#include "../DLLheader.h"
 #include <mutex>
 #include "VulkanCommandPool.h"
 #include "VulkanFencePool.h"

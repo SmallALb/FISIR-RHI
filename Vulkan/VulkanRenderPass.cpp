@@ -1,8 +1,11 @@
-#include "VulkanDevice.h"
 #include "VulkanRenderPass.h"
-#include "ChangeImageFlagsToVulkanFlags.h"
+
 #include <unordered_map>
-#include "../../Log/Logger.h"
+
+#include "../Log/Logger.h"
+#include "ChangeImageFlagsToVulkanFlags.h"
+#include "VulkanDevice.h"
+
 namespace FISIR{
 	
 

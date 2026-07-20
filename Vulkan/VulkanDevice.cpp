@@ -1,15 +1,18 @@
 
 #include "VulkanDevice.h"
-#include "VulkanRHI.h"
-#include "VulkanMemory.h"
+
 #include <vector>
+
 #include <vulkan/vulkan.h>
-#include "../../Log/Logger.h"
-#include "VulkanCommandPool.h"
+
+#include "../Log/Logger.h"
 #include "../SparseMap.h"
+#include "VulkanCommandPool.h"
 #include "VulkanImageView.h"
-#include "VulkanTexture.h"
+#include "VulkanMemory.h"
+#include "VulkanRHI.h"
 #include "VulkanSwapChian.h"
+#include "VulkanTexture.h"
 namespace FISIR{
 	extern VkInstance GetGlobalInstance();
 #ifdef _DEBUG
@@ -140,7 +143,9 @@ namespace FISIR{
 		
 		if (!InitDevice(viewports, ViewPortSwapChainCache)) return false;
 
+#ifdef _DEBUG
 		__SetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(GetGlobalInstance(), "vkSetDebugUtilsObjectNameEXT");
+#endif
 
 		if (isDescriptorHeapSupported()) {
 			mData->mDescriptorHeapProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;

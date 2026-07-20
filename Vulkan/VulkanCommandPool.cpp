@@ -1,17 +1,20 @@
 #include "VulkanCommandPool.h"
-#include "VulkanDevice.h"
-#include "VulkanQueue.h"
-#include "VulkanPipeline.h"
-#include "VulkanRenderPass.h"
-#include "VulkanFrameBuffer.h"
-#include "VulkanFencePool.h"
-#include "VulkanDescriptorPool.h"
-#include <vulkan/vulkan.h>
-#include <vector>
+
+#include <mutex>
 #include <queue>
 #include <unordered_map>
-#include <mutex>
-#include "../../Log/Logger.h"
+#include <vector>
+
+#include <vulkan/vulkan.h>
+
+#include "../Log/Logger.h"
+#include "VulkanDescriptorPool.h"
+#include "VulkanDevice.h"
+#include "VulkanFencePool.h"
+#include "VulkanFrameBuffer.h"
+#include "VulkanPipeline.h"
+#include "VulkanQueue.h"
+#include "VulkanRenderPass.h"
 
 
 namespace FISIR{

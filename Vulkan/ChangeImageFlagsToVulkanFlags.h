@@ -1,6 +1,6 @@
 #pragma once
 #include "../RHITypes.h"
-#include <Vulkan/vulkan.h>
+#include <vulkan/vulkan.h>
 
 namespace FISIR{
 	inline VkFormat getVulkanFormat(TextureCOLORType type) {

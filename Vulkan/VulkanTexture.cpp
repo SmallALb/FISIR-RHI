@@ -1,9 +1,12 @@
 #include "VulkanTexture.h"
+
+#include <vulkan/vulkan.h>
+
+#include "../Log/Logger.h"
+#include "VulkanDebugNameSet.h"
 #include "VulkanDevice.h"
 #include "VulkanMemory.h"
-#include <vulkan/vulkan.h>
-#include "VulkanDebugNameSet.h"
-#include "../../Log/Logger.h"
+
 namespace FISIR {
 	struct __VkTextureData {
 		TextureSize size;

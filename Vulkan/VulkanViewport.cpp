@@ -1,29 +1,19 @@
 #include "VulkanViewport.h"
-#include "VulkanDevice.h"
-#include "../../Log/Logger.h"
-#ifdef  _WIN32
-	#define VK_USE_PLATFORM_WIN32_KHR
-#endif //  _WIN32
 
 #include <algorithm>
 
 #include <vulkan/vulkan.h>
 
-#include "VulkanTexture.h"
-
-#include "VulkanRenderPass.h"
-
-
-#include "VulkanRHI.h"
-
-#include "VulkanFrameBuffer.h"
-
-#include "../ShaderComplier.h"
-#include "VulkanShader.h"
-
+#include "../Log/Logger.h"
 #include "../RHICommandList.h"
-
+#include "../ShaderComplier.h"
 #include "ChangeImageFlagsToVulkanFlags.h"
+#include "VulkanDevice.h"
+#include "VulkanFrameBuffer.h"
+#include "VulkanRenderPass.h"
+#include "VulkanRHI.h"
+#include "VulkanShader.h"
+#include "VulkanTexture.h"
 namespace FISIR {
 	
 	extern VkInstance GetGlobalInstance();

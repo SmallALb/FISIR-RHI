@@ -1,14 +1,17 @@
 #include "VulkanMemory.h"
-#include "VulkanDevice.h"
-#include <vulkan/vulkan.h>
-#include "../../Log/Logger.h"
-#include <vector>
+
 #include <queue>
 #include <set>
-#include "../SparseMap.h"
-#include "VulkanTexture.h"
-#include "VulkanDeviceAllocationPool.h"
 #include <unordered_map>
+#include <vector>
+
+#include <vulkan/vulkan.h>
+
+#include "../Log/Logger.h"
+#include "../SparseMap.h"
+#include "VulkanDevice.h"
+#include "VulkanDeviceAllocationPool.h"
+#include "VulkanTexture.h"
 namespace FISIR{
 
 	

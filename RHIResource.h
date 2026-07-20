@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <atomic>
 #include <typeinfo>
-#include "../Base/Object.h"
 
 namespace FISIR {
 	class RHICommandContext;
