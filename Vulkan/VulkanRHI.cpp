@@ -144,16 +144,16 @@ namespace FISIR {
         delete ThreadPool;
         Debug("Vulkan Thread Pool Join");
 
-        for (auto& [viewport, swapchain] : ViewPortSwapChainCache) {
-            delete viewport;
-            delete swapchain;
-        }
-
         for (auto& [name, pipeline] : PipelineCacheMap) delete pipeline;
 
         for (auto& [info, renderPass] : RenderPassCache) delete renderPass;
 
         for (auto& shader : ShadersPool) delete shader;
+
+        for (auto& [viewport, swapchain] : ViewPortSwapChainCache) {
+            delete viewport;
+            delete swapchain;
+        }
 
         Debug("Destroy Fence and Semaphore Pool");
         mFencePool->destroyPool();
@@ -505,8 +505,8 @@ namespace FISIR {
                         auto& cbinfos = getCBInfosByType(page->cmdtype);
                         cbinfos.insert(cbinfos.end(), SecondCBs.begin(), SecondCBs.end());
                     }
-                    NeedClearInThisLoop.push_back(page);
                     page->flags.store(RingCommandPool::IsEnd, std::memory_order_release);
+                    NeedClearInThisLoop.push_back(page);
                 }
             }
 
@@ -561,7 +561,7 @@ namespace FISIR {
                 bool needClear = 0;
                 if (!fences.empty()) {
                     VkResult res = vkWaitForFences(
-                        mDevice->getLogicalDevice(), 
+                        mDevice->getLogicalDevice(),
                         static_cast<uint32_t>(fences.size()),
                         fences.data(),
                         VK_FALSE,
@@ -610,6 +610,14 @@ namespace FISIR {
                         cb.QuoteResources.clear();
                     }
                     if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
+                }
+                else if (fromframe) {
+                    // Swapchain CBs: re-queue for prompt re-check instead of
+                    // accumulating in PendingReleaseCBsInThread (which would
+                    // grow unboundedly with a 1 ms batch-wait timeout).
+                    // yield() avoids 100 % CPU while keeping latency low.
+                    PendingReleaseCBs.push(std::move(Info));
+                    std::this_thread::yield();
                 }
                 else {
                     PendingReleaseCBsInThread.push_back(std::move(Info));

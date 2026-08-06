@@ -22,6 +22,7 @@ target_compile_definitions(TextureCube
 target_link_libraries(TextureCube
     PRIVATE
         Log
+        Slang::Slang
         $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
 )
 
@@ -48,6 +49,19 @@ if(DXC_LIBRARY_PATH AND EXISTS "${DXC_LIBRARY_PATH}")
             "${DXC_LIBRARY_PATH}"
             "$<TARGET_FILE_DIR:TextureCube>"
         COMMENT "Copying ${DXC_LIBRARY_NAME} → TextureCube output"
+    )
+endif()
+
+# ── Copy Slang runtime DLLs to output directory ──────────────────
+if(Slang_DLL_DIR AND EXISTS "${Slang_DLL_DIR}")
+    add_custom_command(TARGET TextureCube POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Slang_DLL_DIR}/slang.dll"
+            "$<TARGET_FILE_DIR:TextureCube>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Slang_DLL_DIR}/slang-compiler.dll"
+            "$<TARGET_FILE_DIR:TextureCube>"
+        COMMENT "Copying Slang DLLs → TextureCube output"
     )
 endif()
 

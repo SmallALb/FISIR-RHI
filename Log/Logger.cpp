@@ -60,9 +60,10 @@ namespace FISIR {
 
 		void push(const MsgData& Data) {
 			std::unique_lock<std::mutex> lock(Qlock);
-			cv_full.wait(lock, [this]{return !full() || stopTag.load();});
-			if (stopTag.load()) {
-				return;
+			if (full() && !stopTag.load()) {
+				// Queue full: drop oldest message instead of blocking
+				// (consumer may be stuck on console I/O).
+				++head;
 			}
 			Datas[tail % Capacity] = Data;
 			++tail;

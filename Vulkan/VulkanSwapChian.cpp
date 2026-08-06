@@ -26,6 +26,7 @@ static const wchar_t* FullscreenVS = LR"(
 			float4 position : SV_POSITION;
 			float2 uv : TEXCOORD0;
 		};
+		[shader("vertex")]
 		VSOutput main(VSInput input) {
 			VSOutput output;
 			float2 vertices[3] = {
@@ -53,6 +54,7 @@ static const wchar_t* FullscreenPS = LR"(
 			float2 uv : TEXCOORD0;
 		};
 
+		[shader("pixel")]
 		float4 main(PSInput input) : SV_Target {
 			return g_OffscreenTexture.Sample(g_LinearSampler, input.uv);
 		}
@@ -62,15 +64,14 @@ static const wchar_t* FullscreenPS = LR"(
 namespace FISIR {
 
     static RHIShader* VShader = nullptr;
-
     static RHIShader* FShader = nullptr;
-    
+
     struct __VkSwapChainData {
         VkSwapchainKHR swapchain {VK_NULL_HANDLE};
         VkImage swapChainImageHandles[MAX_SWAPCHAIN_FRAME] {VK_NULL_HANDLE};
     };
 
-    
+
     VulkanSwapChain::VulkanSwapChain(VulkanViewport* viewport,  uint32_t QueFamilyIndex) {
         mData = new __VkSwapChainData();
         Surfaceviewport = viewport;
@@ -88,18 +89,16 @@ namespace FISIR {
             VShader = usingRHI->RHICreateShader(ShaderTYP::__VERTEXSHADER__, vsCompiler.getShaderData(), vsCompiler.getShaderDataSize());
             FShader = usingRHI->RHICreateShader(ShaderTYP::__FRAGMENTSHADER__, psCompiler.getShaderData(), psCompiler.getShaderDataSize());
         }
-        
+
         if (!PresentQueue) PresentQueue = new VulkanQueue(mDevice, mPresentQueFamilyIndex, "SwapChainPresentQue");
 
-        
         return createPipelineandRenderPass() && createSwapChian();
     }
 
     VulkanSwapChain::~VulkanSwapChain() {
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++)  {
-            delete SwapChainTextures[i]; 
+            delete SwapChainTextures[i];
             delete SwapChainFrameBuffers[i];
-            
         }
         if (mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
         delete PresentQueue;
@@ -107,44 +106,24 @@ namespace FISIR {
 
 
     uint32_t VulkanSwapChain::acquireGetImageInfoID() {
-        
-        
+
         if (!mData->swapchain || needReBuildSwapChain.load(std::memory_order_acquire)) {
             if (!recreateSwapChain()) return RHISwapChain::FAILEID;
         }
-        
-        uint32_t frameidx = RHISwapChain::FAILEID;
-        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) if (!SwapChainFrameInfos[i].inUse) {
-            frameidx = i;
-            break;
-        }
 
-        if (frameidx == UINT32_MAX) {
-            Error("No Frames Can Use!");
-            return RHISwapChain::FAILEID;
-        }
+        CurrentFrameID %= SWAPCHAIN_SLOT_COUNT;
 
-        auto& [available, finish, index, inUse] = SwapChainFrameInfos[frameidx];
-
-
-        auto start = std::chrono::steady_clock::now();
-        //if (fence->getFenceStage() != RHIFence::Statue::Signaled) {
-        //    Debug("acquire frame fence not signaled");
-        //    return RHISwapChain::FAILEID;
-        //}
-        
-        auto end = std::chrono::steady_clock::now();
-        Debug("Acquire Frame Fence Duration: {}", std::chrono::duration<double>(end - start).count() * 1e9);
+        auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
+        finishFence->wait();
 
         auto res = vkAcquireNextImageKHR(
-            mDevice->getLogicalDevice(), 
+            mDevice->getLogicalDevice(),
             mData->swapchain,
-            (uint64_t)(2*1e9),
-            static_cast<VkSemaphore>(available->getSemaphoreHandle()),
+            UINT64_MAX,
+            static_cast<VkSemaphore>(avaliable->getSemaphoreHandle()),
             VK_NULL_HANDLE,
             &index
         );
-
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
             Error("SwapChain Out Of Data!");
@@ -152,41 +131,38 @@ namespace FISIR {
             return RHISwapChain::FAILEID;
         }
 
-
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
             Error("Acquire next image failed: {}", (uint32_t)res);
             return RHISwapChain::FAILEID;
         }
 
-        //fence->reset();
-        inUse = true;
-        return frameidx;
+        finishFence->reset();
+        return CurrentFrameID++;
     }
 
     void VulkanSwapChain::present(uint32_t infoid) {
-        if (infoid >= MaxSwapChianFramCount) return;
+        if (infoid >= SWAPCHAIN_SLOT_COUNT) return;
 
-        auto& [available, finish,  imageindex, inUse] = SwapChainFrameInfos[infoid];
+        auto& slot = SwapChainFrameInfos[infoid];
 
         if (!PresentQueue || !mData->swapchain) {
             Error("PresentQueue is empty or swapchainHandle not exits!");
             return;
         }
 
-        VkSemaphore Vksem = static_cast<VkSemaphore>(finish->getSemaphoreHandle());
+        // Use per-image present semaphore.
+        VkSemaphore waitSem = static_cast<VkSemaphore>(ImageRenderFinish[slot.imageIndex]->getSemaphoreHandle());
         VkPresentInfoKHR presentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &Vksem,
+            .pWaitSemaphores = &waitSem,
             .swapchainCount = 1,
             .pSwapchains = &mData->swapchain,
-            .pImageIndices = &imageindex,
+            .pImageIndices = &slot.imageIndex,
             .pResults = nullptr
         };
 
-        inUse = false;
-
-        vkQueuePresentKHR(PresentQueue->getQueueHandle(), &presentInfo); 
+        vkQueuePresentKHR(PresentQueue->getQueueHandle(), &presentInfo);
     }
 
     RHITexture* VulkanSwapChain::getSwapChainFrameTexture(uint32_t imageindex) const {
@@ -199,12 +175,17 @@ namespace FISIR {
     }
 
     SwapChainGetImageInfo VulkanSwapChain::getSwapChainGetImageInfo(uint32_t id) {
-        if (id < MaxSwapChianFramCount) return SwapChainFrameInfos[id];
-        return {};
+        if (id >= SWAPCHAIN_SLOT_COUNT) return {};
+        auto& slot = SwapChainFrameInfos[id];
+        SwapChainGetImageInfo info = slot;
+        // Override with per-image present semaphore.
+        info.renderFinish = ImageRenderFinish[slot.imageIndex];
+        return info;
     }
 
     RHIFrameBuffer* VulkanSwapChain::getSwapChainFrameBuffer(uint32_t imageindex) {
         if (imageindex < MaxSwapChianFramCount) return SwapChainFrameBuffers[imageindex];
+        return nullptr;
     }
 
     RHIPipeline* VulkanSwapChain::getSwapChainRenderPipeline() const {
@@ -213,14 +194,13 @@ namespace FISIR {
 
 
     bool VulkanSwapChain::recreateSwapChain() {
-        vkDeviceWaitIdle(mDevice->getLogicalDevice());
+        vkQueueWaitIdle(mDevice->getGraphicQueue()->getQueueHandle());
         return createSwapChian();
     }
 
     bool VulkanSwapChain::createSwapChian() {
 
         auto Surface = Surfaceviewport->getVkSurface();
-        //getCapabilities
         uint32_t formatCount = 0;
         std::vector<VkSurfaceFormatKHR> vkSurfaceFormats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(mDevice->getPhysicalDevice(), Surface, &formatCount, nullptr);
@@ -230,13 +210,10 @@ namespace FISIR {
         VkSurfaceCapabilitiesKHR vkSurfaceCapabilitiesKHR;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(mDevice->getPhysicalDevice(), Surface, &vkSurfaceCapabilitiesKHR);
 
-        //Get Size
         VkExtent2D actualExtent;
         if (vkSurfaceCapabilitiesKHR.currentExtent.width != UINT32_MAX) {
             actualExtent = vkSurfaceCapabilitiesKHR.currentExtent;
-        }
-
-        else {
+        } else {
             actualExtent.width = std::clamp(Surfaceviewport->getViewportWidth(),
                 vkSurfaceCapabilitiesKHR.minImageExtent.width,
                 vkSurfaceCapabilitiesKHR.maxImageExtent.width);
@@ -247,14 +224,11 @@ namespace FISIR {
 
         Info("Actual viewport size: {} x {}", actualExtent.height, actualExtent.width);
 
-        //CreatSwapChain
         VkSurfaceFormatKHR choiceFormat;
         for (auto& F : vkSurfaceFormats) if (F.format == (VkFormat)Surfaceviewport->getVulkanColorFormat() && F.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
             choiceFormat = F;
         }
         Surfaceviewport->setViewportResize(actualExtent.width, actualExtent.height);
-
-
 
         uint32_t QuefamilyIndex[] = { mDevice->getGraphicQueue()->getFamilyIndex(), PresentQueue->getFamilyIndex() };
         bool isCxclusive = (QuefamilyIndex[0] == QuefamilyIndex[1]);
@@ -265,7 +239,7 @@ namespace FISIR {
         VkSwapchainCreateInfoKHR swapChainInfo{
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = Surface,
-            .minImageCount = vkSurfaceCapabilitiesKHR.minImageCount,
+            .minImageCount = vkSurfaceCapabilitiesKHR.minImageCount + 1,
             .imageFormat = choiceFormat.format,
             .imageColorSpace = choiceFormat.colorSpace,
             .imageExtent = {actualExtent.width, actualExtent.height},
@@ -280,13 +254,11 @@ namespace FISIR {
             .oldSwapchain = oldSwapChain,
         };
 
-
         if (vkCreateSwapchainKHR(mDevice->getLogicalDevice(), &swapChainInfo, nullptr, &mData->swapchain) != VK_SUCCESS) {
             Error("SwapChain Creat Failed");
             return false;
         }
 
-        //Create Texture and Frame
         vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, nullptr);
         vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, mData->swapChainImageHandles);
         Debug("Max Image Cout Can Swapchian Use {}", MaxSwapChianFramCount);
@@ -301,22 +273,28 @@ namespace FISIR {
             vkDestroySwapchainKHR(mDevice->getLogicalDevice(), oldSwapChain, nullptr);
         }
 
+        for (uint32_t i = 0; i < SWAPCHAIN_SLOT_COUNT; i++) {
+            auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[i];
+            if (!avaliable)   avaliable   = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
+            if (!renderFinish) renderFinish = usingRHI->RHICreateSemaphore("SlotFinishSemphore");
+            if (!finishFence) finishFence = usingRHI->RHICreateFence(true, "FinishFence");
+        }
+
+        // Per-image present semaphores: one per swapchain image.
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
-            auto& [available, finish, index, inUsed] = SwapChainFrameInfos[i];
-            if (!available) available = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
-            if (!finish) finish = usingRHI->RHICreateSemaphore("FinishSemphore");
-            inUsed = false;
+            if (!ImageRenderFinish[i])
+                ImageRenderFinish[i] = usingRHI->RHICreateSemaphore("ImageFinishSemphore");
         }
 
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
-            SwapChainTextures[i] = new VulkanTexture(mDevice, 
-                mData->swapChainImageHandles[i], 
-                Surfaceviewport->getVulkanColorFormat(), 
+            SwapChainTextures[i] = new VulkanTexture(mDevice,
+                mData->swapChainImageHandles[i],
+                Surfaceviewport->getVulkanColorFormat(),
                 {actualExtent.width, actualExtent.height, 1},
                 1);
             SwapChainFrameBuffers[i] = new VulkanFrameBuffer(
                 mDevice, { SwapChainTextures[i] },
-                actualExtent.width,  
+                actualExtent.width,
                 actualExtent.height,
                 (RHIRenderPass*)VulkanSwapChainRednerPass
                );
@@ -325,6 +303,7 @@ namespace FISIR {
         needReBuildSwapChain.store(0, std::memory_order_release);
         return true;
     }
+
     bool VulkanSwapChain::createPipelineandRenderPass() {
     	ColorEntry entry {
 			.EntryPros = {
@@ -349,23 +328,16 @@ namespace FISIR {
             Error("SwapChain : 0x{:x} RenderPass Create Failed", (size_t)VulkanSwapChainRednerPass);
             return false;
         }
-	//Create Pipeline
-		
+
 		RHIPipelineDescribeInfo desinfo ({
-			{0, 1, RHIDescriptorTyp::SamplerImage, FragmentShaderStage},  // 纹理 binding 0
-			{1, 1, RHIDescriptorTyp::Sampler, FragmentShaderStage}        // 采样器 binding 1
+			{0, 1, RHIDescriptorTyp::SamplerImage, FragmentShaderStage},
+			{1, 1, RHIDescriptorTyp::Sampler, FragmentShaderStage}
 		});
 		RHIPipelineState pipelineState {
 			.describeInfo = desinfo,
 			.topologyType = TopologyType::Triangle,
-			.multiSampleState = {
-				.SamplerBit = 1
-			},
-			.depthStencilState = {
-				.DepthTestEnable = false,
-				.DepthWriteEnable = false,
-				.StencilTestEnable = false,
-			},
+			.multiSampleState = { .SamplerBit = 1 },
+			.depthStencilState = { .DepthTestEnable = false, .DepthWriteEnable = false, .StencilTestEnable = false },
             .colorblendState = {
                 .ColorBlenEnable = false,
                 .UsingColorBit = (FISIR::ColorBit)(FISIR::_R_PASS_ | FISIR::_G_PASS_ | FISIR::_B_PASS_ | FISIR::_A_PASS)
@@ -374,7 +346,6 @@ namespace FISIR {
 		};
 		pipelineState.Shaders[__VERTEXSHADER__] = VShader;
 		pipelineState.Shaders[__FRAGMENTSHADER__] = FShader;
-
 
 		VulkanViewportPipeline = static_cast<VulkanPipeline*>(usingRHI->RHICreatePipeline(pipelineState));
         if (!VulkanViewportPipeline) {

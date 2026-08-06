@@ -73,8 +73,9 @@ namespace FISIR{
 			.pSignalSemaphores = (semaphoresToSignal.empty()) ? nullptr : semaphoresToSignal.data(),
 		};
 
-		if (vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE) != VK_SUCCESS) {
-			Error("Failed to submit command buffer to queue!");
+		VkResult submitRes = vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE);
+		if (submitRes != VK_SUCCESS) {
+			Error("Failed to submit command buffer to queue! VkResult={}, fence : 0x{:x}", (int)submitRes, (uint64_t)(Fence ? Fence->getFenceHandle() : 0));
 			return;
 		}
 		Debug("Command buffer submitted to queue successfully!");

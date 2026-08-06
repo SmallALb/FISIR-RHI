@@ -26,10 +26,17 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 option(BUILD_VULKAN_RHI "Build Vulkan RHI backend" ON)
 option(BUILD_EXAMPLES   "Build example projects"    ON)
 
+# ── CMake module path ───────────────────────────────────────────
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 # ── Dependencies ──────────────────────────────────────────────
 if(BUILD_VULKAN_RHI)
     find_package(Vulkan REQUIRED)
 endif()
+
+# Slang shader compiler SDK (required for shader compilation)
+# Set -DSLANG_SDK_DIR=<path> or place under vendor/slang/
+find_package(Slang REQUIRED)
 
 # ══════════════════════════════════════════════════════════════
 # Sub-projects

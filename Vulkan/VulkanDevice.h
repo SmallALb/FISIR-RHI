@@ -99,9 +99,9 @@ namespace FISIR {
 	private:
 		__VkDeviceData* mData;
 		VulkanMemoryAllocator* mAllocator;
-		VulkanQueue* mGraphicQue;
-		VulkanQueue* mComputeQue;
-		VulkanQueue* mTransferQueue;
+		VulkanQueue* mGraphicQue{nullptr};
+		VulkanQueue* mComputeQue{nullptr};
+		VulkanQueue* mTransferQueue{nullptr};
 		DescriptorSizes HeapSizes;
 	};
 

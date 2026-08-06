@@ -362,15 +362,25 @@ namespace FISIR{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
 			};
 			if (currentCmd == RHICommandT::BeginRenderPass) {
-				BeginRenderPass_CmdInfo info;
-				batchInfo.getBatchData(info);
-				framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
-				inheritanceInfo.renderPass = static_cast<VkRenderPass>(framebuffer->getFrameRenderPass()->getRenderPassHandle());
-				inheritanceInfo.framebuffer = static_cast<VkFramebuffer>(info.frame->getResourceAPIHandle());
-				inheritanceInfo.subpass = info.subpassIndex;
-				subpassIndex = info.subpassIndex;
-				framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
-				clearval = info.clearValue;
+				BeginRenderPass_CmdInfo info{};
+				if (batchInfo.getBatchData(info)) {
+					framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
+					if ((size_t)framebuffer >= 0x10000) {
+						inheritanceInfo.renderPass = static_cast<VkRenderPass>(framebuffer->getFrameRenderPass()->getRenderPassHandle());
+						inheritanceInfo.framebuffer = static_cast<VkFramebuffer>(info.frame->getResourceAPIHandle());
+						inheritanceInfo.subpass = info.subpassIndex;
+						subpassIndex = info.subpassIndex;
+						clearval = info.clearValue;
+					} else {
+						Error("Thread {}: Invalid frameBuffer ptr=0x{:x} (currentCmd={}, ReadBegin={}, ReadEnd={}, page=0x{:x})",
+							ThreadID, (size_t)framebuffer, (int)currentCmd, batchInfo.ReadBegin, batchInfo.ReadEnd, (size_t)batchInfo.page);
+						framebuffer = nullptr;
+					}
+				} else {
+					Error("Thread {}: getBatchData failed for BeginRenderPass (ReadBegin={}, ReadEnd={})",
+						ThreadID, batchInfo.ReadBegin, batchInfo.ReadEnd);
+					framebuffer = nullptr;
+				}
 			}
 
 			VkCommandBufferBeginInfo BeginInfo{

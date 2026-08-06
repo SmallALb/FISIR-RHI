@@ -3,6 +3,7 @@
 #include <vector>
 #include <atomic>
 #include <initializer_list>
+#include <thread>
 #include "LockFreeQue.h"
 #include <array>
 namespace FISIR {
@@ -448,7 +449,7 @@ namespace FISIR {
 
 				template<class T>
 				bool getBatchData(T& data) {
-					if (ReadBegin >= ReadEnd) return false;
+					if (ReadBegin + sizeof(RHICommandT) + sizeof(T) > ReadEnd) return false;
 					data = *(T*)(page->CommandPoolPtr + sizeof(RHICommandT) + (ReadBegin & CmdPageMask));
 					size_t offset = sizeof(RHICommandT) + (ReadBegin & CmdPageMask);
 					size_t dataSize = sizeof(T);
@@ -560,11 +561,8 @@ namespace FISIR {
 
 
 		Page* acquireQue() {
-
-			if (FreePages.empty()) return nullptr;
-
 			size_t index = 256;
-			if (!FreePages.pop(index)) return nullptr;
+			FreePages.pop_wait(index);
 			Pages[index].cmdtype = cmdType;
 			return &Pages[index];
 		}

@@ -19,12 +19,13 @@ target_include_directories(RHIVK
 target_link_libraries(RHIVK
     PUBLIC  Vulkan::Vulkan
     PRIVATE Log
+    PRIVATE Slang::Slang
 )
 
 # ── Output to RHI/Vulkan/ subfolder ──────────────────────────
 # multiple backends (Dx12, Metal...) will each have their own subfolder
 set_target_properties(RHIVK PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/RHI/Vulkan
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/RHI/Vulkan
 )
 
 # ── Platform definitions ─────────────────────────────────────

@@ -13,9 +13,11 @@ namespace FISIR {
 
 	class __VkSwapChainData;
 
+	constexpr uint32_t SWAPCHAIN_SLOT_COUNT = 5;
+
 
 	class VulkanSwapChain : public RHISwapChain{
-	public:	
+	public:
 		VulkanSwapChain(VulkanViewport* viewport, uint32_t QueFamilyIndex);
 
 		bool init(VulkanDevice* device, DynamicRHI* rhi);
@@ -38,19 +40,22 @@ namespace FISIR {
 
 	private:
 		bool recreateSwapChain();
-		
+
 		bool createSwapChian();
 
 		bool createPipelineandRenderPass();
-			
-		SwapChainGetImageInfo SwapChainFrameInfos[MAX_SWAPCHAIN_FRAME];
+
+		SwapChainGetImageInfo SwapChainFrameInfos[SWAPCHAIN_SLOT_COUNT];
+		// Per-image present semaphores: indexed by swapchain image, not slot.
+		RHISemaphore* ImageRenderFinish[MAX_SWAPCHAIN_FRAME]{};
 		VulkanTexture* SwapChainTextures[MAX_SWAPCHAIN_FRAME];
 		VulkanFrameBuffer* SwapChainFrameBuffers[MAX_SWAPCHAIN_FRAME];
-		
+
 		uint32_t MaxSwapChianFramCount{0};
+		uint32_t CurrentFrameID{0};
 
 		VulkanDevice* mDevice;
-		
+
 		VulkanRenderPass* VulkanSwapChainRednerPass;
 		VulkanPipeline* VulkanViewportPipeline;
 

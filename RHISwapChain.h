@@ -15,8 +15,8 @@ namespace FISIR {
 	struct SwapChainGetImageInfo {
 		RHISemaphore* avaliable{ nullptr };
 		RHISemaphore* renderFinish{ nullptr };
+		RHIFence* finishFence{ nullptr };
 		uint32_t imageIndex {0};
-		bool inUse = false;
 	};
 
 

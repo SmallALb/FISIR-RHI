@@ -173,7 +173,10 @@ int main() {
         .bufferlayout = FISIR::UniformBuffer,
         .memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent),
     };
-    auto mvpBuffer = rhi->RHICreateBuffer(mvpBufferInfo);
+    FISIR::RHIBuffer* mvpBuffers[5];
+    for (int i = 0; i < 5; i++) {
+        mvpBuffers[i] = rhi->RHICreateBuffer(mvpBufferInfo);
+    }
 
     // ---------- 8. 加载纹理 ----------
     int texWidth, texHeight, texChannels;
@@ -229,7 +232,10 @@ int main() {
     auto sampler = rhi->RHICreateSampler(samplerInfo);
 
     // ---------- 9. 资源包 ----------
-    auto resourcePack = rhi->RHICreateResourcePack({ mvpBuffer, inputTexture, sampler });
+	FISIR::RHIResourcePackResult resourcePacks[5];
+	for (int i = 0; i < 5; i++) {
+		resourcePacks[i] = rhi->RHICreateResourcePack({ mvpBuffers[i], inputTexture, sampler });
+	}
 
     // ---------- 10. 顶点数据 ----------
     struct Vertex { float pos[3]; float color[3]; float uv[2]; };
@@ -317,13 +323,7 @@ int main() {
 
     MSG msg = { 0 };
     Warn("Begin Main Loop");
-    FISIR::RHIFence* lstWaitFence = nullptr;
     while (true) {
-        if (lstWaitFence) {
-            lstWaitFence->wait();
-            rhi->RHIDestroyFence(lstWaitFence);
-        }
-
 
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) goto cleanup;
@@ -334,17 +334,17 @@ int main() {
         // 更新 MVP
         glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
         glm::mat4 mvp = proj * view * model;
-        static_cast<FISIR::RHIBuffer*>(mvpBuffer)->updateBufferData(&mvp, sizeof(glm::mat4));
         
         //Info("MTag0");
 
         uint32_t infoid = swapchain->acquireGetImageInfoID();
+        if (infoid == FISIR::RHISwapChain::FAILEID) continue;
+        static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&mvp, sizeof(glm::mat4));
         if (infoid == FISIR::RHISwapChain::FAILEID) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             Error("Get Failed!");
             continue;
         }
-        auto CurrentFence = rhi->RHICreateFence();
         // 渲染到离屏 Framebuffer
         FISIR::RHIRenderCommandList cmdList(rhi);
 
@@ -352,7 +352,7 @@ int main() {
         cmdList.SetPipelineState(pipeline);
         cmdList.SetVertexBuffer(vertexBuffer, 0, 0);
         cmdList.SetIndexBuffer(indexBuffer, 0);
-        cmdList.SetResourcePack(resourcePack);
+        cmdList.SetResourcePack(resourcePacks[infoid]);
         cmdList.SetViewPort(0, 0, 1024, 1024, 1.0f, 0.0f);
         cmdList.SetScissor(1024, 1024);
         cmdList.DrawIndex(0, 36, 0, 1);
@@ -370,20 +370,24 @@ int main() {
             cmdList.DrawPrimitive(0, 3, 1);
             cmdList.EndRenderPass();
         }
-        cmdList.End(CurrentFence, { info.avaliable }, { info.renderFinish });
-        swapchain->present(infoid);
-        lstWaitFence = CurrentFence;
+        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
+
+		swapchain->present(infoid);
         angle += 0.02f;
     }
 cleanup:
     // ---------- 14. 清理 ----------
-    delete resourcePack.ResourcePack;
-    delete resourcePack.SamplerPack;
+    for (int i = 0; i < 5; i++) {
+        delete resourcePacks[i].ResourcePack;
+        delete resourcePacks[i].SamplerPack;
+    }
     delete swapchainPack.ResourcePack;
     delete swapchainPack.SamplerPack;
     delete sampler;
     delete swapSampler;
-    delete mvpBuffer;
+	for (int i = 0; i < 5; i++) {
+		delete mvpBuffers[i];
+	}
     delete vertexBuffer;
     delete indexBuffer;
     delete framebuffer;

@@ -16,3 +16,11 @@ out/
 # ── Legacy build artifacts ────────────────────────────────────
 x64/
 RHIVK/
+
+# ── Vendor: downloaded SDKs (not committed) ─────────────────────
+vendor/slang/
+vendor/slang-source/
+
+# claude
+.claude
+.crossnote

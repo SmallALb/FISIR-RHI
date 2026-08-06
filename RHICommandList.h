@@ -29,22 +29,27 @@ namespace FISIR {
 
 		virtual CmdType getCommandListType() const {return CmdType::None;}
 
-		virtual void End(RHIFence* fence = nullptr, const std::vector<RHISemaphore*>& waits = {}, const std::vector<RHISemaphore*>& toSignals = {}) {
+		void End(RHIFence* fence = nullptr, const std::vector<RHISemaphore*>& waits = {}, const std::vector<RHISemaphore*>& toSignals = {}) {
 			RHISemaphore** copyDataW;
 			if (waits.size()) {
 				copyDataW = (RHISemaphore**)malloc(waits.size() * sizeof(RHISemaphore*));
 				memcpy(copyDataW, waits.data(), waits.size() * sizeof(RHISemaphore*));
 			}
 			else copyDataW = nullptr;
-			
+
 			RHISemaphore** copyDataS;
 			if (toSignals.size()) {
-				copyDataS = (RHISemaphore**)malloc(waits.size() * sizeof(RHISemaphore*));
+				copyDataS = (RHISemaphore**)malloc(toSignals.size() * sizeof(RHISemaphore*));
 				memcpy(copyDataS, toSignals.data(), toSignals.size() * sizeof(RHISemaphore*));
 			}
 			else copyDataS = nullptr;
 			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size())};
 			usingPage->WriteData(RHICommandT::End, info);
+		}
+
+		RingCommandPool::PageFlag getPageFlag() const {
+			if (usingPage) return usingPage->flags.load(std::memory_order_acquire);
+			else return RingCommandPool::PageFlag::None;
 		}
 
 
@@ -78,7 +83,7 @@ namespace FISIR {
 
 		void TransitionBuffers(
 			class RHIBuffer** buffer, size_t count,
-			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone, 
+			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
 			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
 		) {
 			RHIBuffer** copyData = (RHIBuffer**)malloc(count * sizeof(RHIBuffer*));
@@ -92,7 +97,7 @@ namespace FISIR {
 			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
 			TextureLayout oldLayout, TextureLayout newLayout,
 			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
-		
+
 		) {
 			RHITexture** copyData = (RHITexture**)malloc(count * sizeof(RHITexture*));
 			memcpy(copyData, texture, count * sizeof(RHITexture*));
@@ -215,5 +220,5 @@ namespace FISIR {
 	public:
 
 	};
-	
+
 }
