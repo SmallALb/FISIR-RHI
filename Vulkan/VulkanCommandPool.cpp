@@ -207,7 +207,7 @@ namespace FISIR{
 			Error("Attempting to release a command buffer that does not belong to this pool!");
 			return;
 		}
-		vkResetCommandBuffer(cbInfo.buffer, 0);
+		//vkResetCommandBuffer(cbInfo.buffer, 0);
 		(cbInfo.type == _Primary_) ? 
 			mData->FreePrimaryCommandBuffers.push(cbInfo.index) : 
 			mData->FreeSecondaryCommandBuffers.push(cbInfo.index);

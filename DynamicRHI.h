@@ -59,6 +59,18 @@ namespace FISIR {
 
 		virtual void RHIDestroyFence(RHIFence* fence) = 0;
 
+		// 统一资源销毁接口：所有由 RHI 创建的动态资源，都应经由这些
+		// 由 RHI 实现的接口销毁，确保 new/delete 在同一个模块（DLL）内
+		// 发生，避免跨模块 new/delete 不匹配导致的堆损坏。
+		virtual void RHIDestroyTexture(RHITexture* texture) = 0;
+
+		virtual void RHIDestroyBuffer(RHIBuffer* buffer) = 0;
+
+		virtual void RHIDestroySampler(RHISampler* sampler) = 0;
+
+		virtual void RHIDestroyResourcePack(RHIResourcePackResult& pack) = 0;
+
+		virtual void RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) = 0;
 
 	};
 

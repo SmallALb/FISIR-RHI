@@ -57,6 +57,16 @@ namespace FISIR {
 		virtual RingCommandPool::Page* RHIGetCommandPoolPage(CmdType cmdtype) override;
 
 		virtual void RHIDestroyFence(RHIFence* fence) override;
+
+		virtual void RHIDestroyTexture(RHITexture* texture) override;
+
+		virtual void RHIDestroyBuffer(RHIBuffer* buffer) override;
+
+		virtual void RHIDestroySampler(RHISampler* sampler) override;
+
+		virtual void RHIDestroyResourcePack(RHIResourcePackResult& pack) override;
+		
+		virtual void RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) override;
 	private:
 		void PagePrepareLoop();
 
@@ -81,3 +91,4 @@ extern "C" {
 	EXPORTDLL FISIR::DynamicRHI* RHICreate();
 	EXPORTDLL void RHIDestroy(FISIR::DynamicRHI* rhi);
 }
+

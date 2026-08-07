@@ -178,7 +178,8 @@ namespace FISIR {
         if (id >= SWAPCHAIN_SLOT_COUNT) return {};
         auto& slot = SwapChainFrameInfos[id];
         SwapChainGetImageInfo info = slot;
-        // Override with per-image present semaphore.
+        // Override renderFinish with the per-image present semaphore so
+        // present() waits on the correct semaphore per swapchain image.
         info.renderFinish = ImageRenderFinish[slot.imageIndex];
         return info;
     }

@@ -1,4 +1,4 @@
-#include <iostream>
+    #include <iostream>
 #include <windows.h>
 #include <thread>
 #include "RHITypes.h"
@@ -232,10 +232,10 @@ int main() {
     auto sampler = rhi->RHICreateSampler(samplerInfo);
 
     // ---------- 9. 资源包 ----------
-	FISIR::RHIResourcePackResult resourcePacks[5];
-	for (int i = 0; i < 5; i++) {
-		resourcePacks[i] = rhi->RHICreateResourcePack({ mvpBuffers[i], inputTexture, sampler });
-	}
+    FISIR::RHIResourcePackResult resourcePacks[5];
+    for (int i = 0; i < 5; i++) {
+        resourcePacks[i] = rhi->RHICreateResourcePack({ mvpBuffers[i], inputTexture, sampler });
+    }
 
     // ---------- 10. 顶点数据 ----------
     struct Vertex { float pos[3]; float color[3]; float uv[2]; };
@@ -372,30 +372,32 @@ int main() {
         }
         cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
 
-		swapchain->present(infoid);
+        swapchain->present(infoid);
         angle += 0.02f;
     }
 cleanup:
     // ---------- 14. 清理 ----------
+    // 由 RHI 创建的所有资源对象都应经由 RHI 接口销毁，
+    // 确保 new/delete 在同一个模块（RHIVK.dll）内完成，
+    // 避免跨模块 new/delete 不匹配导致的堆损坏。
     for (int i = 0; i < 5; i++) {
-        delete resourcePacks[i].ResourcePack;
-        delete resourcePacks[i].SamplerPack;
+        auto& rc = resourcePacks[i];
+        if (rc.ResourcePack || rc.SamplerPack) rhi->RHIDestroyResourcePack(rc);
     }
-    delete swapchainPack.ResourcePack;
-    delete swapchainPack.SamplerPack;
-    delete sampler;
-    delete swapSampler;
-	for (int i = 0; i < 5; i++) {
-		delete mvpBuffers[i];
-	}
-    delete vertexBuffer;
-    delete indexBuffer;
-    delete framebuffer;
-    delete colorTexture;
-    delete depthTexture;
-    delete uploadBuffer;
-    if (inputTexture) delete inputTexture;
-
+    if (swapchainPack.ResourcePack || swapchainPack.SamplerPack) rhi->RHIDestroyResourcePack(swapchainPack);
+    if (sampler)     rhi->RHIDestroySampler(sampler);
+    if (swapSampler) rhi->RHIDestroySampler(swapSampler);
+    for (int i = 0; i < 5; i++) {
+        if (mvpBuffers[i]) rhi->RHIDestroyBuffer(mvpBuffers[i]);
+    }
+    if (vertexBuffer) rhi->RHIDestroyBuffer(vertexBuffer);
+    if (indexBuffer)  rhi->RHIDestroyBuffer(indexBuffer);
+    // framebuffer 引用了 colorTexture / depthTexture，必须先于它们销毁。
+    if (framebuffer)  rhi->RHIDestroyFrameBuffer(framebuffer);
+    if (colorTexture) rhi->RHIDestroyTexture(colorTexture);
+    if (depthTexture) rhi->RHIDestroyTexture(depthTexture);
+    if (uploadBuffer) rhi->RHIDestroyBuffer(uploadBuffer);
+    if (inputTexture) rhi->RHIDestroyTexture(inputTexture);
     Info("Destroy RHI Done!");
     FISIR::RHICreator::destroyRenderInterface();
     FISIR::RHICreator::freeCurrentRenderInterfaceApi();

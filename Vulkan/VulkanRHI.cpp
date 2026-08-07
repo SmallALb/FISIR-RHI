@@ -151,8 +151,8 @@ namespace FISIR {
         for (auto& shader : ShadersPool) delete shader;
 
         for (auto& [viewport, swapchain] : ViewPortSwapChainCache) {
-            delete viewport;
             delete swapchain;
+            delete viewport;
         }
 
         Debug("Destroy Fence and Semaphore Pool");
@@ -305,8 +305,31 @@ namespace FISIR {
     }
 
 
-    void VulkanRHI::RHIDestroyFence(RHIFence* fence) {
+
+
+        void VulkanRHI::RHIDestroyFence(RHIFence* fence) {
         mFencePool->release(static_cast<VulkanFence*>(fence));
+    }
+
+    void VulkanRHI::RHIDestroyTexture(RHITexture* texture) {
+        delete static_cast<VulkanTexture*>(texture);
+    }
+
+    void VulkanRHI::RHIDestroyBuffer(RHIBuffer* buffer) {
+        delete static_cast<VulkanBuffer*>(buffer);
+    }
+
+    void VulkanRHI::RHIDestroySampler(RHISampler* sampler) {
+        delete static_cast<VulkanSampler*>(sampler);
+    }
+
+    void VulkanRHI::RHIDestroyResourcePack(RHIResourcePackResult& pack) {
+        if (pack.ResourcePack) { mDescriptorPool->destroyResourcePack(pack.ResourcePack); pack.ResourcePack = nullptr; }
+        if (pack.SamplerPack)  { mDescriptorPool->destroyResourcePack(pack.SamplerPack);  pack.SamplerPack = nullptr; }
+    }
+
+    void VulkanRHI::RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) {
+		delete static_cast<VulkanFrameBuffer*>(frameBuffer);
     }
 
     template<class T_, class F_>
@@ -540,94 +563,57 @@ namespace FISIR {
 
     void VulkanRHI::VulkanResourceLoop() {
         Debug("Resource Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+
+        // Local pending list: holds items whose fences are not yet signaled.
+        // Avoids re-pushing to the lock-free queue (which would allocate new
+        // nodes on every re-queue, stressing the queue under high throughput).
+        PendingReleaseCBsInThread.clear();
+
         while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
-            static int shrink_counter = 0;
-            if (++shrink_counter % 60 == 0 && PendingReleaseCBsInThread.empty()) {
-                PendingReleaseCBsInThread.shrink_to_fit();
-            }
 
-            if (!PendingReleaseCBsInThread.empty()) {
-                std::vector<VkFence> fences;
-                std::vector<size_t> indices;
-                fences.reserve(PendingReleaseCBsInThread.size());
-                indices.reserve(indices.size());
-
-                for (size_t i = 0; i<PendingReleaseCBsInThread.size(); i++) {
-                    auto& [fence, cbs, fromframe] = PendingReleaseCBsInThread[i];
-                    fences.push_back(static_cast<VkFence>(fence->getFenceHandle()));
-                    indices.push_back(i);
-                }
-
-                bool needClear = 0;
-                if (!fences.empty()) {
-                    VkResult res = vkWaitForFences(
-                        mDevice->getLogicalDevice(),
-                        static_cast<uint32_t>(fences.size()),
-                        fences.data(),
-                        VK_FALSE,
-                        1000000
-                    );
-                    needClear = (res == VK_SUCCESS);
-                }
-                if (needClear)
-                    TwoPointerSwapPop(PendingReleaseCBsInThread, [this](PendingReleaseInfo& value)->bool {
-                        auto& [fence, cbs, fromframe] = value;
-                        //if (fence) Debug("Pendding fence: 0x{:x}, signaled: {}", (size_t)fence, fence ? fence->isSignaled() : true);
-                        if (!fence || fence->isSignaled()) {
-                            if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
-                            for (auto& cb : cbs) {
-                                cb.pool->releaseCommandBuffer(cb);
-                                for (auto& [resource, change] : cb.QuoteResources) {
-                                    if (resource->getResourceType() == Type::Texture) {
-                                        static_cast<VulkanTexture*>(resource)->transitionLayout(change.layout);
-                                    }
-                                }
-                                cb.QuoteResources.clear();
-                            }
-                            cbs.clear();
-                            return true;
-                        }
-                        return stopTag;
-                    });
-            }
-
-            PendingReleaseInfo Info;
-            if (!PendingReleaseCBs.empty()) {
-                if (!PendingReleaseCBs.pop_wait(Info)) {
-                    Warn("PendingReleaseCBs Pop Failed");
-                    continue;
-                }
-                auto& [fence, cbs, fromframe] = Info;
-
-                if (!fence || fence->isSignaled()) {
-                    for (auto& cb : cbs) {
-                        cb.pool->releaseCommandBuffer(cb);
-                        for (auto& [resource, change] : cb.QuoteResources) {
-                            if (resource->getResourceType() == Type::Texture) {
-                                static_cast<VulkanTexture*>(resource)->transitionLayout(change.layout);
-                            }
-                        }
-                        cb.QuoteResources.clear();
-                    }
-                    if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
-                }
-                else if (fromframe) {
-                    // Swapchain CBs: re-queue for prompt re-check instead of
-                    // accumulating in PendingReleaseCBsInThread (which would
-                    // grow unboundedly with a 1 ms batch-wait timeout).
-                    // yield() avoids 100 % CPU while keeping latency low.
-                    PendingReleaseCBs.push(std::move(Info));
-                    std::this_thread::yield();
-                }
-                else {
+            // Drain the lock-free queue into the local pending list.
+            {
+                PendingReleaseInfo Info;
+                while (PendingReleaseCBs.pop(Info)) {
                     PendingReleaseCBsInThread.push_back(std::move(Info));
                 }
-
             }
-            else {
+
+            // Process the local list: release ready items, keep pending ones.
+            if (!PendingReleaseCBsInThread.empty()) {
+                size_t writeIdx = 0;
+                for (size_t i = 0; i < PendingReleaseCBsInThread.size(); ++i) {
+                    auto& [fence, cbs, fromframe] = PendingReleaseCBsInThread[i];
+
+                    if (!fence || fence->isSignaled()) {
+                        for (auto& cb : cbs) {
+                            cb.pool->releaseCommandBuffer(cb);
+                            for (auto& [resource, change] : cb.QuoteResources) {
+                                if (resource->getResourceType() == Type::Texture) {
+                                    static_cast<VulkanTexture*>(resource)->transitionLayout(change.layout);
+                                }
+                            }
+                            cb.QuoteResources.clear();
+                        }
+                        if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
+                    }
+                    else {
+                        // Keep this item for the next iteration.
+                        if (writeIdx != i)
+                            PendingReleaseCBsInThread[writeIdx] = std::move(PendingReleaseCBsInThread[i]);
+                        ++writeIdx;
+                    }
+                }
+                PendingReleaseCBsInThread.resize(writeIdx);
+            }
+
+            if (PendingReleaseCBs.empty() && PendingReleaseCBsInThread.empty()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-
+            else if (!PendingReleaseCBsInThread.empty() && PendingReleaseCBs.empty()) {
+                // No new work, just waiting for GPU — brief sleep to avoid spinning.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
         }
     }
 

@@ -29,7 +29,8 @@ namespace FISIR {
 
 	
 	VulkanViewport::VulkanViewport(DynamicRHI* rhi, TextureCOLORType colorType, uint32_t iniWidth, uint32_t initHeight, void* WindowHandle) {
-		mData = new __VKViewportData;
+		mData = new __VKViewportData{};
+		mData->Surface = VK_NULL_HANDLE;
 		mData->Viewport.height = initHeight;
 		mData->Viewport.width = iniWidth;
 		mData->WindowHandle = WindowHandle;
@@ -89,7 +90,11 @@ namespace FISIR {
 
 	}
 
-	VkSurfaceKHR_T* VulkanViewport::getVkSurface() const {
+		VkSurfaceKHR_T* VulkanViewport::getVkSurface() const {
+		if (!mData) {
+			Error("VulkanViewport::getVkSurface: mData is nullptr!");
+			return nullptr;
+		}
 		return mData->Surface;
 	}
 
