@@ -150,12 +150,14 @@ namespace FISIR{
 		VulkanFrameBuffer* frameBuffer{ nullptr };
 		ClearValue clearValue{};
 		bool renderPassEndTag{ false };
-		bool commandsEndTag {false};
+		std::atomic_bool commandsEndTag {false};
 		uint32_t subpassIndex{ 0 };
 		CBInfo ExecutedCB {};
 		std::atomic<VulkanFence*> fence { nullptr };
 		std::vector<RHISemaphore*> waits;
 		std::vector<RHISemaphore*> signals;
+		VulkanSwapChain* swapchain{ nullptr };
+		uint32_t swapchainID{ UINT32_MAX };
 
 		ExecuteResultData& operator=(ExecuteResultData&& other) noexcept {
 			frameBuffer = other.frameBuffer;

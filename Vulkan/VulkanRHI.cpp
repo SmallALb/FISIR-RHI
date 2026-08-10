@@ -118,6 +118,7 @@ namespace FISIR {
 
         stopTag = 1;
 
+        vkDeviceWaitIdle(mDevice->getLogicalDevice());
         PrepareThread.join();
         Debug("Prepare Thread Join");
 
@@ -129,7 +130,6 @@ namespace FISIR {
 
 
 
-        vkDeviceWaitIdle(mDevice->getLogicalDevice());
 
         PendingReleaseCBs.forceClear();
         NeedUsingPages.forceClear();
@@ -364,6 +364,7 @@ namespace FISIR {
         }
     }
 
+
     void VulkanRHI::VulkanRHILoop() {
         Debug("RHI Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
@@ -376,6 +377,7 @@ namespace FISIR {
             }
 
             ResultInfo(ResultInfo&& info) {
+                Warn("ResultInfo moved from 0x{} to 0x{:x}\n", (void*)&info, (void*)this);
                 ExecuteResults = std::move(info.ExecuteResults);
                 FinishCount = std::move(info.FinishCount);
             }
@@ -440,14 +442,22 @@ namespace FISIR {
                     result.ExecuteResults.emplace_back(new ExecuteResultData());
                     auto& info = result.ExecuteResults.back();
 
+
+                    if ((size_t)page == 0xDDDDDDDDDDDDDDDD) {
+                        // WTF R U Push ????
+                        __debugbreak();
+                    }
                     ThreadPool->pushCommandBatch(Batch, info.get(), result.FinishCount.get());
                 }
 
                 //check 
                 VulkanFence* fence = nullptr;
+				VulkanSwapChain* swapchain = nullptr;
+				uint32_t swapchainID = RHISwapChain::FAILEID;
                 std::vector<RHISemaphore*> waits;
                 std::vector<RHISemaphore*> signals;
-                if (result.FinishCount->load(std::memory_order_acquire) == result.ExecuteResults.size() && result.ExecuteResults.back()->commandsEndTag) {
+
+                if (result.FinishCount->load(std::memory_order_acquire) == result.ExecuteResults.size() && result.ExecuteResults.back()->commandsEndTag.load(std::memory_order_acquire)) {
                     auto commandPool = getByType(page->cmdtype);
                     auto MCB = commandPool->createCommandBuffer(_Primary_);
                     VkCommandBufferBeginInfo beginInfo{
@@ -513,13 +523,18 @@ namespace FISIR {
                         }
                     }
                     vkEndCommandBuffer(MCB.buffer);
+					swapchain = result.ExecuteResults.back()->swapchain;
+					swapchainID = result.ExecuteResults.back()->swapchainID;
 
-                    if (fence || waits.empty() || signals.empty()) {
+                    if (fence || !waits.empty() || !signals.empty()) {
                         VulkanFence* submitFence = fence ? static_cast<VulkanFence*>(fence) : mFencePool->createFence();
                         Debug("Page Fene is 0x{:x}, Pushed fence 0x{:x} to PendingReleaseCBs", (size_t)fence, (size_t)submitFence);
                         mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, submitFence);
                         SecondCBs.emplace_back(std::move(MCB));
                         PendingReleaseCBs.push(PendingReleaseInfo(submitFence, std::move(SecondCBs), 1));
+                        if (swapchain) {
+                            swapchain->present(swapchainID);
+                        }
                     }
                     else {
                         getCmdsByType(page->cmdtype).push_back(MCB.buffer);

@@ -3,29 +3,54 @@
 #include <semaphore>
 #include <chrono>
 #include <atomic>
+#include <thread>
+
 
 namespace FISIR {
-	
-	template<typename T>
-	class LockFreeQue {
-		using Node_T = std::atomic<uintptr_t>;
-		static constexpr uintptr_t TagMask = 0x3;
-		static constexpr uintptr_t PtrMask = ~TagMask;
-		Node_T nll = 0;
 
-		struct Node {
-			Node() {}
-			
-			template<class... Args>
-			explicit Node(Args&&... args) : val(std::forward<Args>(args)...) {}
-			T val;
-			Node_T nxt{0};
+	// 特化检查函数
+	template<typename T>
+	inline bool QueTest(const T& val) {
+		return true;  // 默认返回 true
+	}
+	
+	template<typename T, size_t N = 256>
+	class LockFreeQue {
+		static_assert(N > 0 && (N & (N - 1)) == 0, "N must be a power of two and greater than 0");
+		static constexpr size_t mask_ = N - 1;
+
+		struct alignas(64) Node {
+			std::atomic_size_t sequence {0};
+			T data;
 		};
+
+		struct alignas(64) ProducerState {
+			std::atomic_size_t sequence {0};
+			std::atomic_size_t cacheConsumer{ 0 };
+			char padding[64 - sizeof(std::atomic_size_t) * 2]; // 填充到 64 字节
+		} producer;
+
+		struct alignas(64) ConsumerState {
+			std::atomic_size_t sequence{ 0 };
+			std::atomic_size_t cacheProducer{ 0 };
+			char padding[64 - sizeof(std::atomic_size_t) * 2]; // 填充到 64 字节
+		} consumer;
+
+		alignas(64) Node buffer_[N];
+		
 	public:
 		LockFreeQue() {
-			Node* node = new Node();
-			tail_.store(createNode(node));
-			head_.store(createNode(node));
+			for (size_t i = 0; i < N; ++i) {
+				buffer_[i].sequence.store( i, std::memory_order_release);
+			}
+
+			producer.sequence.store(0);
+			producer.cacheConsumer.store(0);
+			consumer.sequence.store(0);
+			consumer.cacheProducer.store(0);
+			stop_.store(false, std::memory_order_relaxed);
+			Size.store(0, std::memory_order_relaxed);
+
 		}
 
 		LockFreeQue(const LockFreeQue&) = delete;
@@ -39,34 +64,19 @@ namespace FISIR {
 
 			for (int i=0; i<1024; i++) sem_.release();
 
-			uintptr_t headVal = head_.exchange(0, std::memory_order_acq_rel);
-			tail_.store(0, std::memory_order_release);
-			if (headVal == 0) return;
-
-			Node* node = getPtr(headVal);
-			while (node) {
-				Node* next = getPtr(node->nxt.load(std::memory_order_acquire));
-				delete node;
-				node = next;
-			}
-			head_.store(0, std::memory_order_release);
-			tail_.store(0, std::memory_order_release);
 		}
 
-		void push(const T& val) {
-			Node* newNode = new Node(val);
-			push_Node(createNode(newNode));
+		bool push(const T& val) {
+			return push_internal(val);
 		}
 
-		void push(T&& val) {
-			Node* newNode = new Node(std::move(val));
-			push_Node(createNode(newNode));
+		bool push(T&& val) {
+			return push_internal(std::move(val));
 		}
 
 		template<class... Args>
-		void emplace(Args&&... args) {
-			Node* newNode = new Node(std::forward<Args>(args)...);
-			push_Node(createNode(newNode));
+		bool emplace(Args&&... args) {
+			return push_internal(T(std::forward<Args>(args)...));
 		}
 
 		bool pop() {
@@ -75,121 +85,127 @@ namespace FISIR {
 		}
 
 		bool pop(T& ret) {
-			Node* OldHead = nullptr;
-			Node* OldTail = nullptr;
-			Node* GetNext = nullptr;
-			
-			uintptr_t  OldHead_T = nll;
-			uintptr_t  OldTail_T = nll;
-			uintptr_t  GetNext_T = nll;
-			
-			while (1) {
-				OldHead_T = head_.load(std::memory_order_acquire);
-				OldHead = getPtr(OldHead_T);
-				uintptr_t OldTag = getTag(OldHead_T);
-
-				OldTail_T = tail_.load(std::memory_order_acquire);
-				OldTail = getPtr(OldTail_T);
-
-				GetNext_T = OldHead->nxt.load(std::memory_order_acquire);
-				GetNext = getPtr(GetNext_T);
-				
-				if (OldHead_T != head_.load(std::memory_order_acquire)) continue;
-
-				if (OldHead == OldTail) {
-					if (GetNext == nullptr) return false;
-					auto NewTail_T = createNode(GetNext, getTag(OldTail_T) + 1);
-					tail_.compare_exchange_weak(OldTail_T, NewTail_T, std::memory_order_release);
-				}
-				else {
-					ret = std::move(GetNext->val);
-					auto newHead_T = createNode(GetNext, OldTag + 1);
-					if (head_.compare_exchange_weak(OldHead_T, newHead_T, std::memory_order_release)) {
-						Size--;
-						delete OldHead;
-						return true;
-					}
-				}
-			}
+			return pop_internal(ret);
 		}
 
 		bool pop_wait(T& ret) {
 			while(!stop_.load(std::memory_order_acquire)) {
 				if (pop(ret)) return true;
-				sem_.try_acquire_for(std::chrono::milliseconds(1));
+				if (empty()) {
+					sem_.try_acquire_for(std::chrono::milliseconds(1));
+				}
 			}
 			return false;
 		}
 
 		void forceClear() {
-			head_.store(0, std::memory_order_release);
-			tail_.store(0, std::memory_order_release);
-			Size.store(0, std::memory_order_release);
+			stop_.store(true, std::memory_order_release);
+			for (int i = 0; i < 1024; i++) sem_.release();
+
+
 		}
 
 		size_t size() const {return Size;}
 
 		bool empty() const {
-			Node_T headVal = head_.load(std::memory_order_acquire);
-			Node* head = getPtr(headVal);
-			if (head == nullptr) return true;
-			Node_T nextVal = head->nxt.load(std::memory_order_acquire);
-			return getPtr(nextVal) == nullptr;
+			return producer.sequence.load(std::memory_order_acquire)
+				- consumer.sequence.load(std::memory_order_acquire) == 0;
 		}
 
 		void clear() {
-			T tmp;
-			while(pop(tmp));
+			for (size_t i = 0; i < N; ++i) {
+				buffer_[i].sequence.store(i, std::memory_order_release);
+			}
+			producer.sequence.store(0, std::memory_order_release);
+			producer.cacheConsumer.store(0, std::memory_order_release);
+			consumer.sequence.store(0, std::memory_order_release);
+			consumer.cacheProducer.store(0, std::memory_order_release);
+			Size.store(0, std::memory_order_release);
 		}
 
 		void stopQue() {
 			stop_.store(true, std::memory_order_release);
-		}
-
-	private:
-		void push_Node(uintptr_t NewNode_T) {
-			Node* OldTail = nullptr;
-			Node* CurrentNxt = nullptr;
-
-			uintptr_t  OldTail_T = nll;
-			uintptr_t  CurrentNxt_T = nll;
-
-			while (1) {
-				OldTail_T = tail_.load(std::memory_order_acquire);
-				OldTail = getPtr(OldTail_T);
-				uintptr_t OldTag = getTag(OldTail_T);
-
-				CurrentNxt_T = OldTail->nxt.load(std::memory_order_acquire);
-				CurrentNxt = getPtr(CurrentNxt_T);
-
-				if (CurrentNxt == nullptr) {
-					if (OldTail->nxt.compare_exchange_weak(CurrentNxt_T, NewNode_T, std::memory_order_release)) {
-						auto NewTail_T = createNode(getPtr(NewNode_T), (OldTag + 1));
-						tail_.compare_exchange_weak(OldTail_T, NewTail_T, std::memory_order_release);
-						Size++;
-						sem_.release();
-						return;
-					}
-				}
-				else tail_.compare_exchange_weak(OldTail_T, CurrentNxt_T, std::memory_order_release);
+			for (int i = 0; i < 1024; ++i) {
+				sem_.release();
 			}
 		}
 
-		inline uintptr_t createNode(Node* node, uintptr_t tag = 0) const {
-			return reinterpret_cast<uintptr_t>(node) | (tag & TagMask);
-		}
+	private:
+		template<class U>
+		bool push_internal(U&& val) {
+			size_t prod_seq = producer.sequence.load(std::memory_order_relaxed);
+			size_t cons_seq;
+
+			if (prod_seq - producer.cacheConsumer.load(std::memory_order_acquire) >= N) {
+				cons_seq = consumer.sequence.load(std::memory_order_acquire);
+				producer.cacheConsumer.store(cons_seq, std::memory_order_release);
+				if (prod_seq - cons_seq >= N) return false;
+			}
+
+			while(!producer.sequence.compare_exchange_weak(prod_seq, prod_seq + 1, std::memory_order_release, std::memory_order_relaxed)) {
+				cons_seq = consumer.sequence.load(std::memory_order_acquire);
+				if (prod_seq - cons_seq >= N) return false;
+			}
+
+			size_t index = prod_seq & mask_;
+
+			//if (index == 0) __debugbreak();
 		
-		inline Node* getPtr(uintptr_t node) const {
-			return reinterpret_cast<Node*>(node & PtrMask);
+			while(buffer_[index].sequence.load(std::memory_order_acquire) != prod_seq ) {
+				if (stop_.load(std::memory_order_acquire)) {
+					producer.sequence.store(prod_seq, std::memory_order_release);
+					return false;
+				}
+				std::this_thread::yield();  // 避免忙等待
+			}
+
+			buffer_[index].data = std::forward<U>(val);
+			buffer_[index].sequence.store(prod_seq + 1, std::memory_order_release);
+			Size.fetch_add(1, std::memory_order_release);
+			sem_.release();
+
+			return true;
 		}
 
-		inline uintptr_t getTag(uintptr_t node) const {
-			return node & TagMask;
+		bool pop_internal(T& ret) {
+			size_t cons_seq = consumer.sequence.load(std::memory_order_relaxed);
+			size_t prod_seq;
+
+			if (cons_seq >= consumer.cacheProducer.load(std::memory_order_acquire)) {
+				prod_seq = producer.sequence.load(std::memory_order_acquire);
+				consumer.cacheProducer.store(prod_seq, std::memory_order_release);
+				if (cons_seq >= prod_seq) return false;
+			}
+
+			while(!consumer.sequence.compare_exchange_weak(cons_seq, cons_seq + 1, std::memory_order_release, std::memory_order_relaxed)) {
+				prod_seq = producer.sequence.load(std::memory_order_acquire);
+				if (cons_seq >= prod_seq) return false;
+			}
+
+			size_t index = cons_seq & mask_;
+
+
+			while(buffer_[index].sequence.load(std::memory_order_acquire) != cons_seq + 1) {
+				if (stop_.load(std::memory_order_acquire)) {
+					consumer.sequence.store(cons_seq, std::memory_order_release);
+					return false;
+				}
+				std::this_thread::yield();  // 避免忙等待
+
+			}
+
+			ret = std::move(buffer_[index].data);
+			buffer_[index].sequence.store(cons_seq + N, std::memory_order_release);
+			Size.fetch_sub(1, std::memory_order_release);
+			//if (index == 0) __debugbreak();
+			if (index == 0) tmp.fetch_add(1);
+			return true;
 		}
+	
 	private:
-		Node_T head_{0}, tail_{0};
-		std::atomic<size_t> Size{0};
-		std::binary_semaphore sem_{ 0 };          
-		std::atomic<bool> stop_{ false };         
+		alignas(64) std::binary_semaphore sem_{ 0 };          
+		alignas(64) std::atomic_bool stop_{ false };         
+		std::atomic_size_t Size{ 0 };
+		std::atomic_size_t tmp {0};
 	};
 }

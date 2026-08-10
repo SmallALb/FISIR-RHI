@@ -29,7 +29,7 @@ namespace FISIR {
 
 		virtual CmdType getCommandListType() const {return CmdType::None;}
 
-		void End(RHIFence* fence = nullptr, const std::vector<RHISemaphore*>& waits = {}, const std::vector<RHISemaphore*>& toSignals = {}) {
+		void End(RHIFence* fence = nullptr, const std::vector<RHISemaphore*>& waits = {}, const std::vector<RHISemaphore*>& toSignals = {}, RHISwapChain* swapchain = nullptr , uint32_t swapChainID = UINT32_MAX ) {
 			RHISemaphore** copyDataW;
 			if (waits.size()) {
 				copyDataW = (RHISemaphore**)malloc(waits.size() * sizeof(RHISemaphore*));
@@ -43,7 +43,7 @@ namespace FISIR {
 				memcpy(copyDataS, toSignals.data(), toSignals.size() * sizeof(RHISemaphore*));
 			}
 			else copyDataS = nullptr;
-			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size())};
+			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size()), swapchain, swapChainID};
 			usingPage->WriteData(RHICommandT::End, info);
 		}
 

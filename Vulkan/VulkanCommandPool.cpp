@@ -15,6 +15,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanQueue.h"
 #include "VulkanRenderPass.h"
+#include "VulkanSwapChian.h"
 
 
 namespace FISIR{
@@ -339,6 +340,10 @@ namespace FISIR{
 	}
 
 	void CommandExecuteThreadPool::pushCommandBatch(RingCommandPool::Page::BatchInfo batch, ExecuteResultData* result, std::atomic_uint32_t* finishCount) {
+		if ((size_t)batch.page == 0xDDDDDDDDDDDDDDDD) {
+			//WTF R U GET ?????
+			__debugbreak();
+		}
 		NeedExecutePages.push({ batch, result, finishCount });
 	}
 
@@ -351,11 +356,16 @@ namespace FISIR{
 				continue;
 			}
 
+			if ((size_t)exeTask.Batch.page == 0xDDDDDDDDDDDDDDDD) {
+				//WTF R U GET ?????
+				__debugbreak();
+			}
+
 			auto& [batchInfo, result, finishCount] = exeTask;
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
 			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
-			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals] = *result;
+			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals, swapchain, swapchainID] = *result;
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
@@ -567,11 +577,15 @@ namespace FISIR{
 							signals = std::vector<RHISemaphore*>(info.signals, info.signals + info.signalcount);
 							free(info.signals);
 						}
+						if (info.swapchain) {
+							swapchain = static_cast<VulkanSwapChain*>(info.swapchain);
+							swapchainID = info.swapchainID;
+						}
 						Debug("ThreadLoop: result对象地址 = 0x{:x}, fence地址 = 0x{:x}, 写入值 = 0x{:x}",
 							(size_t)result,
 							(size_t)&fence,
 							(size_t)static_cast<VulkanFence*>(info.fence));
-						commandsEndTag = true;
+						commandsEndTag.store(true, std::memory_order_release);
 						break;
 					}
 				}		

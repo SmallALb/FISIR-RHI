@@ -132,7 +132,7 @@ namespace FISIR {
         }
 
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
-            Error("Acquire next image failed: {}", (uint32_t)res);
+            //Error("Acquire next image failed: {}", (uint32_t)res);
             return RHISwapChain::FAILEID;
         }
 
@@ -161,6 +161,8 @@ namespace FISIR {
             .pImageIndices = &slot.imageIndex,
             .pResults = nullptr
         };
+
+        //vkQueueWaitIdle(mDevice->getGraphicQueue()->getQueueHandle());
 
         vkQueuePresentKHR(PresentQueue->getQueueHandle(), &presentInfo);
     }
@@ -195,7 +197,7 @@ namespace FISIR {
 
 
     bool VulkanSwapChain::recreateSwapChain() {
-        vkQueueWaitIdle(mDevice->getGraphicQueue()->getQueueHandle());
+        vkDeviceWaitIdle(mDevice->getLogicalDevice());
         return createSwapChian();
     }
 

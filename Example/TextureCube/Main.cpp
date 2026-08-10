@@ -222,7 +222,10 @@ int main() {
             FISIR::ResourceAccess::TransferDst, FISIR::ResourceAccess::ShaderReadOnly,
             FISIR::TextureLayout::TransferDstOptimal, FISIR::TextureLayout::ShaderReadOnlyOptimal,
             FISIR::RHIUsingStage::PipelineTransferStage, FISIR::RHIUsingStage::FragmentShaderStage);
-        uploadCmdList.End();
+		auto resfence = rhi->RHICreateFence();
+        uploadCmdList.End(resfence);
+        resfence->wait();
+        rhi->RHIDestroyFence(resfence);
         stbi_image_free(textureData);
     } else {
         Error("Failed to load texture '{}' — check working directory!", texturePath);
@@ -370,9 +373,9 @@ int main() {
             cmdList.DrawPrimitive(0, 3, 1);
             cmdList.EndRenderPass();
         }
-        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
+        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish }, swapchain, infoid);
 
-        swapchain->present(infoid);
+        //swapchain->present(infoid);
         angle += 0.02f;
     }
 cleanup:

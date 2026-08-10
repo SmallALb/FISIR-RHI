@@ -14,6 +14,8 @@ namespace FISIR {
 	class RHITexture;
 	class RHIPipeline;
 	class RHISemaphore;
+	class RHISwapChain;
+	class RHIViewport;
 
     enum class CmdType { None = 0, Render, Compute, Transfer };
 
@@ -398,6 +400,8 @@ namespace FISIR {
 		uint32_t waitcount {0};
 		RHISemaphore** signals;
 		uint32_t signalcount {0};
+		RHISwapChain* swapchain {nullptr};
+		uint32_t swapchainID {UINT32_MAX};
 	};
 
 
@@ -450,7 +454,7 @@ namespace FISIR {
 				template<class T>
 				bool getBatchData(T& data) {
 					if (ReadBegin + sizeof(RHICommandT) + sizeof(T) > ReadEnd) return false;
-					data = *(T*)(page->CommandPoolPtr + sizeof(RHICommandT) + (ReadBegin & CmdPageMask));
+					//data = *(T*)(page->CommandPoolPtr + sizeof(RHICommandT) + (ReadBegin & CmdPageMask));
 					size_t offset = sizeof(RHICommandT) + (ReadBegin & CmdPageMask);
 					size_t dataSize = sizeof(T);
 					if (offset + dataSize <= MaxCMDPageSize) {
@@ -586,6 +590,25 @@ namespace FISIR {
 		std::array<Page, 256> Pages;
 		LockFreeQue<size_t> FreePages;
 	};
+
+
+	template<>
+	inline bool QueTest<RingCommandPool::Page::BatchInfo>(const RingCommandPool::Page::BatchInfo& val) {
+		// 检查 page 指针是否有效
+		if (val.page == nullptr) {
+			printf("BatchInfo: page is nullptr");
+			return false;
+		}
+		if ((uintptr_t)val.page == 0xDDDDDDDDDDDDDDDDULL) {
+			printf("BatchInfo: page is 0xDDDDDDDDDDDDDDDD (freed memory)");
+			return false;
+		}
+		if ((uintptr_t)val.page < 0x1000) {
+			printf("BatchInfo: page is too low: 0x%p", val.page);
+			return false;
+		}
+		return true;
+	}
 
 
 

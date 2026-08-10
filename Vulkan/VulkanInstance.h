@@ -84,9 +84,12 @@ static bool MakeVkInstance() {
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
     std::vector<VkLayerProperties> layerProperties(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, layerProperties.data());
+#ifdef _DEBUG
     for (const auto& layerP : layerProperties) {
         if (strstr(layerP.layerName, "validation")) LayerNames.push_back(layerP.layerName);
     }
+#endif // DEBUG
+
     //CreateInstance
     VkInstanceCreateInfo vkInstanceCreateInfo = {
        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
