@@ -72,6 +72,11 @@ namespace FISIR {
 			usingPage->WriteData(RHICommandT::BindPipeline, info);
 		}
 
+		void SetResourcePack(const RHIResourcePackResult& pack) {
+			BindResourcePack_CmdInfo info{ 0, pack };
+			usingPage->WriteData(RHICommandT::BindResourceAndSamplerPack, info);
+		}
+
 		CmdType getCommandListType() const { return CmdType::Compute; }
 	};
 
@@ -177,6 +182,16 @@ namespace FISIR {
 		void DrawIndex(unsigned int BaseVerterIndex, unsigned int IndexCount, unsigned int BaseInstanceIndex, unsigned int InsatnceCount) {
 			DrawIndex_CmdInfo info {0, BaseVerterIndex, IndexCount, BaseInstanceIndex, InsatnceCount};
 			usingPage->WriteData(RHICommandT::DrawIndex, info);
+		}
+
+		void DrawIndirect(RHIBuffer* indirectBuffer, uint32_t offset, uint32_t drawCount, uint32_t stride) {
+			DrawIndirect_CmdInfo info{0, indirectBuffer, offset, drawCount, stride};
+			usingPage->WriteData(RHICommandT::DrawIndirect, info);
+		}
+
+		void DrawIndexedIndirect(RHIBuffer* indirectBuffer, uint32_t offset, uint32_t drawCount, uint32_t stride) {
+			DrawIndexedIndirect_CmdInfo info{0, indirectBuffer, offset, drawCount, stride};
+			usingPage->WriteData(RHICommandT::DrawIndexedIndirect, info);
 		}
 
 		void TransitionBuffers(

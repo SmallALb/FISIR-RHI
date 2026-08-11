@@ -155,6 +155,10 @@ namespace FISIR {
             delete viewport;
         }
 
+        for (auto& [name, layout] : PipelineLayoutMap) {
+			vkDestroyPipelineLayout(mDevice->getLogicalDevice(), layout, nullptr);
+        }
+
         Debug("Destroy Fence and Semaphore Pool");
         mFencePool->destroyPool();
         delete mFencePool;

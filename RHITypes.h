@@ -47,14 +47,15 @@ namespace FISIR {
 
     enum class TextureType { TEXTURE1D, TEXTURE2D, TEXTURE3D, TEXTUREARRAY };
     
-    enum  BufferLayout { 
-        UndefinedBuffer = 0x00, 
-        VertexBuffer =0x01, 
-        IndexBuffer =0x02, 
-        UniformBuffer =0x04, 
-        StorageBuffer =0x08, 
-        TransferSrcBuffer = 0x10, 
-        TransferDstBuffer = 0x20
+    enum  BufferLayout {
+        UndefinedBuffer = 0x00,
+        VertexBuffer =0x01,
+        IndexBuffer =0x02,
+        UniformBuffer =0x04,
+        StorageBuffer =0x08,
+        TransferSrcBuffer = 0x10,
+        TransferDstBuffer = 0x20,
+        IndirectBuffer = 0x40
      };
 
      using BufferLayoutFlags = uint32_t;
@@ -79,7 +80,7 @@ namespace FISIR {
     
     enum class CullMode : uint8_t { None, FRONT, BACK };
     
-    enum class RHIDescriptorTyp : uint8_t { Sampler, Image, SamplerImage, UniformBuffer };
+    enum class RHIDescriptorTyp : uint8_t { Sampler, Image, SamplerImage, UniformBuffer, StorageBuffer};
     
     enum RHIUsingStage {
         NoneStage = 0x0,
@@ -236,6 +237,8 @@ namespace FISIR {
 		EndRenderPass,
 		DrawPrimitive,
 		DrawIndex,
+		DrawIndirect,
+		DrawIndexedIndirect,
 		//Bind
 		BindPipeline,
 		BindVertexBuffer,
@@ -291,6 +294,22 @@ namespace FISIR {
 		uint32_t BaseInstanceIndex;
 		uint32_t InstanceCount;
 
+	};
+
+	struct DrawIndirect_CmdInfo {
+		RHICommandFlags Flags{ 0 };
+		RHIBuffer* Buffer;
+		uint32_t Offset;
+		uint32_t DrawCount;
+		uint32_t Stride;
+	};
+
+	struct DrawIndexedIndirect_CmdInfo {
+		RHICommandFlags Flags{ 0 };
+		RHIBuffer* Buffer;
+		uint32_t Offset;
+		uint32_t DrawCount;
+		uint32_t Stride;
 	};
 
 	struct BindViewPort_CmdInfo {
@@ -391,6 +410,7 @@ namespace FISIR {
 		RHICommandFlags Flags{ 0 };
 		RHIPipeline* pipeline;
 	};
+
 
 
 	struct End_CmdInfo {

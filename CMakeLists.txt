@@ -49,6 +49,7 @@ endif()
 
 if(BUILD_EXAMPLES)
     add_subdirectory(Example/TextureCube)
+    add_subdirectory(Example/Nanite)
 endif()
 
 # VS startup project (Windows only)

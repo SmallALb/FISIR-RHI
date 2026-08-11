@@ -128,19 +128,13 @@ namespace FISIR {
 	static VkSampleCountFlagBits getVulkanSampleCount(uint32_t sampleCount) {
 		switch (sampleCount) {
 		case 0:
-			return VK_SAMPLE_COUNT_1_BIT;
-		case 1:
-			return VK_SAMPLE_COUNT_2_BIT;
-		case 2:
-			return VK_SAMPLE_COUNT_4_BIT;
-		case 3:
-			return VK_SAMPLE_COUNT_8_BIT;
-		case 4:
-			return VK_SAMPLE_COUNT_16_BIT;
-		case 5:
-			return VK_SAMPLE_COUNT_32_BIT;
-		case 6:
-			return VK_SAMPLE_COUNT_64_BIT;
+		case 1:  return VK_SAMPLE_COUNT_1_BIT;
+		case 2:  return VK_SAMPLE_COUNT_2_BIT;
+		case 4:  return VK_SAMPLE_COUNT_4_BIT;
+		case 8:  return VK_SAMPLE_COUNT_8_BIT;
+		case 16: return VK_SAMPLE_COUNT_16_BIT;
+		case 32: return VK_SAMPLE_COUNT_32_BIT;
+		case 64: return VK_SAMPLE_COUNT_64_BIT;
 		default:
 			return VK_SAMPLE_COUNT_1_BIT;
 		}

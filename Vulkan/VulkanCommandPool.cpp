@@ -423,11 +423,27 @@ namespace FISIR{
 						vkCmdDrawIndexed(cmdInfo.buffer, info.IndexCount, info.InstanceCount, info.BaseVertexIndex, 0, info.BaseInstanceIndex);
 						break;
 					}
+					case RHICommandT::DrawIndirect: {
+						DrawIndirect_CmdInfo info;
+						batchInfo.getBatchData(info);
+						vkCmdDrawIndirect(cmdInfo.buffer, static_cast<VkBuffer>(info.Buffer->getResourceAPIHandle()), info.Offset, info.DrawCount, info.Stride);
+						break;
+					}
+					case RHICommandT::DrawIndexedIndirect: {
+						DrawIndexedIndirect_CmdInfo info;
+						batchInfo.getBatchData(info);
+						vkCmdDrawIndexedIndirect(cmdInfo.buffer, static_cast<VkBuffer>(info.Buffer->getResourceAPIHandle()), info.Offset, info.DrawCount, info.Stride);
+						break;
+					}
+
 					case RHICommandT::BindPipeline: {
 						BindPipeline_CmdInfo info;
 						batchInfo.getBatchData(info);
 						Debug("Thread {}: BindPipeline, pipeline ptr = 0x{:x}", ThreadID, (size_t)(info.pipeline));
-						vkCmdBindPipeline(cmdInfo.buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));
+						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
+							? VK_PIPELINE_BIND_POINT_COMPUTE
+							: VK_PIPELINE_BIND_POINT_GRAPHICS;
+						vkCmdBindPipeline(cmdInfo.buffer, bindPoint, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));
 						break;
 					}
 					case RHICommandT::BindVertexBuffer: {

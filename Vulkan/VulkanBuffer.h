@@ -16,7 +16,7 @@ namespace FISIR {
 
 		virtual size_t getSize() const override;
 
-		virtual void* getBufferData() const { return nullptr; }
+		virtual void* getBufferData() const override { return Data_GPU; }
 
 		virtual void updateBufferData(void* Data, size_t size) override;
 

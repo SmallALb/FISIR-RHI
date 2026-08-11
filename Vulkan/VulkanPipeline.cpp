@@ -57,6 +57,7 @@ namespace FISIR{
 		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		case RHIDescriptorTyp::StorageBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		}
 		return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	}
@@ -197,6 +198,7 @@ namespace FISIR{
 				alignment = sizes.imageAlignment;
 				break;
 			case RHIDescriptorTyp::UniformBuffer:
+			case RHIDescriptorTyp::StorageBuffer:
 				alignment = sizes.bufferAlignment;
 				break;
 			default:
@@ -227,7 +229,7 @@ namespace FISIR{
 				.sourceData = {
 					.constantOffset = {
 						.heapOffset = currentOffset,
-						.heapArrayStride = arrayStride, // 如果是数组，每个元素步长，这里填 0 表示连续
+						.heapArrayStride = arrayStride, 
 					}
 				}
 			};
@@ -245,6 +247,9 @@ namespace FISIR{
 				break;
 			case RHIDescriptorTyp::UniformBuffer:
 				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
+				break;
+			case RHIDescriptorTyp::StorageBuffer:
+				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
 				break;
 			default:
 				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
@@ -284,106 +289,6 @@ namespace FISIR{
 		}
 
 
-		//Vertext Input
-		std::vector<VkVertexInputAttributeDescription> attributes;
-		uint32_t stride = 0;
-		for (uint32_t i = 0; i<State.vertexInfo.Count; i++) {
-			VkVertexInputAttributeDescription attribute {
-				.location = i,
-				.binding =0,
-				.format = getDataTypeFormat(State.vertexInfo[i]),
-				.offset = stride
-			};
-			stride += getDataTypeSize(State.vertexInfo[i]);
-			attributes.push_back(attribute);
-		}
-
-		VkVertexInputBindingDescription BindingDescriptioninfo {
-			.binding = 0,
-			.stride = stride,
-			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-		};
-
-		VkDeviceSize offsetSize[] = {0};
-
-		VkPipelineVertexInputStateCreateInfo ISinfo {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-			.vertexBindingDescriptionCount = 1,
-			.pVertexBindingDescriptions = &BindingDescriptioninfo,
-			.vertexAttributeDescriptionCount = (uint32_t)attributes.size(),
-			.pVertexAttributeDescriptions = attributes.data()
-		};
-
-		//Dynamic
-		VkPipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-			.dynamicStateCount = 3,
-			.pDynamicStates = DynamicState
-		};
-
-		//Viewport
-		VkPipelineViewportStateCreateInfo viewportStateCreateInfo {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-			.viewportCount = 1,
-			.pViewports = nullptr,
-			.scissorCount = 1,
-			.pScissors = nullptr
-		};
-
-		//InputAssembly
-		VkPipelineInputAssemblyStateCreateInfo pipelineIAStateCreateInfo {
-		  .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		  .topology = getPrimitiveTopology(State.topologyType),
-		};
-
-		//Rasterization
-		VkPipelineRasterizationStateCreateInfo pipelineRasterizationState {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-			.depthClampEnable = State.rasterizationState.DepthClipEnable,
-			.rasterizerDiscardEnable = State.rasterizationState.RasterizerDiscardEnable,
-			.polygonMode = getPolygonMode(State.rasterizationState.Polygon),
-			.cullMode = (VkCullModeFlags)State.rasterizationState.Cull,
-			.frontFace = (VkFrontFace)State.rasterizationState.Front,
-			.depthBiasEnable = State.rasterizationState.DepthOffsetEnable,
-			.lineWidth = 1.0f,
-		};
-
-		//Multisample
-		VkPipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo {
-		  .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		  .rasterizationSamples = (VkSampleCountFlagBits)State.multiSampleState.SamplerBit,
-		  .sampleShadingEnable = State.multiSampleState.ShadingEnable,
-		  .minSampleShading = 1.0f,
-		  .pSampleMask = nullptr,
-		  .alphaToCoverageEnable = State.multiSampleState.alpthaToCoverageEnable,
-		  .alphaToOneEnable = State.multiSampleState.alpthaToOneEnable
-		};
-
-		//DepthSetncil
-		VkPipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo {
-		  .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		  .depthTestEnable = State.depthStencilState.DepthTestEnable,
-		  .depthWriteEnable = State.depthStencilState.DepthWriteEnable,
-		  .depthCompareOp = getCmpOP(State.depthStencilState.DepthCmpOp),
-		  .depthBoundsTestEnable = State.depthStencilState.DepthBoundsTestEnable,
-		  .stencilTestEnable = State.depthStencilState.StencilTestEnable,
-		  .minDepthBounds = 0.0f,
-		  .maxDepthBounds = 1.0f,
-		};
-
-		//PipelineColorBlend
-		VkPipelineColorBlendAttachmentState pipelineColorBlendAttachmentState = {
-		  .blendEnable = State.colorblendState.ColorBlenEnable,
-		  .colorWriteMask = (VkColorComponentFlags)State.colorblendState.UsingColorBit,
-		};
-
-		VkPipelineColorBlendStateCreateInfo pipelineColorBlendStateCreateInfo = {
-		  .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		  .logicOpEnable = VK_FALSE,
-		  .attachmentCount = 1,
-		  .pAttachments = &pipelineColorBlendAttachmentState,
-		  .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f},
-		};
 
 		//MappingInfo
 		std::vector<VkDescriptorSetAndBindingMappingEXT> mappingInfo;
@@ -435,6 +340,108 @@ namespace FISIR{
 			};
 			
 		if (!State.isComputePipeline) {
+
+			//Vertext Input
+			std::vector<VkVertexInputAttributeDescription> attributes;
+			uint32_t stride = 0;
+			for (uint32_t i = 0; i < State.vertexInfo.Count; i++) {
+				VkVertexInputAttributeDescription attribute{
+					.location = i,
+					.binding = 0,
+					.format = getDataTypeFormat(State.vertexInfo[i]),
+					.offset = stride
+				};
+				stride += getDataTypeSize(State.vertexInfo[i]);
+				attributes.push_back(attribute);
+			}
+
+			VkVertexInputBindingDescription BindingDescriptioninfo{
+				.binding = 0,
+				.stride = stride,
+				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+			};
+
+			VkDeviceSize offsetSize[] = { 0 };
+
+			VkPipelineVertexInputStateCreateInfo ISinfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+				.vertexBindingDescriptionCount = 1,
+				.pVertexBindingDescriptions = &BindingDescriptioninfo,
+				.vertexAttributeDescriptionCount = (uint32_t)attributes.size(),
+				.pVertexAttributeDescriptions = attributes.data()
+			};
+
+			//Dynamic
+			VkPipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+				.dynamicStateCount = 3,
+				.pDynamicStates = DynamicState
+			};
+
+			//Viewport
+			VkPipelineViewportStateCreateInfo viewportStateCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+				.viewportCount = 1,
+				.pViewports = nullptr,
+				.scissorCount = 1,
+				.pScissors = nullptr
+			};
+
+			//InputAssembly
+			VkPipelineInputAssemblyStateCreateInfo pipelineIAStateCreateInfo{
+			  .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			  .topology = getPrimitiveTopology(State.topologyType),
+			};
+
+			//Rasterization
+			VkPipelineRasterizationStateCreateInfo pipelineRasterizationState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+				.depthClampEnable = State.rasterizationState.DepthClipEnable,
+				.rasterizerDiscardEnable = State.rasterizationState.RasterizerDiscardEnable,
+				.polygonMode = getPolygonMode(State.rasterizationState.Polygon),
+				.cullMode = (VkCullModeFlags)State.rasterizationState.Cull,
+				.frontFace = (VkFrontFace)State.rasterizationState.Front,
+				.depthBiasEnable = State.rasterizationState.DepthOffsetEnable,
+				.lineWidth = 1.0f,
+			};
+
+			//Multisample
+			VkPipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo{
+			  .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			  .rasterizationSamples = (VkSampleCountFlagBits)State.multiSampleState.SamplerBit,
+			  .sampleShadingEnable = State.multiSampleState.ShadingEnable,
+			  .minSampleShading = 1.0f,
+			  .pSampleMask = nullptr,
+			  .alphaToCoverageEnable = State.multiSampleState.alpthaToCoverageEnable,
+			  .alphaToOneEnable = State.multiSampleState.alpthaToOneEnable
+			};
+
+			//DepthSetncil
+			VkPipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo{
+			  .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			  .depthTestEnable = State.depthStencilState.DepthTestEnable,
+			  .depthWriteEnable = State.depthStencilState.DepthWriteEnable,
+			  .depthCompareOp = getCmpOP(State.depthStencilState.DepthCmpOp),
+			  .depthBoundsTestEnable = State.depthStencilState.DepthBoundsTestEnable,
+			  .stencilTestEnable = State.depthStencilState.StencilTestEnable,
+			  .minDepthBounds = 0.0f,
+			  .maxDepthBounds = 1.0f,
+			};
+
+			//PipelineColorBlend
+			VkPipelineColorBlendAttachmentState pipelineColorBlendAttachmentState = {
+			  .blendEnable = State.colorblendState.ColorBlenEnable,
+			  .colorWriteMask = (VkColorComponentFlags)State.colorblendState.UsingColorBit,
+			};
+
+			VkPipelineColorBlendStateCreateInfo pipelineColorBlendStateCreateInfo = {
+			  .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+			  .logicOpEnable = VK_FALSE,
+			  .attachmentCount = 1,
+			  .pAttachments = &pipelineColorBlendAttachmentState,
+			  .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f},
+			};
+
 			VkGraphicsPipelineCreateInfo info = {
 				.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 				.pNext = mDevice->isDescriptorHeapSupported() ? &flags2info : nullptr,
@@ -471,6 +478,7 @@ namespace FISIR{
 	}
 
 	VulkanPipeline::~VulkanPipeline() {
+		vkDestroyPipeline(mDevice->getLogicalDevice(), mData->mPipeline, nullptr);
 		delete mData;
 	}
 	

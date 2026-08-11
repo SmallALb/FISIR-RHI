@@ -36,6 +36,7 @@ namespace FISIR {
 		if (layout & StorageBuffer) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 		if (layout & TransferDstBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 		if (layout & TransferSrcBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		if (layout & IndirectBuffer)  flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 		return flags;
 	}
 	
