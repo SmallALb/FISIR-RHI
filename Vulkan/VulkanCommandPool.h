@@ -156,8 +156,7 @@ namespace FISIR{
 		std::atomic<VulkanFence*> fence { nullptr };
 		std::vector<RHISemaphore*> waits;
 		std::vector<RHISemaphore*> signals;
-		VulkanSwapChain* swapchain{ nullptr };
-		uint32_t swapchainID{ UINT32_MAX };
+		std::atomic<bool>* submitReady{ nullptr };
 
 		ExecuteResultData& operator=(ExecuteResultData&& other) noexcept {
 			frameBuffer = other.frameBuffer;
@@ -168,6 +167,7 @@ namespace FISIR{
 			waits = std::move(other.waits);
 			signals = std::move(other.signals);
 			fence.store(other.fence, std::memory_order_release);
+			submitReady = other.submitReady;
 			return *this;
 		}
 	};

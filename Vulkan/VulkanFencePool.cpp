@@ -40,6 +40,7 @@ namespace FISIR{
 	}
 
 	void VulkanFence::reset() {
+		if (fenceStatue.load(std::memory_order_acquire) != Statue::Signaled) return;
 		if (mFence) {
 			vkResetFences(mDevice->getLogicalDevice(), 1, &mFence);
 			fenceStatue.store(Statue::UnSignaled);
@@ -47,19 +48,23 @@ namespace FISIR{
 	}
 	
 	void VulkanFence::wait() {
-		fenceStatue.store(Statue::Pendding);
+		//if (!FencePoolEnd && isSubmited.load(std::memory_order_acquire) == false);
+		//fenceStatue.store(Statue::Pendding);
 		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, UINT64_MAX) == VK_SUCCESS);
 		if (res) fenceStatue.store(Statue::Signaled);
 	}
 	
 	bool VulkanFence::isSignaled() {
+		//if (fenceStatue.load(std::memory_order_acquire) == Statue::Pendding) return false;
+		//if (fenceStatue.load(std::memory_order_acquire) == Statue::Signaled) return true;
 		auto res = (vkGetFenceStatus(mDevice->getLogicalDevice(), mFence) == VK_SUCCESS);
 		if (res) fenceStatue.store(Statue::Signaled);
 		return res;
 	}
 
 	bool VulkanFence::waitFor(uint64_t timeout) {
-		fenceStatue.store(Statue::Pendding);
+		//while (!FencePoolEnd && isSubmited.load(std::memory_order_acquire) == false);
+		//fenceStatue.store(Statue::Pendding);
 		auto res = (vkWaitForFences(mDevice->getLogicalDevice(), 1, &mFence, VK_TRUE, timeout) == VK_SUCCESS);
 		if (res) fenceStatue.store(Statue::Signaled);
 		return res;
@@ -87,7 +92,6 @@ namespace FISIR{
 	}
 	
 	VulkanFencePool::~VulkanFencePool() {
-		
 	}
 
 	VulkanFence* VulkanFencePool::createFence(bool signaled, const char* name) {

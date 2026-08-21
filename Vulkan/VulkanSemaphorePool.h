@@ -18,6 +18,8 @@ namespace FISIR{
 
 		virtual void* getSemaphoreHandle() const override;
 
+		virtual void wait() override;
+
 #ifdef _DEBUG
 		const char* getName() const { return mName; }
 

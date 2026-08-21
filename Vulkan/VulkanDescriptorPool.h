@@ -11,10 +11,6 @@ namespace FISIR {
 	class VulkanDevice;
 	class RHIResourcePack;
 
-	//如果能够使用Descrtptor_heap
-	//那么这个Pool的管理对象就是Heap
-	//如果不能使用Descriptor_heap
-	//那么回到DescriptorPool
 	struct __VKDescriptorPoolData;
 	
 	class VulkanDescriptorPool {
@@ -36,6 +32,6 @@ namespace FISIR {
 		__VKDescriptorPoolData* mData;
 	};
 
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack);
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint);
 
 }

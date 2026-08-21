@@ -365,7 +365,7 @@ namespace FISIR{
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
 			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
-			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals, swapchain, swapchainID] = *result;
+			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals, submitReady] = *result;
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
@@ -483,7 +483,10 @@ namespace FISIR{
 					case RHICommandT::BindResourceAndSamplerPack: {
 						BindResourcePack_CmdInfo info;
 						batchInfo.getBatchData(info);
-						CmdBindResourcePack(mDevice, cmdInfo.buffer, info.Pack.ResourcePack, info.Pack.SamplerPack);
+						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
+							? VK_PIPELINE_BIND_POINT_COMPUTE
+							: VK_PIPELINE_BIND_POINT_GRAPHICS;
+						CmdBindResourcePack(mDevice, cmdInfo.buffer, info.Pack.ResourcePack, info.Pack.SamplerPack, (uint32_t)bindPoint);
 						break;
 					}
 					case RHICommandT::TransferTexture: {
@@ -593,14 +596,7 @@ namespace FISIR{
 							signals = std::vector<RHISemaphore*>(info.signals, info.signals + info.signalcount);
 							free(info.signals);
 						}
-						if (info.swapchain) {
-							swapchain = static_cast<VulkanSwapChain*>(info.swapchain);
-							swapchainID = info.swapchainID;
-						}
-						Debug("ThreadLoop: result对象地址 = 0x{:x}, fence地址 = 0x{:x}, 写入值 = 0x{:x}",
-							(size_t)result,
-							(size_t)&fence,
-							(size_t)static_cast<VulkanFence*>(info.fence));
+						submitReady = info.submitReady;
 						commandsEndTag.store(true, std::memory_order_release);
 						break;
 					}

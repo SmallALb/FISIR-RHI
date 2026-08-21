@@ -89,6 +89,8 @@ namespace FISIR {
 
 		bool isDescriptorHeapSupported() const;
 
+		bool isSwapchainMaintenance1Supported() const;
+
 		DescriptorSizes& getHeapSizeInfo();
 
 		VkPhysicalDeviceDescriptorHeapPropertiesEXT& getDescriptorHeapProperties();

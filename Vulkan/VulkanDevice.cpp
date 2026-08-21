@@ -1,6 +1,7 @@
 
 #include "VulkanDevice.h"
 
+#include <cstring>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -13,6 +14,16 @@
 #include "VulkanRHI.h"
 #include "VulkanSwapChian.h"
 #include "VulkanTexture.h"
+
+// ============================================================
+// 测试开关：强制所有路径走传统 DescriptorSet 降级实现，
+// 无视设备对 VK_EXT_descriptor_heap 的实际支持。
+// 此开关必须放在唯一事实源 isDescriptorHeapSupported() 上，
+// 才能让「管线创建 / ResourcePack 创建 / 绑定 / Buffer usage」
+// 全部一致地走 Set 路径。测试完成后删除此宏。
+// ============================================================
+//#define FISIR_FORCE_DESCRIPTOR_SET 1
+
 namespace FISIR{
 	extern VkInstance GetGlobalInstance();
 #ifdef _DEBUG
@@ -39,6 +50,7 @@ namespace FISIR{
 		std::unordered_map<RHITexture*, VkImageLayout> TextureLayoutMap;
 		std::unordered_map<VkSurfaceKHR, VulkanQueue*> SurafacePresentQue;
 		bool DescriptorHeapSupport = false;
+		bool SwapchainMaintenance1Support = false;
 		int GQueFamilyIndex = -1;
 		int CQueFamilyIndex = -1;
 		int TQueFamilyIndex = -1;
@@ -217,7 +229,16 @@ namespace FISIR{
 	}
 
 	bool VulkanDevice::isDescriptorHeapSupported() const {
+#if FISIR_FORCE_DESCRIPTOR_SET
+		// 测试模式：强制降级到 DescriptorSet
+		return false;
+#else
 		return mData->DescriptorHeapSupport;
+#endif
+	}
+
+	bool VulkanDevice::isSwapchainMaintenance1Supported() const {
+		return mData->SwapchainMaintenance1Support;
 	}
 
 	DescriptorSizes& VulkanDevice::getHeapSizeInfo() {
@@ -258,13 +279,34 @@ namespace FISIR{
 			HeapSizes.minResourceReserved, HeapSizes.minSamplerReserved);
 	}
 
+	static bool isDeviceExtensionSupported(VkPhysicalDevice device, const char* extensionName) {
+		uint32_t extensionCount = 0;
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+		std::vector<VkExtensionProperties> extensions(extensionCount);
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, extensions.data());
+		for (const auto& extension : extensions) {
+			if (strcmp(extension.extensionName, extensionName) == 0) return true;
+		}
+		return false;
+	}
+
 	bool VulkanDevice::InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
+		// VK_KHR_swapchain_maintenance1 depends on VK_KHR_surface_maintenance1 — probe both.
+		const bool swapchainMaintenance1ExtensionSupported =
+			isDeviceExtensionSupported(mData->mPhysicalDevice, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME) &&
+			isDeviceExtensionSupported(mData->mPhysicalDevice, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+
 		std::vector<const char*> extensions {
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
 
+		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainMaintenance1Features {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+		};
+
 		VkPhysicalDeviceBufferDeviceAddressFeatures supportedFeatures {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+			.pNext = &swapchainMaintenance1Features,
 		};
 
 		VkPhysicalDeviceDescriptorHeapFeaturesEXT DescriptorHeapFeatures {
@@ -278,22 +320,40 @@ namespace FISIR{
 		};
 
 		vkGetPhysicalDeviceFeatures2(mData->mPhysicalDevice, &deviceFeatures2);
+
+		// Only enable the maintenance1 feature when both the extension and the
+		// feature are actually supported by the physical device.
+		const bool enableSwapchainMaintenance1 =
+			swapchainMaintenance1ExtensionSupported &&
+			swapchainMaintenance1Features.swapchainMaintenance1 == VK_TRUE;
+		mData->SwapchainMaintenance1Support = enableSwapchainMaintenance1;
+
+		if (enableSwapchainMaintenance1) {
+			extensions.push_back(VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+			extensions.push_back(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+			swapchainMaintenance1Features.swapchainMaintenance1 = VK_TRUE;
+		} else {
+			Warn("VK_KHR_swapchain_maintenance1 not supported - present fence unavailable");
+		}
+
 		VkDeviceCreateInfo deviceCreateInfo = {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		};
 
+		// Build pNext chain: DescriptorHeap → BufferDeviceAddress → SwapchainMaintenance1
 		if (DescriptorHeapFeatures.descriptorHeap == VK_TRUE && supportedFeatures.bufferDeviceAddress == VK_TRUE) {
-			//extensions.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
 			extensions.push_back("VK_EXT_descriptor_heap");
 			Debug("Device Support Descriptor Heap, Enable Descriptor Heap Extension!");
 			mData->DescriptorHeapSupport = true;
 
-			DescriptorHeapFeatures.pNext = &supportedFeatures;  
+			DescriptorHeapFeatures.pNext = &supportedFeatures;
 			supportedFeatures.bufferDeviceAddress = VK_TRUE;
+			supportedFeatures.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : nullptr;
 			deviceCreateInfo.pNext = &DescriptorHeapFeatures;
 		}
 		else {
 			Warn("Device Not Support Descriptor Buffer, Fallback To Normal Descriptor Set!");
+			deviceCreateInfo.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : nullptr;
 		}
 
 		deviceCreateInfo.enabledExtensionCount = uint32_t(extensions.size()),

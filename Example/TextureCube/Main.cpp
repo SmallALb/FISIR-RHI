@@ -325,8 +325,13 @@ int main() {
     glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 1.0f, 3.0f), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 
     MSG msg = { 0 };
+    auto startTime = std::chrono::steady_clock::now();
+    auto prevTime = startTime;
+    uint64_t frameCount = 0;
+    auto fpsStart = std::chrono::steady_clock::now();
     Warn("Begin Main Loop");
     while (true) {
+        auto now = std::chrono::steady_clock::now();
 
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) goto cleanup;
@@ -348,6 +353,19 @@ int main() {
             Error("Get Failed!");
             continue;
         }
+
+        ++frameCount;
+        if (frameCount % 100 == 0) {
+            float elapsed = std::chrono::duration<float>(now - fpsStart).count();
+            float fps = 100.0f / elapsed;
+            fpsStart = now;
+            char title[128];
+            snprintf(title, sizeof(title),
+                "Test Cube |%.1f FPS", fps);
+            SetWindowTextA(hwnd, title);
+        }
+
+
         // 渲染到离屏 Framebuffer
         FISIR::RHIRenderCommandList cmdList(rhi);
 
@@ -373,10 +391,14 @@ int main() {
             cmdList.DrawPrimitive(0, 3, 1);
             cmdList.EndRenderPass();
         }
-        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish }, swapchain, infoid);
+        //std::atomic<bool> submitDone{false};
+        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
+        //while (!submitDone.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+        swapchain->present(infoid);
 
-        //swapchain->present(infoid);
         angle += 0.02f;
+        //std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
     }
 cleanup:
     // ---------- 14. 清理 ----------

@@ -48,6 +48,9 @@ namespace FISIR {
 		SwapChainGetImageInfo SwapChainFrameInfos[SWAPCHAIN_SLOT_COUNT];
 		// Per-image present semaphores: indexed by swapchain image, not slot.
 		RHISemaphore* ImageRenderFinish[MAX_SWAPCHAIN_FRAME]{};
+		// Per-image present fences (VK_KHR_swapchain_maintenance1):
+		// signaled by vkQueuePresentKHR when the image leaves the display engine.
+		RHIFence*     PresentFence[MAX_SWAPCHAIN_FRAME]{};
 		VulkanTexture* SwapChainTextures[MAX_SWAPCHAIN_FRAME];
 		VulkanFrameBuffer* SwapChainFrameBuffers[MAX_SWAPCHAIN_FRAME];
 

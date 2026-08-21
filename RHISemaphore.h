@@ -8,6 +8,8 @@ namespace FISIR {
 		virtual ~RHISemaphore() {};
 	
 		virtual void* getSemaphoreHandle() const = 0;
+
+		virtual void wait() = 0;
 	};
 
 }

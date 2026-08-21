@@ -24,3 +24,5 @@ vendor/slang-source/
 # claude
 .claude
 .crossnote
+
+.vscode

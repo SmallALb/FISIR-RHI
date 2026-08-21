@@ -10,6 +10,7 @@
 #include "ChangeImageFlagsToVulkanFlags.h"
 #include "VulkanBuffer.h"
 #include "VulkanDevice.h"
+#include "VulkanImageView.h"
 #include "VulkanMemory.h"
 #include "VulkanSampler.h"
 #include "VulkanTexture.h"
@@ -261,12 +262,155 @@ namespace FISIR{
 		Type resourceType;
 	};
 
+	/*
+
+		DescriptorSet
+
+	*/
 	class DescriptorSet : public RHIResourcePack {
-	
-	
+		void InputInSet(const std::vector<RHIResource*>& resources) {
+			const uint32_t count = (uint32_t)resources.size();
+
+			// 1. 根据 resources 推断布局绑定与 Pool 尺寸：索引 = binding，类型取自资源
+			std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
+			layoutBindings.reserve(count);
+			std::unordered_map<VkDescriptorType, uint32_t> poolSizeMap;
+			for (uint32_t i = 0; i < count; ++i) {
+				VkDescriptorType type = (VkDescriptorType)resources[i]->as<VulkanResource>()->getVkDescriptorType();
+				layoutBindings.push_back({
+					.binding = i,
+					.descriptorType = type,
+					.descriptorCount = 1,
+					.stageFlags = VK_SHADER_STAGE_ALL,
+				});
+				poolSizeMap[type]++;
+			}
+
+			// 2. 根据 resources 创建 Pool
+			std::vector<VkDescriptorPoolSize> poolSizes;
+			poolSizes.reserve(poolSizeMap.size());
+			for (auto& [type, cnt] : poolSizeMap) poolSizes.push_back({ type, cnt });
+
+			VkDescriptorPoolCreateInfo poolInfo{
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+				.maxSets = 1,
+				.poolSizeCount = (uint32_t)poolSizes.size(),
+				.pPoolSizes = poolSizes.data(),
+			};
+			if (vkCreateDescriptorPool(mDevice->getLogicalDevice(), &poolInfo, nullptr, &pool) != VK_SUCCESS) {
+				Error("Failed to create descriptor pool!");
+				return;
+			}
+
+			// 3. 创建 Set Layout
+			VkDescriptorSetLayoutCreateInfo layoutInfo{
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+				.bindingCount = (uint32_t)layoutBindings.size(),
+				.pBindings = layoutBindings.data(),
+			};
+			if (vkCreateDescriptorSetLayout(mDevice->getLogicalDevice(), &layoutInfo, nullptr, &setLayout) != VK_SUCCESS) {
+				Error("Failed to create descriptor set layout!");
+				return;
+			}
+
+			// 5. 根据 Pool 创建 Set
+			VkDescriptorSetAllocateInfo allocInfo{
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+				.descriptorPool = pool,
+				.descriptorSetCount = 1,
+				.pSetLayouts = &setLayout,
+			};
+			if (vkAllocateDescriptorSets(mDevice->getLogicalDevice(), &allocInfo, &set) != VK_SUCCESS) {
+				Error("Failed to allocate descriptor set!");
+				return;
+			}
+
+			// 6. 写入描述符（reserve 保证 &back() 在后续 push 时不被重分配）
+			std::vector<VkWriteDescriptorSet> writes;
+			std::vector<VkDescriptorBufferInfo> bufferInfos;
+			std::vector<VkDescriptorImageInfo> imageInfos;
+			writes.reserve(count);
+			bufferInfos.reserve(count);
+			imageInfos.reserve(count);
+
+			for (uint32_t i = 0; i < count; ++i) {
+				RHIResource* res = resources[i];
+				VkDescriptorType type = (VkDescriptorType)res->as<VulkanResource>()->getVkDescriptorType();
+
+				VkWriteDescriptorSet write{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet = set,
+					.dstBinding = i,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = type,
+				};
+
+				if (res->getResourceType() == Type::Buffer) {
+					bufferInfos.push_back({
+						.buffer = (VkBuffer)res->getResourceAPIHandle(),
+						.offset = 0,
+						.range = res->getSize(),
+					});
+					write.pBufferInfo = &bufferInfos.back();
+				}
+				else if (res->getResourceType() == Type::Texture) {
+					auto* tex = static_cast<VulkanTexture*>(res);
+					mViews.push_back(new VulkanImageView(mDevice, tex));
+					imageInfos.push_back({
+						.sampler = VK_NULL_HANDLE,
+						.imageView = mViews.back()->getImageViewHandle(),
+						.imageLayout = (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+							? VK_IMAGE_LAYOUT_GENERAL
+							: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					});
+					write.pImageInfo = &imageInfos.back();
+				}
+				else if (res->getResourceType() == Type::Sampler) {
+					imageInfos.push_back({
+						.sampler = (VkSampler)res->getResourceAPIHandle(),
+						.imageView = VK_NULL_HANDLE,
+						.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					});
+					write.pImageInfo = &imageInfos.back();
+				}
+
+				writes.push_back(write);
+			}
+
+			vkUpdateDescriptorSets(mDevice->getLogicalDevice(), (uint32_t)writes.size(), writes.data(), 0, nullptr);
+		}
+
+	public:
+		DescriptorSet(VulkanDevice* device, const std::vector<RHIResource*>& resources) {
+			mDevice = device;
+			resourceType = Type::Buffer;
+			InputInSet(resources);
+		}
+
+		~DescriptorSet() {
+			if (pipelineLayout) vkDestroyPipelineLayout(mDevice->getLogicalDevice(), pipelineLayout, nullptr);
+			if (setLayout)       vkDestroyDescriptorSetLayout(mDevice->getLogicalDevice(), setLayout, nullptr);
+			if (pool)            vkDestroyDescriptorPool(mDevice->getLogicalDevice(), pool, nullptr);
+			for (auto* view : mViews) delete view;
+		}
+
+		virtual Type getResourceType() const override { return resourceType; };
+
+		VulkanDevice* mDevice;
+		VkDescriptorSet set{};
+		VkDescriptorSetLayout setLayout{};
+		VkPipelineLayout pipelineLayout{};
+		VkDescriptorPool pool{};
+		std::vector<VulkanImageView*> mViews;
+		Type resourceType;
 	};
 
-
+	/*
+		
+		VulkanDescriptorPool
+	
+	*/
 	struct __VKDescriptorPoolData {
 		std::unordered_map<RHIPipelineDescribeInfo, VkDescriptorSetLayout> DescriptorSetLayoutMap;
 
@@ -350,9 +494,9 @@ namespace FISIR{
 					resourceList.push_back(res);
 				}
 			}
-			
+
 			if (resourceList.empty() && samplerList.empty()) return {};
-			
+
 			RHIResourcePackResult res;
 
 			if (!resourceList.empty()) {
@@ -365,7 +509,19 @@ namespace FISIR{
 			return res;
 		}
 
-		return {};
+		// 降级路径：无 heap 支持时，用单个 DescriptorSet 容纳全部资源（含采样器）。
+		// binding = 资源在列表中的索引，与管线 describeInfo 的 0..N-1 绑定一一对应。
+		for (auto res : resources) {
+			if (!res) {
+				Error("createResourcePack: null resource in list");
+				return {};
+			}
+		}
+		if (resources.empty()) return {};
+
+		RHIResourcePackResult res;
+		res.ResourcePack = new DescriptorSet(mDevice, resources);
+		return res;
 	}
 
 	void VulkanDescriptorPool::destroyResourcePack(RHIResourcePack* pack) {
@@ -374,7 +530,7 @@ namespace FISIR{
 
 		
 	
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack) {
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint) {
 		const auto& sizes = device->getHeapSizeInfo();
 		if (Resourcepack) {
 			if (device->isDescriptorHeapSupported()) {
@@ -396,6 +552,12 @@ namespace FISIR{
 				fpCmdBindResourceHeap(cmd, &info);
 				Debug("Bind ResourcePack : RangeSize : {}", reservedSize);
 			}
+			else {
+				// 降级路径：绑定单个 DescriptorSet
+				auto* setPack = static_cast<DescriptorSet*>(Resourcepack);
+				vkCmdBindDescriptorSets(cmd, (VkPipelineBindPoint)bindPoint, setPack->pipelineLayout,
+					0, 1, &setPack->set, 0, nullptr);
+			}
 		}
 
 		if (Samplerpack) {
@@ -415,7 +577,7 @@ namespace FISIR{
 
 
 			}
-		
+			// 降级路径下 Samplerpack 恒为空（单 set 已包含采样器），无需额外处理
 		}
 
 	}

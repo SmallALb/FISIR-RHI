@@ -72,6 +72,18 @@ namespace FISIR {
 		return mSemaphore;
 	}
 
+	void VulkanSemaphore::wait() {
+		VkSemaphoreWaitInfo waitInfo{
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.semaphoreCount = 1,
+			.pSemaphores = &mSemaphore,
+			.pValues = nullptr
+		};
+		vkWaitSemaphores(mDevice->getLogicalDevice(), &waitInfo, UINT64_MAX);
+	}
+
 	void VulkanSemaphore::reName(const char* name) {
 #ifdef _DEBUG
 		mName = name;

@@ -1,11 +1,11 @@
 #pragma once
 
-namespace FISIR {
-	class NaniteBVH {
+
+class NaniteBVH {
 		
 
 
-	};
+};
 
 
-}
+

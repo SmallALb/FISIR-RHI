@@ -224,7 +224,23 @@ namespace FISIR{
 				.descriptorSet = 0,  // 当前统一使用 set 0
 				.firstBinding = binding.binding,
 				.bindingCount = binding.count,
-				.resourceMask = 0,  // 自动检测
+				// 根据描述符类型自动选择 resourceMask
+				.resourceMask = [](RHIDescriptorTyp typ)->VkSpirvResourceTypeFlagsEXT {
+					switch (typ) {
+						case RHIDescriptorTyp::Sampler:
+							return VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+						case RHIDescriptorTyp::SamplerImage:
+							return VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
+						case RHIDescriptorTyp::Image:
+							return VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
+						case RHIDescriptorTyp::UniformBuffer:
+							return VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
+						case RHIDescriptorTyp::StorageBuffer:
+							return VkSpirvResourceTypeFlagsEXT(VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT);
+						default:
+							return VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
+					}
+				}(binding.descriptorTyp),
 				.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
 				.sourceData = {
 					.constantOffset = {
@@ -233,28 +249,6 @@ namespace FISIR{
 					}
 				}
 			};
-
-			// 根据描述符类型设置 resourceMask
-			switch (binding.descriptorTyp) {
-			case RHIDescriptorTyp::Sampler:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
-				break;
-			case RHIDescriptorTyp::SamplerImage:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
-				break;
-			case RHIDescriptorTyp::Image:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
-				break;
-			case RHIDescriptorTyp::UniformBuffer:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
-				break;
-			case RHIDescriptorTyp::StorageBuffer:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
-				break;
-			default:
-				mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
-				break;
-			}
 
 			mappings.push_back(mapping);
 			currentOffset += descSize * binding.count;

@@ -239,14 +239,13 @@ namespace FISIR {
 	}
 
 	uint32_t VulkanTexture::getVkDescriptorType() const {
-		switch (mData->currentLayout) {
-			case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-				return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-			case VK_IMAGE_LAYOUT_GENERAL:
-				return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		default:
-			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-		}
+		// 描述符类型必须由创建时的用途决定，而不能随 currentLayout 变化：
+		// 资源包在纹理完成布局转换前就可能被创建（例如交换链的 offscreen 纹理），
+		// 若按 currentLayout 推断会得到与管线布局不一致的类型，导致 set 与管线不兼容。
+		if (mData->useFor & TextureUseFor::TextureUseForStorage)         return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		if (mData->useFor & TextureUseFor::TextureUseForShaderReadOnly)  return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		if (mData->useFor & TextureUseFor::TextureUseForInputAttachment) return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+		return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	}
 
 	TextureUseForFlags VulkanTexture::getTextureUseFor() const {

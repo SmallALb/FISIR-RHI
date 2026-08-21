@@ -13,6 +13,7 @@ namespace FISIR{
 
 	class VulkanFence : public RHIFence {
 	public:
+
 		VulkanFence(VulkanDevice* device, bool signaled = false, const char* name = "Unnamed Fence");
 
 		virtual ~VulkanFence();

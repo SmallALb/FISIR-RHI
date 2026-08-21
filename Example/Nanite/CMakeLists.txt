@@ -4,7 +4,7 @@
 
 add_executable(Nanite
     Main.cpp
-)
+ "ClusterSelection.h" "ClisterSelection.cpp")
 
 target_include_directories(Nanite
     PRIVATE
@@ -63,3 +63,12 @@ if(Slang_DLL_DIR AND EXISTS "${Slang_DLL_DIR}")
         COMMENT "Copying Slang DLLs → Nanite output"
     )
 endif()
+
+# ── Copy Res assets (folder + contents) to output directory ─────
+# Runtime code loads assets via relative paths like "Res/mitsuba.nanitemesh".
+add_custom_command(TARGET Nanite POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/Res"
+        "$<TARGET_FILE_DIR:Nanite>/Res"
+    COMMENT "Copying Res/ → Nanite output"
+)

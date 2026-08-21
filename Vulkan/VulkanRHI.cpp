@@ -424,17 +424,14 @@ namespace FISIR {
 
         while (!stopTag) {
             std::vector<RingCommandPool::Page*> NeedClearInThisLoop;
-            while (!NeedUsingPages.empty()) {
+            {
                 RingCommandPool::Page* page;
-                if (NeedUsingPages.pop(page)) {
+                while (NeedUsingPages.pop(page)) {
                     auto& entry = ResultCache[page];
                     entry.ExecuteResults.clear();
                     entry.FinishCount->store(0, std::memory_order_release);
+                
                 }
-            }
-            if (NeedUsingPages.empty() && ResultCache.empty()) {
-                std::this_thread::yield();
-                continue;
             }
             NeedClearInThisLoop.clear();
             for (auto& [page, result] : ResultCache) {
@@ -456,8 +453,7 @@ namespace FISIR {
 
                 //check 
                 VulkanFence* fence = nullptr;
-				VulkanSwapChain* swapchain = nullptr;
-				uint32_t swapchainID = RHISwapChain::FAILEID;
+                std::atomic<bool>* submitDoneFlag = nullptr;
                 std::vector<RHISemaphore*> waits;
                 std::vector<RHISemaphore*> signals;
 
@@ -524,11 +520,10 @@ namespace FISIR {
                                 (size_t)SCBRes->fence.load());
                             waits = std::move(SCBRes->waits);
                             signals = std::move(SCBRes->signals);
+                            submitDoneFlag = SCBRes->submitReady;
                         }
                     }
                     vkEndCommandBuffer(MCB.buffer);
-					swapchain = result.ExecuteResults.back()->swapchain;
-					swapchainID = result.ExecuteResults.back()->swapchainID;
 
                     if (fence || !waits.empty() || !signals.empty()) {
                         VulkanFence* submitFence = fence ? static_cast<VulkanFence*>(fence) : mFencePool->createFence();
@@ -536,8 +531,9 @@ namespace FISIR {
                         mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, submitFence);
                         SecondCBs.emplace_back(std::move(MCB));
                         PendingReleaseCBs.push(PendingReleaseInfo(submitFence, std::move(SecondCBs), 1));
-                        if (swapchain) {
-                            swapchain->present(swapchainID);
+                        if (submitDoneFlag) {
+                            //Warn("Give a semaphore");
+                            submitDoneFlag->store(true, std::memory_order_release);
                         }
                     }
                     else {
@@ -583,13 +579,11 @@ namespace FISIR {
     void VulkanRHI::VulkanResourceLoop() {
         Debug("Resource Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
-        // Local pending list: holds items whose fences are not yet signaled.
-        // Avoids re-pushing to the lock-free queue (which would allocate new
-        // nodes on every re-queue, stressing the queue under high throughput).
+
         PendingReleaseCBsInThread.clear();
 
         while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
-
+            //if (stopTag && !PendingReleaseCBsInThread.empty()) Debug("Suck");
             // Drain the lock-free queue into the local pending list.
             {
                 PendingReleaseInfo Info;
@@ -604,7 +598,7 @@ namespace FISIR {
                 for (size_t i = 0; i < PendingReleaseCBsInThread.size(); ++i) {
                     auto& [fence, cbs, fromframe] = PendingReleaseCBsInThread[i];
 
-                    if (!fence || fence->isSignaled()) {
+                    if (!fence || fence->isSignaled() || stopTag) {
                         for (auto& cb : cbs) {
                             cb.pool->releaseCommandBuffer(cb);
                             for (auto& [resource, change] : cb.QuoteResources) {

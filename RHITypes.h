@@ -6,6 +6,7 @@
 #include <thread>
 #include "LockFreeQue.h"
 #include <array>
+#include <semaphore>
 namespace FISIR {
     class RHIResourcePack;
 	class RHIFrameBuffer;
@@ -420,8 +421,9 @@ namespace FISIR {
 		uint32_t waitcount {0};
 		RHISemaphore** signals;
 		uint32_t signalcount {0};
-		RHISwapChain* swapchain {nullptr};
-		uint32_t swapchainID {UINT32_MAX};
+		// CPU-side signal: RHI thread sets to true after vkQueueSubmit;
+		// main thread busy-waits before calling vkQueuePresentKHR.
+		std::atomic<bool>* submitReady {nullptr};
 	};
 
 

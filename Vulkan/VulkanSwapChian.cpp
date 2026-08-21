@@ -136,6 +136,12 @@ namespace FISIR {
             return RHISwapChain::FAILEID;
         }
 
+        // VK_KHR_swapchain_maintenance1: ensure the image has left the
+        // display engine before we start rendering to it again.
+        if (mDevice->isSwapchainMaintenance1Supported() && PresentFence[index]) {
+            PresentFence[index]->wait();
+        }
+
         finishFence->reset();
         return CurrentFrameID++;
     }
@@ -150,10 +156,22 @@ namespace FISIR {
             return;
         }
 
-        // Use per-image present semaphore.
+        VkFence vkFence = VK_NULL_HANDLE;
+        VkSwapchainPresentFenceInfoKHR presentFenceInfo{};
+        if (mDevice->isSwapchainMaintenance1Supported()) {
+            PresentFence[slot.imageIndex]->reset();
+            vkFence = static_cast<VkFence>(PresentFence[slot.imageIndex]->getFenceHandle());
+            presentFenceInfo = {
+                .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR,
+                .swapchainCount = 1,
+                .pFences = &vkFence,
+            };
+        }
+
         VkSemaphore waitSem = static_cast<VkSemaphore>(ImageRenderFinish[slot.imageIndex]->getSemaphoreHandle());
         VkPresentInfoKHR presentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = mDevice->isSwapchainMaintenance1Supported() ? &presentFenceInfo : nullptr,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &waitSem,
             .swapchainCount = 1,
@@ -161,8 +179,6 @@ namespace FISIR {
             .pImageIndices = &slot.imageIndex,
             .pResults = nullptr
         };
-
-        //vkQueueWaitIdle(mDevice->getGraphicQueue()->getQueueHandle());
 
         vkQueuePresentKHR(PresentQueue->getQueueHandle(), &presentInfo);
     }
@@ -253,7 +269,7 @@ namespace FISIR {
             .pQueueFamilyIndices = QuefamilyIndex,
             .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .presentMode = VK_PRESENT_MODE_MAILBOX_KHR,
+            .presentMode = VK_PRESENT_MODE_FIFO_KHR,
             .oldSwapchain = oldSwapChain,
         };
 
@@ -283,10 +299,14 @@ namespace FISIR {
             if (!finishFence) finishFence = usingRHI->RHICreateFence(true, "FinishFence");
         }
 
-        // Per-image present semaphores: one per swapchain image.
+        // Per-image semaphores & present fences
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
             if (!ImageRenderFinish[i])
                 ImageRenderFinish[i] = usingRHI->RHICreateSemaphore("ImageFinishSemphore");
+            // VK_KHR_swapchain_maintenance1: signaled when image leaves display engine.
+            // Start signaled so the first acquire on each image passes.
+            if (mDevice->isSwapchainMaintenance1Supported() && !PresentFence[i])
+                PresentFence[i] = usingRHI->RHICreateFence(true, "PresentFence");
         }
 
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
