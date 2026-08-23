@@ -1,4 +1,7 @@
     #include <iostream>
+#include <string>
+#include <cstdint>
+#include <vector>
 #include <windows.h>
 #include <thread>
 #include "RHITypes.h"
@@ -17,6 +20,7 @@
 #include "glm/gtc/matrix_transform.hpp"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include "PerformanceTest.h"
 
 // 窗口回调
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -26,11 +30,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
 #ifdef _DEBUG
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
 #endif
+
+    // ---------- 0. 命令行参数解析 ----------
+    // -Test      : 启用性能测试，跑完指定帧数后导出报告并退出
+    // -Frames N  : 测试帧数（默认 5000，样本量越大统计越稳定）
+    // -Warmup N  : 预热帧数，前 N 帧（着色器/管线首帧编译等）不计入统计（默认 60）
+    // -DC N      : 每帧绘制调用数；可多次指定，每个 -DC 生成一组测试（默认 1）
+    bool runPerfTest = false;
+    uint64_t testFrameCount = 5000;
+    uint64_t warmupFrameCount = 60;
+    std::vector<uint32_t> drawCallCounts;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-Test" || arg == "-test" || arg == "/Test") {
+            runPerfTest = true;
+        } else if ((arg == "-Frames" || arg == "-frames") && i + 1 < argc) {
+            testFrameCount = std::stoull(argv[++i]);
+        } else if ((arg == "-Warmup" || arg == "-warmup") && i + 1 < argc) {
+            warmupFrameCount = std::stoull(argv[++i]);
+        } else if ((arg == "-DC" || arg == "-dc") && i + 1 < argc) {
+            drawCallCounts.push_back(static_cast<uint32_t>(std::stoul(argv[++i])));
+        }
+    }
+    if (drawCallCounts.empty()) drawCallCounts.push_back(1);
 
     Debug("Main Thread 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
@@ -325,81 +352,123 @@ int main() {
     glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 1.0f, 3.0f), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 
     MSG msg = { 0 };
-    auto startTime = std::chrono::steady_clock::now();
-    auto prevTime = startTime;
     uint64_t frameCount = 0;
-    auto fpsStart = std::chrono::steady_clock::now();
     Warn("Begin Main Loop");
-    while (true) {
-        auto now = std::chrono::steady_clock::now();
-
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) goto cleanup;
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+    for (uint32_t dcCount : drawCallCounts) {
+        auto startTime = std::chrono::steady_clock::now();
+        auto fpsStart = startTime;
+        angle = 0.0f;
+        frameCount = 0;
+        std::vector<double> frameTimes;
+        if (runPerfTest) {
+            frameTimes.reserve(static_cast<size_t>(testFrameCount));
+            Warn("Performance Test Mode: {} DrawCall(s), target {} frames", dcCount, testFrameCount);
         }
-        //Warn("Main Running");
-        // 更新 MVP
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
-        glm::mat4 mvp = proj * view * model;
-        
-        //Info("MTag0");
+        while (true) {
+            auto now = std::chrono::steady_clock::now();
 
-        uint32_t infoid = swapchain->acquireGetImageInfoID();
-        if (infoid == FISIR::RHISwapChain::FAILEID) continue;
-        static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&mvp, sizeof(glm::mat4));
-        if (infoid == FISIR::RHISwapChain::FAILEID) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            Error("Get Failed!");
-            continue;
-        }
+            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) goto cleanup;
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            //Warn("Main Running");
+            // 更新 MVP
+            glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
+            glm::mat4 mvp = proj * view * model;
 
-        ++frameCount;
-        if (frameCount % 100 == 0) {
-            float elapsed = std::chrono::duration<float>(now - fpsStart).count();
-            float fps = 100.0f / elapsed;
-            fpsStart = now;
-            char title[128];
-            snprintf(title, sizeof(title),
-                "Test Cube |%.1f FPS", fps);
-            SetWindowTextA(hwnd, title);
-        }
+            //Info("MTag0");
+
+            uint32_t infoid = swapchain->acquireGetImageInfoID();
+            if (infoid == FISIR::RHISwapChain::FAILEID) continue;
+            static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&mvp, sizeof(glm::mat4));
+            if (infoid == FISIR::RHISwapChain::FAILEID) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                Error("Get Failed!");
+                continue;
+            }
+
+            ++frameCount;
+            if (frameCount % 100 == 0) {
+                float elapsed = std::chrono::duration<float>(now - fpsStart).count();
+                float fps = 100.0f / elapsed;
+                fpsStart = now;
+                char title[128];
+                snprintf(title, sizeof(title),
+                    "Test Cube |%.1f FPS", fps);
+                SetWindowTextA(hwnd, title);
+            }
 
 
-        // 渲染到离屏 Framebuffer
-        FISIR::RHIRenderCommandList cmdList(rhi);
+            // 渲染到离屏 Framebuffer
+            FISIR::RHIRenderCommandList cmdList(rhi);
 
-        cmdList.BeginRenderPass(framebuffer, 0, clearFrame);
-        cmdList.SetPipelineState(pipeline);
-        cmdList.SetVertexBuffer(vertexBuffer, 0, 0);
-        cmdList.SetIndexBuffer(indexBuffer, 0);
-        cmdList.SetResourcePack(resourcePacks[infoid]);
-        cmdList.SetViewPort(0, 0, 1024, 1024, 1.0f, 0.0f);
-        cmdList.SetScissor(1024, 1024);
-        cmdList.DrawIndex(0, 36, 0, 1);
-        cmdList.EndRenderPass();
-        // 呈现到交换链
-        auto info = swapchain->getSwapChainGetImageInfo(infoid);
-        auto frameBuf = swapchain->getSwapChainFrameBuffer(info.imageIndex);
-
-        if (frameBuf) {
-            cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
-            cmdList.SetPipelineState(swapchainPipeline);
-            cmdList.SetResourcePack(swapchainPack);
-            cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
-            cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
-            cmdList.DrawPrimitive(0, 3, 1);
+            cmdList.BeginRenderPass(framebuffer, 0, clearFrame);
+            cmdList.SetPipelineState(pipeline);
+            cmdList.SetVertexBuffer(vertexBuffer, 0, 0);
+            cmdList.SetIndexBuffer(indexBuffer, 0);
+            cmdList.SetResourcePack(resourcePacks[infoid]);
+            cmdList.SetViewPort(0, 0, 1024, 1024, 1.0f, 0.0f);
+            cmdList.SetScissor(1024, 1024);
+            for (uint32_t d = 0; d < dcCount; ++d) cmdList.DrawIndex(0, 36, 0, 1);
             cmdList.EndRenderPass();
+            // 呈现到交换链
+            auto info = swapchain->getSwapChainGetImageInfo(infoid);
+            auto frameBuf = swapchain->getSwapChainFrameBuffer(info.imageIndex);
+
+            if (frameBuf) {
+                cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
+                cmdList.SetPipelineState(swapchainPipeline);
+                cmdList.SetResourcePack(swapchainPack);
+                cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
+                cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
+                cmdList.DrawPrimitive(0, 3, 1);
+                cmdList.EndRenderPass();
+            }
+            std::atomic<bool> submitDone{false};
+            cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish }, &submitDone);
+            submitDone.wait(false);
+            swapchain->present(infoid);
+
+            angle += 0.02f;
+
+            // ---------- 性能采样：记录本轮 CPU 帧耗时 ----------
+            if (runPerfTest) {
+                auto frameEnd = std::chrono::steady_clock::now();
+                frameTimes.push_back(std::chrono::duration<double, std::milli>(frameEnd - now).count());
+                if (frameTimes.size() >= testFrameCount) break;
+            }
         }
-        //std::atomic<bool> submitDone{false};
-        cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
-        //while (!submitDone.load(std::memory_order_acquire)) { std::this_thread::yield(); }
-        swapchain->present(infoid);
 
-        angle += 0.02f;
-        //std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // ---------- 14. 性能报告导出（按 DrawCall 分组）----------
+        if (runPerfTest) {
+            double totalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+            // 剔除预热帧：前 N 帧包含着色器/管线首帧编译与缓存未命中，不具代表性
+            size_t warmup = static_cast<size_t>(std::min<uint64_t>(warmupFrameCount, frameTimes.size()));
+            std::vector<double> measured(frameTimes.begin() + warmup, frameTimes.end());
 
+            FISIR::PerfConfig cfg;
+            cfg.offscreenWidth  = 1024;
+            cfg.offscreenHeight = 1024;
+            cfg.swapchainWidth  = viewport->getViewportWidth();
+            cfg.swapchainHeight = viewport->getViewportHeight();
+            cfg.sampleCount     = 1;
+            cfg.presentMode     = "Mailbox";
+            cfg.renderPassesPerFrame = 2;
+            cfg.drawCallsPerFrame    = dcCount;
+            cfg.verticesPerFrame     = 36 * dcCount;
+            cfg.indicesPerFrame      = 36 * dcCount;
+            cfg.totalFrames     = measured.size();
+            cfg.totalSeconds    = totalSeconds;
+            cfg.warmupFrames    = warmup;
+
+            std::string mdPath  = "PerfReport_DC" + std::to_string(dcCount) + ".md";
+            std::string csvPath = "PerfFrameTimes_DC" + std::to_string(dcCount) + ".csv";
+            FISIR::writePerformanceReport(cfg, measured, mdPath, csvPath);
+            Info("Performance report exported: {} / {}", mdPath, csvPath);
+        }
     }
+
 cleanup:
     // ---------- 14. 清理 ----------
     // 由 RHI 创建的所有资源对象都应经由 RHI 接口销毁，

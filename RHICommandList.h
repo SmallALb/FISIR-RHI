@@ -48,6 +48,7 @@ namespace FISIR {
 			else copyDataS = nullptr;
 			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size()), submitReady};
 			usingPage->WriteData(RHICommandT::End, info);
+			
 		}
 
 		RingCommandPool::PageFlag getPageFlag() const {

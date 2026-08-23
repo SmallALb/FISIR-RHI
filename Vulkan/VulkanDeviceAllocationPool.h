@@ -105,7 +105,6 @@ namespace FISIR {
 			block->Info.MemoryType = MemTypeID;
 			totalSize -= alignedSize;
 			UsingSize += alignedSize;
-			Debug("Well New Block Success!");
 			return block;
 		}
 
@@ -121,7 +120,6 @@ namespace FISIR {
 			block->isFreeBlock = 1;
 			MergeBackBlock(block);
 			MergeFrontBlock(block);
-			Debug("Well Free Block Success!");
 			Push_List(block);
 		}
 

@@ -1,5 +1,6 @@
 #include "VulkanMemory.h"
 
+#include <algorithm>
 #include <queue>
 #include <set>
 #include <unordered_map>
@@ -15,7 +16,7 @@
 namespace FISIR{
 
 	
-	constexpr size_t PageSize = 128 * 1024 * 1024;
+	constexpr size_t PageSize = 16 * 1024 * 1024;
 
 
 	struct __VkMemoryData {
@@ -53,7 +54,6 @@ namespace FISIR{
 	}
 
 	GpuBlock* VulkanMemoryAllocator::create(size_t Size, size_t align, MemType visable, RHIResource* resource, void** CpuSetPtr) {
-		Debug("Try Create Gpu Block");
 		return make_sure_type_exits_and_new(Size, align, visable, resource, CpuSetPtr);
 	}
 
@@ -92,9 +92,14 @@ namespace FISIR{
 
 		if (!block) {
 			poolID = pools.size();
-			pools.emplace_back(new AllocationPool(poolID, PageSize, MemTyp,
+			size_t poolSize = std::max(PageSize, align_up(Size, align));
+			pools.emplace_back(new AllocationPool(poolID, poolSize, MemTyp,
 				mDevice->getLogicalDevice(),
 				mDevice->isDescriptorHeapSupported()));
+			if (pools[poolID]->Pool == VK_NULL_HANDLE) {
+				Error("vkAllocateMemory failed for new pool: MemType={}, Size={}", MemTyp, poolSize);
+				return nullptr;
+			}
 
 			if ((require & MemTypHostVisable) && !mData->HostVisablePoolMap.contains(pools[poolID])) {
 				void* mappedPtr = nullptr;
@@ -122,12 +127,7 @@ namespace FISIR{
 			bindMemoryFor(block, align, resource, CpuSetPtr);
 		}
 
-		
-		if (poolID == pools.size()) {
-			pools.emplace_back(new AllocationPool(poolID, PageSize, MemTyp, mDevice->getLogicalDevice(), mDevice->isDescriptorHeapSupported()));
-		}
-		Debug("Allocated block: PoolID={}, offset={}, size={}",
-			block->PoolID, block->Info.offset, block->Info.Size);
+
 		return block;
 	}
 
@@ -157,10 +157,8 @@ namespace FISIR{
 				block->Info.GpuMemory, block->Info.offset)
 			;
 
-		Debug("Map Memory: {}", resource->getResourceType() == Type::Texture ? "Texture" : "Buffer");
 		if ((resource->getResourceMemType() & MemTypHostVisable) && CpuSetPtr != nullptr) {
 			*CpuSetPtr = (void*)((char*)mData->HostVisablePoolMap[mData->DevicePoolMap[block->Info.MemoryType][block->PoolID]] + block->Info.offset);
-			Debug("Mapped Memory: {}", block->Info.Size);
 		}
 	}
 

@@ -353,7 +353,7 @@ namespace FISIR {
     }
 
     void VulkanRHI::PagePrepareLoop() {
-        while (!stopTag) {
+        while (!stopTag && !mDevice->isDeviceLost()) {
             bool pushFailed = 1;
             for (auto& CmdPool : CmdMemoryPool) {
                 for (auto& page : CmdPool.Pages) {
@@ -422,7 +422,7 @@ namespace FISIR {
             };
 
 
-        while (!stopTag) {
+        while (!stopTag && !mDevice->isDeviceLost()) {
             std::vector<RingCommandPool::Page*> NeedClearInThisLoop;
             {
                 RingCommandPool::Page* page;
@@ -443,11 +443,6 @@ namespace FISIR {
                     result.ExecuteResults.emplace_back(new ExecuteResultData());
                     auto& info = result.ExecuteResults.back();
 
-
-                    if ((size_t)page == 0xDDDDDDDDDDDDDDDD) {
-                        // WTF R U Push ????
-                        __debugbreak();
-                    }
                     ThreadPool->pushCommandBatch(Batch, info.get(), result.FinishCount.get());
                 }
 
@@ -457,7 +452,9 @@ namespace FISIR {
                 std::vector<RHISemaphore*> waits;
                 std::vector<RHISemaphore*> signals;
 
-                if (result.FinishCount->load(std::memory_order_acquire) == result.ExecuteResults.size() && result.ExecuteResults.back()->commandsEndTag.load(std::memory_order_acquire)) {
+                // 防御：页面刚进 ResultCache 但 BatchQueue 尚未有批次时，
+                // ExecuteResults 为空，.back() 是 UB——必须先判空。
+                if (!result.ExecuteResults.empty() && result.FinishCount->load(std::memory_order_acquire) == result.ExecuteResults.size() && result.ExecuteResults.back()->commandsEndTag.load(std::memory_order_acquire)) {
                     auto commandPool = getByType(page->cmdtype);
                     auto MCB = commandPool->createCommandBuffer(_Primary_);
                     VkCommandBufferBeginInfo beginInfo{
@@ -513,11 +510,6 @@ namespace FISIR {
                         if (SCBRes->commandsEndTag) {
                             fence = SCBRes->fence.load(std::memory_order_acquire);
 
-
-                            Debug("RHILoop: SCBRes�����ַ = 0x{:x}, fence��ַ = 0x{:x}, ��ȡֵ = 0x{:x}",
-                                (size_t)SCBRes.get(),
-                                (size_t) & (SCBRes->fence),
-                                (size_t)SCBRes->fence.load());
                             waits = std::move(SCBRes->waits);
                             signals = std::move(SCBRes->signals);
                             submitDoneFlag = SCBRes->submitReady;
@@ -526,14 +518,20 @@ namespace FISIR {
                     vkEndCommandBuffer(MCB.buffer);
 
                     if (fence || !waits.empty() || !signals.empty()) {
-                        VulkanFence* submitFence = fence ? static_cast<VulkanFence*>(fence) : mFencePool->createFence();
-                        Debug("Page Fene is 0x{:x}, Pushed fence 0x{:x} to PendingReleaseCBs", (size_t)fence, (size_t)submitFence);
-                        mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, submitFence);
+                        // 用户侧围栏负责主线程槽位复用同步（acquireGetImageInfoID 里会 reset）。
+                        VulkanFence* userFence = fence ? static_cast<VulkanFence*>(fence) : nullptr;
+                        // 专属回收围栏：永不被主线程 reset，资源线程可安全 waitFor，
+                        // 消除 vkResetFences 与 vkWaitForFences 的并发竞争（规范禁止）。
+                        VulkanFence* recycleFence = mFencePool->createFence(false, "Recycle Fence");
+                        mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, userFence);
+                        // 空提交仅 signal 回收围栏：同一队列 FIFO，帧完成后置位。
+                        mDevice->submitCommandBuffer({}, page->cmdtype, {}, {}, recycleFence);
                         SecondCBs.emplace_back(std::move(MCB));
-                        PendingReleaseCBs.push(PendingReleaseInfo(submitFence, std::move(SecondCBs), 1));
+                        PendingReleaseCBs.push(PendingReleaseInfo(recycleFence, std::move(SecondCBs), 0));
                         if (submitDoneFlag) {
                             //Warn("Give a semaphore");
                             submitDoneFlag->store(true, std::memory_order_release);
+                            submitDoneFlag->notify_all();
                         }
                     }
                     else {
@@ -582,7 +580,7 @@ namespace FISIR {
 
         PendingReleaseCBsInThread.clear();
 
-        while (!stopTag || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
+        while ((!stopTag && !mDevice->isDeviceLost()) || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
             //if (stopTag && !PendingReleaseCBsInThread.empty()) Debug("Suck");
             // Drain the lock-free queue into the local pending list.
             {
@@ -598,7 +596,7 @@ namespace FISIR {
                 for (size_t i = 0; i < PendingReleaseCBsInThread.size(); ++i) {
                     auto& [fence, cbs, fromframe] = PendingReleaseCBsInThread[i];
 
-                    if (!fence || fence->isSignaled() || stopTag) {
+                    if (!fence || fence->isSignaled() || stopTag || mDevice->isDeviceLost()) {
                         for (auto& cb : cbs) {
                             cb.pool->releaseCommandBuffer(cb);
                             for (auto& [resource, change] : cb.QuoteResources) {
@@ -624,8 +622,12 @@ namespace FISIR {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             else if (!PendingReleaseCBsInThread.empty() && PendingReleaseCBs.empty()) {
-                // No new work, just waiting for GPU — brief sleep to avoid spinning.
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                auto& front = PendingReleaseCBsInThread.front();
+                if (front.fence) {
+                    front.fence->waitFor(1000000); // 最多等 1ms，围栏置位立即返回
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
             }
         }
     }

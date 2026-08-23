@@ -211,15 +211,12 @@ namespace FISIR{
 		const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
 		switch (poolType) {
 			case CmdType::Render:
-				Debug("Submit In Graphic Queue");
 				mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;
 			case CmdType::Compute:
-				Debug("Submit In Compute Queue");
 				mComputeQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;
 			case CmdType::Transfer:
-				Debug("Submit In Transfer Queue");
 				mTransferQueue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
 				break;
 			default:

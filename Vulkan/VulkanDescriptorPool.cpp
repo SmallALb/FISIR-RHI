@@ -535,7 +535,6 @@ namespace FISIR{
 		if (Resourcepack) {
 			if (device->isDescriptorHeapSupported()) {
 				auto PackHandle = static_cast<DescriptorHeap*>(Resourcepack);
-				Debug("PackHandle->resourceType = {}", (int)PackHandle->resourceType);
 				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
 				VkDeviceSize alignment = (PackHandle->resourceType == Type::Sampler) ? sizes.samplerHeapAlignment : sizes.resourceHeapAlignment;
 				VkDeviceSize alignedOffset = (PackHandle->UseDataSize + alignment - 1) & ~(alignment - 1);
@@ -550,7 +549,6 @@ namespace FISIR{
 					.reservedRangeSize = reservedSize
 				};
 				fpCmdBindResourceHeap(cmd, &info);
-				Debug("Bind ResourcePack : RangeSize : {}", reservedSize);
 			}
 			else {
 				// 降级路径：绑定单个 DescriptorSet

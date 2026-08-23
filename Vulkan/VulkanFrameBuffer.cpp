@@ -33,7 +33,6 @@ namespace FISIR{
 		for (auto& texture : mTextures) {
 			if (texture->getTextureUseFor() & TextureUseForDepthStencilAttachment) mDepthStencilEntry = static_cast<VulkanTexture*>(texture);
 			mViews.push_back(new VulkanImageView(mDevice, static_cast<VulkanTexture*>(texture)));
-			Debug("FB 0x{:x} : width={} height={}, attachment (0x{:x}) size={} x {}",(size_t)this, width, height, (size_t)texture, width, height);
 		}
 
 		for (auto& view : mViews) {

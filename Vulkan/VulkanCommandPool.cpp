@@ -19,8 +19,8 @@
 
 
 namespace FISIR{
-	constexpr size_t INITIAL_PRIMARY_COMMAND_BUFFER_COUNT = 64;
-	constexpr size_t INITIAL_SECONDARY_COMMAND_BUFFER_COUNT = 128;
+	constexpr uint32_t INITIAL_PRIMARY_COMMAND_BUFFER_COUNT = 4;
+	constexpr uint32_t INITIAL_SECONDARY_COMMAND_BUFFER_COUNT = 8;
 
 	static VkImageAspectFlags getVulkanAspectFlagsForUsing(TextureUseForFlags usefor) {
 		return usefor & TextureUseForDepthStencilAttachment ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -109,8 +109,8 @@ namespace FISIR{
 
 	struct __VKCommandPoolData {
 		VkCommandPool mPool;
-		std::vector<VkCommandBuffer> PrimaryCommandBufferPool;
-		std::vector<VkCommandBuffer> SecondaryCommandBufferPool;
+		std::vector<VkCommandBuffer*> PrimaryCommandBufferPool;
+		std::vector<VkCommandBuffer*> SecondaryCommandBufferPool;
 		LockFreeQue<size_t> FreePrimaryCommandBuffers;
 		LockFreeQue<size_t> FreeSecondaryCommandBuffers;
 	};
@@ -121,8 +121,6 @@ namespace FISIR{
 		mDevice = device;
 		mPoolType = mType;
 		mData = new __VKCommandPoolData();
-		mData->PrimaryCommandBufferPool.resize(INITIAL_PRIMARY_COMMAND_BUFFER_COUNT);
-		mData->SecondaryCommandBufferPool.resize(INITIAL_SECONDARY_COMMAND_BUFFER_COUNT);
 		
 		VkCommandPoolCreateInfo poolInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -135,13 +133,15 @@ namespace FISIR{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.commandPool = mData->mPool,
 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = static_cast<uint32_t>(mData->PrimaryCommandBufferPool.size())
+			.commandBufferCount = INITIAL_PRIMARY_COMMAND_BUFFER_COUNT
 		};
-		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->PrimaryCommandBufferPool.data());
+		mData->PrimaryCommandBufferPool.push_back(new VkCommandBuffer[INITIAL_PRIMARY_COMMAND_BUFFER_COUNT]);
+		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->PrimaryCommandBufferPool[0]);
 
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-		allocInfo.commandBufferCount = static_cast<uint32_t>(mData->SecondaryCommandBufferPool.size());
-		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->SecondaryCommandBufferPool.data());
+		allocInfo.commandBufferCount = INITIAL_SECONDARY_COMMAND_BUFFER_COUNT;
+		mData->SecondaryCommandBufferPool.push_back(new VkCommandBuffer[INITIAL_SECONDARY_COMMAND_BUFFER_COUNT]);
+		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->SecondaryCommandBufferPool[0]);
 	
 		for (size_t i = 0; i < mData->PrimaryCommandBufferPool.size(); ++i) {
 			mData->FreePrimaryCommandBuffers.push(i);
@@ -154,8 +154,14 @@ namespace FISIR{
 	
 	VulkanCommandPool::~VulkanCommandPool() {
 		if (mData) {
-			vkFreeCommandBuffers(mDevice->getLogicalDevice(), mData->mPool, static_cast<uint32_t>(mData->PrimaryCommandBufferPool.size()), mData->PrimaryCommandBufferPool.data());
-			vkFreeCommandBuffers(mDevice->getLogicalDevice(), mData->mPool, static_cast<uint32_t>(mData->SecondaryCommandBufferPool.size()), mData->SecondaryCommandBufferPool.data());
+			for (auto& page : mData->PrimaryCommandBufferPool) {
+				vkFreeCommandBuffers(mDevice->getLogicalDevice(), mData->mPool, INITIAL_PRIMARY_COMMAND_BUFFER_COUNT, page);
+				delete[] page;
+			}
+			for (auto& page : mData->SecondaryCommandBufferPool) {
+				vkFreeCommandBuffers(mDevice->getLogicalDevice(), mData->mPool, INITIAL_SECONDARY_COMMAND_BUFFER_COUNT, page);
+				delete[] page;
+			}
 			vkDestroyCommandPool(mDevice->getLogicalDevice(), mData->mPool, nullptr);
 			delete mData;
 			mData = nullptr;
@@ -163,52 +169,44 @@ namespace FISIR{
 	}
 
 	CBInfo VulkanCommandPool::createCommandBuffer(CommandBufferType cbType) {
-		if ((cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.empty() : mData->FreeSecondaryCommandBuffers.empty()) {
-			VkCommandBufferAllocateInfo allocInfo{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-				.commandPool = mData->mPool,
-				.level = (cbType == _Primary_) ? VK_COMMAND_BUFFER_LEVEL_PRIMARY : VK_COMMAND_BUFFER_LEVEL_SECONDARY,
-				.commandBufferCount = 1
-			};
-			VkCommandBuffer newCB;
-			if (vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, &newCB) != VK_SUCCESS) {
-				Error("Failed to allocate command buffer!");
-				return {};
-			}
-			if (cbType == _Primary_) {
-				mData->PrimaryCommandBufferPool.push_back(newCB);
-				size_t index = mData->PrimaryCommandBufferPool.size()-1;
-				CBInfo cbInfo(mData->PrimaryCommandBufferPool[index], cbType, mPoolType, this, index);
-				return cbInfo;
-			}
-			else {
-				mData->SecondaryCommandBufferPool.push_back(newCB);
-				size_t index = mData->SecondaryCommandBufferPool.size() - 1;
-				CBInfo cbInfo(mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this, index);
-				return cbInfo;
-			}
-		}
+		auto& Que = (cbType == _Primary_) ? mData->FreePrimaryCommandBuffers : mData->FreeSecondaryCommandBuffers;
+		auto& Pool = (cbType == _Primary_) ? mData->PrimaryCommandBufferPool : mData->SecondaryCommandBufferPool;
+		auto Count = (cbType == _Primary_) ? INITIAL_PRIMARY_COMMAND_BUFFER_COUNT : INITIAL_SECONDARY_COMMAND_BUFFER_COUNT;
 		size_t index = SIZE_MAX;
-		(cbType == _Primary_) ? mData->FreePrimaryCommandBuffers.pop(index) : mData->FreeSecondaryCommandBuffers.pop(index);
-		if (index == SIZE_MAX) {
-			Error("Can't give a Free CmdBuffer");
-			return CBInfo();
-		}
-		CBInfo cbInfo((cbType == _Primary_) ? mData->PrimaryCommandBufferPool[index] : mData->SecondaryCommandBufferPool[index], cbType, mPoolType, this, index);
 
-		if (cbInfo.buffer == VK_NULL_HANDLE) {
+
+		if (Que.pop(index)) return CBInfo(Pool[index/Count][index%Count], cbType, mPoolType, this, index);
+
+		std::lock_guard<std::mutex> lock(mCommandBufferMutex);
+		if (Que.pop(index)) return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
+		
+		VkCommandBufferAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = mData->mPool,
+			.level = (cbType == _Primary_) ? VK_COMMAND_BUFFER_LEVEL_PRIMARY : VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+			.commandBufferCount = Count
+		};
+		VkCommandBuffer* newCB = new VkCommandBuffer[Count];
+		if (vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, newCB) != VK_SUCCESS) {
 			Error("Failed to allocate command buffer!");
 			return {};
 		}
-		return cbInfo;
+		
+		Pool.push_back(newCB);
+		size_t NewPageBegin = Count * (Pool.size() - 1);
+		for (int i= NewPageBegin+1; i< NewPageBegin+Count; i++) Que.push(i);
+
+		index = NewPageBegin;
+		return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this , index);
 	}
 
 	void VulkanCommandPool::releaseCommandBuffer(const CBInfo& cbInfo) {
+		//std::lock_guard<std::mutex> lock(mCommandBufferMutex);
 		if (cbInfo.pool != this) {
 			Error("Attempting to release a command buffer that does not belong to this pool!");
 			return;
 		}
-		//vkResetCommandBuffer(cbInfo.buffer, 0);
+		 //vkResetCommandBuffer(cbInfo.buffer, 0);
 		(cbInfo.type == _Primary_) ? 
 			mData->FreePrimaryCommandBuffers.push(cbInfo.index) : 
 			mData->FreeSecondaryCommandBuffers.push(cbInfo.index);
@@ -439,7 +437,6 @@ namespace FISIR{
 					case RHICommandT::BindPipeline: {
 						BindPipeline_CmdInfo info;
 						batchInfo.getBatchData(info);
-						Debug("Thread {}: BindPipeline, pipeline ptr = 0x{:x}", ThreadID, (size_t)(info.pipeline));
 						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
 							? VK_PIPELINE_BIND_POINT_COMPUTE
 							: VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -449,8 +446,6 @@ namespace FISIR{
 					case RHICommandT::BindVertexBuffer: {
 						BindVertextBuffer_CmdInfo info;
 						batchInfo.getBatchData(info);
-						Debug("Thread {}: BindVertexBuffer, buffer ptr = 0x{:x}, binding = {}, offset = {}",
-							ThreadID, (size_t)info.buffer, info.binding, info.offset);
 						VkBuffer buffer = static_cast<VkBuffer>(info.buffer->getResourceAPIHandle());
 						vkCmdBindVertexBuffers(cmdInfo.buffer, info.binding, 1, &buffer, &info.offset);
 						break;

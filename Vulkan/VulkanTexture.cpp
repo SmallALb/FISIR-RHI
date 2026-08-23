@@ -152,7 +152,6 @@ namespace FISIR {
 		mData->sampleCount = info.sampleCount;
 		mData->useFor = info.useFor;
 		auto Allocator = mDevice->getAllocator();
-		size_t imageSize = info.size.width * info.size.height * info.size.depth * getTextureColorTypeSize(info.colorType);
 		VkImageCreateInfo imageInfo = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.flags = info.type == TextureType::TEXTUREARRAY ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags)0,
@@ -174,7 +173,9 @@ namespace FISIR {
 		VkMemoryRequirements memReqs;
 		vkGetImageMemoryRequirements(mDevice->getLogicalDevice(), mData->image, &memReqs);
 
-		 mData->mBlock = Allocator->create(imageSize, memReqs.alignment, MemType::MemTypeDeviceLocal, this);
+		 // 必须按 vkGetImageMemoryRequirements 的 size 分配：最优平铺下含对齐 padding，
+		 // 手动按分辨率×像素尺寸估算会偏小，vkBindImageMemory 校验失败 → 白屏/卡死。
+		 mData->mBlock = Allocator->create(memReqs.size, memReqs.alignment, MemType::MemTypeDeviceLocal, this);
 	
 		 setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->image, VK_OBJECT_TYPE_IMAGE, name ? name : "VulkanTexture");
 	}

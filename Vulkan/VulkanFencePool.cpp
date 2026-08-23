@@ -72,7 +72,7 @@ namespace FISIR{
 
 	void VulkanFence::reName(const char* name) {
 #ifdef _DEBUG
-		Debug("Renaming Fence from '{}' to '{}'", mName ? mName : "Unnamed Fence", name ? name : "Unnamed Fence");
+		//Debug("Renaming Fence from '{}' to '{}'", mName ? mName : "Unnamed Fence", name ? name : "Unnamed Fence");
 		mName = name;
 		setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mFence, VK_OBJECT_TYPE_FENCE, name ? name : "Unnamed Fence");
 

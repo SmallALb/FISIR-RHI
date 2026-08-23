@@ -113,6 +113,7 @@ namespace FISIR{
 		VulkanDevice* mDevice;
 		CmdType mPoolType;
 		std::atomic_bool UsedInThread{0};
+		std::mutex mCommandBufferMutex;
 
 	};
 	

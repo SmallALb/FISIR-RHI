@@ -42,7 +42,8 @@ namespace FISIR{
 		}
 
 		// ��֤ command buffer �Ƿ���Ч
-		if (cmds.size() == 0) {
+		// 允许空命令缓冲：用于「仅 signal 回收围栏」的空提交（围栏解耦）。
+		if (cmds.size() == 0 && Fence == nullptr) {
 			Error("Command buffers are null!");
 			return;
 		}
@@ -76,9 +77,12 @@ namespace FISIR{
 		VkResult submitRes = vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE);
 		if (submitRes != VK_SUCCESS) {
 			Error("Failed to submit command buffer to queue! VkResult={}, fence : 0x{:x}", (int)submitRes, (uint64_t)(Fence ? Fence->getFenceHandle() : 0));
+			if (submitRes == VK_ERROR_DEVICE_LOST) {
+				mDevice->markDeviceLost();
+				Error("VK_ERROR_DEVICE_LOST: device lost, stopping RHI submission to prevent memory explosion.");
+			}
 			return;
 		}
-		Debug("Command buffer submitted to queue successfully!");
 
 	}
 

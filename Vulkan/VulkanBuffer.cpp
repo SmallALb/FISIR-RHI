@@ -60,15 +60,18 @@ namespace FISIR {
 		vkGetBufferMemoryRequirements(mDevice->getLogicalDevice(), mData->buffer, &memReqs);
 
 
+		Data_GPU = nullptr;
 		mData->mBlock = allocator->create(info.size, memReqs.alignment, info.memoryType, this, &Data_GPU);
-		Debug("Create Buffer: {}", info.size);
+		if (!mData->mBlock) {
+			Error("Failed to allocate GPU memory for buffer '{}' ({} bytes)", DebugName ? DebugName : "VulkanBuffer", info.size);
+			return;
+		}
 		setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mData->buffer, VK_OBJECT_TYPE_BUFFER, (DebugName ? DebugName : "VulkanBuffer"));
 		VkBufferDeviceAddressInfo addrInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 			.buffer = mData->buffer
 		};
 		mData->Gpuaddress = vkGetBufferDeviceAddress(mDevice->getLogicalDevice(), &addrInfo);
-		Debug("Buffer created with device address: 0x{:x}", mData->Gpuaddress);
 		if (info.data_CPU) {
 			memcpy(Data_GPU, info.data_CPU, info.size);
 		}
@@ -77,7 +80,7 @@ namespace FISIR {
 	VulkanBuffer::~VulkanBuffer() {
 		auto allocater = mDevice->getAllocator();
 		vkDestroyBuffer(mDevice->getLogicalDevice(), mData->buffer, nullptr);
-		allocater->free(mData->mBlock);
+		if (mData->mBlock) allocater->free(mData->mBlock);
 		delete mData;
 	}
 
