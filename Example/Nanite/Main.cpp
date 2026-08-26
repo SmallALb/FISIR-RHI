@@ -87,9 +87,8 @@ int main() {
             cmdList.EndRenderPass();
         }
 
-        //std::atomic<bool> submitDone{false};
         cmdList.End(info.finishFence, {info.avaliable}, {info.renderFinish});
-        //while (!submitDone.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+        info.finishFence->waitFenceSubmited();
         swapchain->present(frameID);
     }
 

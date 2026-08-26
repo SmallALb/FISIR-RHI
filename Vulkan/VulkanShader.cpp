@@ -9,10 +9,10 @@ namespace FISIR {
     };
 
 
-    VulkanShader::VulkanShader(VulkanDevice* device, const unsigned char* shaderData, size_t size) {
+    VulkanShader::VulkanShader(VulkanDevice* device, const char* EntryPoint, const unsigned char* shaderData, size_t size) {
         mData = new __VkShaderData();
         mDevice = device;
-
+        mEntryPoint = EntryPoint;
 		VkShaderModuleCreateInfo shaderModuleCreateInfo = {
 		   .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		   .codeSize = size, //TODO: set code size
@@ -29,6 +29,10 @@ namespace FISIR {
 
     void* VulkanShader::getResourceAPIHandle() const {
         return mData->mShader;
+    }
+
+    const char* VulkanShader::getEntryPoint() const {
+        return mEntryPoint;
     }
 
 }

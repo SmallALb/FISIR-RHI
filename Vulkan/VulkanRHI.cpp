@@ -31,12 +31,12 @@ namespace FISIR {
     //Pending Release Command Buffers
     struct PendingReleaseInfo {
         PendingReleaseInfo() {}
-        PendingReleaseInfo(VulkanFence* f, std::vector<CBInfo>&& c, bool infence = 0) :
+        PendingReleaseInfo(VkFence f, std::vector<CBInfo>&& c, bool infence = 0) :
             fence(f),
             cbInfos(std::move(c)),
             inputFence(infence)
         {}
-        PendingReleaseInfo(VulkanFence* f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
+        PendingReleaseInfo(VkFence f, const std::vector<CBInfo>& c) : fence(f), cbInfos(c) {}
 
 
         PendingReleaseInfo(PendingReleaseInfo&& other) noexcept
@@ -54,7 +54,7 @@ namespace FISIR {
             return *this;
         }
 
-        VulkanFence* fence{ nullptr };
+        VkFence fence{ nullptr };
         std::vector<CBInfo> cbInfos{};
         bool inputFence{ 0 };
     };
@@ -63,7 +63,6 @@ namespace FISIR {
     static LockFreeQue<PendingReleaseInfo> PendingReleaseCBs;
     static LockFreeQue<RingCommandPool::Page*> NeedUsingPages;
 
-    static std::vector<PendingReleaseInfo> PendingReleaseCBsInThread;
 
     //Pending Upload Command Buffers
     std::thread RHIThread, RHIResourceThread, PrepareThread;
@@ -133,7 +132,6 @@ namespace FISIR {
 
         PendingReleaseCBs.forceClear();
         NeedUsingPages.forceClear();
-        PendingReleaseCBsInThread.clear();
         for (auto& pool : CmdMemoryPool) {
             for (auto& page : pool.Pages) {
                 page.BatchQueue.forceClear();
@@ -240,13 +238,13 @@ namespace FISIR {
     }
 
 
-    RHIShader* VulkanRHI::RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) {
+    RHIShader* VulkanRHI::RHICreateShader(ShaderTYP typ, const char* EntryPoint, const unsigned char* Data, size_t size) {
         Debug("Create Vulkan Shader");
         if (!Data) {
             Error("Shader Data is Empty!");
             return nullptr;
         }
-        ShadersPool.push_back(new VulkanShader(mDevice, Data, size));
+        ShadersPool.push_back(new VulkanShader(mDevice, EntryPoint, Data, size));
         return ShadersPool.back();
     }
 
@@ -301,7 +299,7 @@ namespace FISIR {
     }
 
     RHIFence* VulkanRHI::RHICreateFence(bool signaled, const char* name) {
-        return mFencePool->createFence(signaled, name);
+        return new VulkanFence(mFencePool, signaled, name);
     }
 
     RingCommandPool::Page* VulkanRHI::RHIGetCommandPoolPage(CmdType cmdtype) {
@@ -311,8 +309,8 @@ namespace FISIR {
 
 
 
-        void VulkanRHI::RHIDestroyFence(RHIFence* fence) {
-        mFencePool->release(static_cast<VulkanFence*>(fence));
+    void VulkanRHI::RHIDestroyFence(RHIFence* fence) {
+        delete fence;
     }
 
     void VulkanRHI::RHIDestroyTexture(RHITexture* texture) {
@@ -448,7 +446,6 @@ namespace FISIR {
 
                 //check 
                 VulkanFence* fence = nullptr;
-                std::atomic<bool>* submitDoneFlag = nullptr;
                 std::vector<RHISemaphore*> waits;
                 std::vector<RHISemaphore*> signals;
 
@@ -464,7 +461,6 @@ namespace FISIR {
                     std::vector<CBInfo> SecondCBs;
                     vkBeginCommandBuffer(MCB.buffer, &beginInfo);
                     for (auto& SCBRes : result.ExecuteResults) {
-
                         if (SCBRes->frameBuffer) {
                             if (currentFrameBuffer == nullptr) {
                                 currentFrameBuffer = SCBRes->frameBuffer;
@@ -512,27 +508,19 @@ namespace FISIR {
 
                             waits = std::move(SCBRes->waits);
                             signals = std::move(SCBRes->signals);
-                            submitDoneFlag = SCBRes->submitReady;
                         }
                     }
                     vkEndCommandBuffer(MCB.buffer);
-
                     if (fence || !waits.empty() || !signals.empty()) {
                         // 用户侧围栏负责主线程槽位复用同步（acquireGetImageInfoID 里会 reset）。
                         VulkanFence* userFence = fence ? static_cast<VulkanFence*>(fence) : nullptr;
-                        // 专属回收围栏：永不被主线程 reset，资源线程可安全 waitFor，
-                        // 消除 vkResetFences 与 vkWaitForFences 的并发竞争（规范禁止）。
-                        VulkanFence* recycleFence = mFencePool->createFence(false, "Recycle Fence");
-                        mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, userFence);
-                        // 空提交仅 signal 回收围栏：同一队列 FIFO，帧完成后置位。
-                        mDevice->submitCommandBuffer({}, page->cmdtype, {}, {}, recycleFence);
+                        auto fencehandle = static_cast<VkFence>(userFence->getFenceHandle());
+                        //if (mFencePool->isSignaled(fencehandle)) vkResetFences(mDevice->getLogicalDevice(), 1, &fencehandle);
+                        mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, fencehandle);
+                        userFence->setSubmited();
                         SecondCBs.emplace_back(std::move(MCB));
-                        PendingReleaseCBs.push(PendingReleaseInfo(recycleFence, std::move(SecondCBs), 0));
-                        if (submitDoneFlag) {
-                            //Warn("Give a semaphore");
-                            submitDoneFlag->store(true, std::memory_order_release);
-                            submitDoneFlag->notify_all();
-                        }
+                        PendingReleaseCBs.push(PendingReleaseInfo(fencehandle, std::move(SecondCBs), 0));
+
                     }
                     else {
                         getCmdsByType(page->cmdtype).push_back(MCB.buffer);
@@ -557,7 +545,7 @@ namespace FISIR {
                 if (cmds.size() < 8) continue;
                 auto fence = mFencePool->createFence(false, "RHI Fence");
                 mDevice->submitCommandBuffer(cmds, CmdType(i), {}, {}, fence);
-                PendingReleaseCBs.push(PendingReleaseInfo(static_cast<VulkanFence*>(fence), std::move(cmdInfos), 0));
+                PendingReleaseCBs.push(PendingReleaseInfo(fence, std::move(cmdInfos), 0));
                 cmds.clear();
             }
             
@@ -576,18 +564,18 @@ namespace FISIR {
 
     void VulkanRHI::VulkanResourceLoop() {
         Debug("Resource Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
-
+            
+        std::vector<PendingReleaseInfo> PendingReleaseCBsInThread;
 
         PendingReleaseCBsInThread.clear();
 
         while ((!stopTag && !mDevice->isDeviceLost()) || !PendingReleaseCBs.empty() || !PendingReleaseCBsInThread.empty()) {
             //if (stopTag && !PendingReleaseCBsInThread.empty()) Debug("Suck");
             // Drain the lock-free queue into the local pending list.
+
             {
                 PendingReleaseInfo Info;
-                while (PendingReleaseCBs.pop(Info)) {
-                    PendingReleaseCBsInThread.push_back(std::move(Info));
-                }
+                while (PendingReleaseCBs.pop(Info)) PendingReleaseCBsInThread.push_back(std::move(Info));
             }
 
             // Process the local list: release ready items, keep pending ones.
@@ -596,7 +584,7 @@ namespace FISIR {
                 for (size_t i = 0; i < PendingReleaseCBsInThread.size(); ++i) {
                     auto& [fence, cbs, fromframe] = PendingReleaseCBsInThread[i];
 
-                    if (!fence || fence->isSignaled() || stopTag || mDevice->isDeviceLost()) {
+                    if (!fence || mFencePool->isSignaled(fence) || stopTag || mDevice->isDeviceLost()) {
                         for (auto& cb : cbs) {
                             cb.pool->releaseCommandBuffer(cb);
                             for (auto& [resource, change] : cb.QuoteResources) {
@@ -606,7 +594,7 @@ namespace FISIR {
                             }
                             cb.QuoteResources.clear();
                         }
-                        if (fence && !fromframe) mFencePool->release(static_cast<VulkanFence*>(fence));
+                        mFencePool->release(fence);
                     }
                     else {
                         // Keep this item for the next iteration.
@@ -624,7 +612,7 @@ namespace FISIR {
             else if (!PendingReleaseCBsInThread.empty() && PendingReleaseCBs.empty()) {
                 auto& front = PendingReleaseCBsInThread.front();
                 if (front.fence) {
-                    front.fence->waitFor(1000000); // 最多等 1ms，围栏置位立即返回
+                    mFencePool->wait(front.fence, 1e6); // 最多等 1ms，围栏置位立即返回
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }

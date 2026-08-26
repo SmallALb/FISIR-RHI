@@ -57,7 +57,8 @@ namespace FISIR{
 		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		case RHIDescriptorTyp::StorageBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		case RHIDescriptorTyp::RBuffer:
+		case RHIDescriptorTyp::RWBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		}
 		return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	}
@@ -198,7 +199,8 @@ namespace FISIR{
 				alignment = sizes.imageAlignment;
 				break;
 			case RHIDescriptorTyp::UniformBuffer:
-			case RHIDescriptorTyp::StorageBuffer:
+			case RHIDescriptorTyp::RBuffer:
+			case RHIDescriptorTyp::RWBuffer:
 				alignment = sizes.bufferAlignment;
 				break;
 			default:
@@ -235,8 +237,10 @@ namespace FISIR{
 							return VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
 						case RHIDescriptorTyp::UniformBuffer:
 							return VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
-						case RHIDescriptorTyp::StorageBuffer:
-							return VkSpirvResourceTypeFlagsEXT(VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT);
+						case RHIDescriptorTyp::RBuffer:
+						case RHIDescriptorTyp::RWBuffer:
+						
+							return VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
 						default:
 							return VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
 					}
@@ -311,7 +315,7 @@ namespace FISIR{
 					.pNext = mDevice->isDescriptorHeapSupported() ? &shaderMappingInfo : nullptr,
 					.stage = usingStage,
 					.module = (VkShaderModule)State.Shaders[i]->getResourceAPIHandle(),
-					.pName = "main"
+					.pName = State.Shaders[i]->getEntryPoint()
 				};
 				shaderInfos.push_back(info);
 			}
@@ -322,7 +326,7 @@ namespace FISIR{
 				.pNext = mDevice->isDescriptorHeapSupported() ? &shaderMappingInfo : nullptr,
 				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 				.module = (VkShaderModule)State.Shaders[__COMPUTESHADER__]->getResourceAPIHandle(),
-				.pName = "main"
+				.pName = State.Shaders[__COMPUTESHADER__]->getEntryPoint()
 			};
 			shaderInfos.push_back(info);
 		}

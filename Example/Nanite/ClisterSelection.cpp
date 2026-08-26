@@ -1,6 +1,18 @@
 #include "ClusterSelection.h"
 #include "ShaderComplier.h"
 #include <fstream>
+#include <string>
+#include <iterator>
+
+// 从磁盘读取整个文件为字符串（二进制读取，保留原始 UTF-8 字节）
+static std::string LoadFileText(const char* path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        Error("Failed to open shader file: {}", path);
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+}
 
 static FISIR::RHIShader* ClusterSelectionComputeShader = nullptr;
 static FISIR::RHIBuffer* ClusterSelectionBuffer = nullptr;
@@ -10,34 +22,27 @@ static FISIR::RHIResourcePackResult ClusterSelectionResourcePack;
 static FISIR::RHIFence* ClusterSelectionFence = nullptr;
 
 void InitClusterSelection(FISIR::DynamicRHI* rhi) {
-		//Complie and Create Shader
-	const wchar_t* ClusterSelectionCS = LR"(
-		RWStructuredBuffer<uint> clusterSelectionBuffer : register(u0);
-		RWStructuredBuffer<uint> clusterDataBuffer : register(u1);
-		[numthreads(1, 1, 1)]
-		void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
-			clusterDataBuffer[0] = clusterSelectionBuffer[0];
-		}
-	)";
+		//Complie and Create Shader（从磁盘加载 HLSL 源文件）
+	std::string csSource = LoadFileText("Shader/ClusterSelection.hlsl");
 	FISIR::ShaderComplier* csCompiler = new FISIR::ShaderComplier();
-	csCompiler->compileShader(ClusterSelectionCS, wcslen(ClusterSelectionCS) * sizeof(wchar_t), L"main", L"cs_6_0");
-	ClusterSelectionComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, csCompiler->getShaderData(), csCompiler->getShaderDataSize());
+	csCompiler->compileShader(csSource.data(), csSource.size(), "mainCS", "cs_6_0");
+	ClusterSelectionComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainCS", csCompiler->getShaderData(), csCompiler->getShaderDataSize());
 
 	//Create Buffer
 	FISIR::BufferInfo clusterSelectionBufferInfo{
 		.data_CPU = nullptr,
-		.size = 4 * 1024 * 1024, 
-		.bufferlayout = FISIR::StorageBuffer | FISIR::TransferDstBuffer,
+		.size = 4 * 1024 * 1024,
+		.bufferlayout = FISIR::RBuffer | FISIR::TransferDstBuffer,
 		.memoryType = FISIR::MemTypeDeviceLocal,
 	};
 
 	ClusterSelectionBuffer = rhi->RHICreateBuffer(clusterSelectionBufferInfo);
 
-	//Create OutBuffer（簇选择结果输出）
+	//Create OutBuffer
 	FISIR::BufferInfo clusterDataBufferInfo{
 		.data_CPU = nullptr,
 		.size = 4 * 1024 * 1024,
-		.bufferlayout = FISIR::StorageBuffer | FISIR::TransferDstBuffer,
+		.bufferlayout = FISIR::RWBuffer | FISIR::TransferDstBuffer,
 		.memoryType = FISIR::MemTypeDeviceLocal,
 	};
 	ClusterDataBuffer = rhi->RHICreateBuffer(clusterDataBufferInfo);
@@ -46,8 +51,8 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	//Create Descriptor and Pipeline
 	FISIR::RHIPipelineDescribeInfo describeInfo {
-		{0, 1, FISIR::RHIDescriptorTyp::StorageBuffer, FISIR::RHIUsingStage::ComputeShaderStage},
-		{1, 1, FISIR::RHIDescriptorTyp::StorageBuffer, FISIR::RHIUsingStage::ComputeShaderStage},
+		{0, 1, FISIR::RHIDescriptorTyp::RBuffer, FISIR::RHIUsingStage::ComputeShaderStage},
+		{1, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::ComputeShaderStage},
 	};
 
 
@@ -114,16 +119,17 @@ void SetClusterSelectionBuffer(FISIR::DynamicRHI* rhi) {
 	FISIR::BufferInfo tmpbufferinfo {
 		.data_CPU = data,
 		.size = size,
-		.bufferlayout = FISIR::StorageBuffer | FISIR::TransferSrcBuffer,
+		.bufferlayout = FISIR::TransferSrcBuffer,
 		.memoryType = (FISIR::MemType)(FISIR::MemTypHostCoherent | FISIR::MemTypHostVisable),
 	};
 	auto tmpBuffer = rhi->RHICreateBuffer(tmpbufferinfo);
 
-	auto fence = rhi->RHICreateFence();
+	auto fence = rhi->RHICreateFence(false, "Resource Copy");
 
 	FISIR::RHITransferCommandList transferList(rhi);
 	transferList.CopyToBuffer(tmpBuffer, ClusterSelectionBuffer, 0, 0, size);
 	transferList.End(fence);
+
 	fence->wait();
 
 	rhi->RHIDestroyBuffer(tmpBuffer);

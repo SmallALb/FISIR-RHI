@@ -12,7 +12,7 @@ namespace FISIR {
 
 	static VkDescriptorType getDescriptorType(BufferLayoutFlags type) {
 		if (type & UniformBuffer) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		if (type & StorageBuffer) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		if (type & (RBuffer | RWBuffer)) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		
 		return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	}
@@ -33,7 +33,8 @@ namespace FISIR {
 		if (layout & VertexBuffer) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 		if (layout & IndexBuffer) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 		if (layout & UniformBuffer) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-		if (layout & StorageBuffer) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		if (layout & RBuffer) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		if (layout & RWBuffer) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 		if (layout & TransferDstBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 		if (layout & TransferSrcBuffer) flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 		if (layout & IndirectBuffer)  flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;

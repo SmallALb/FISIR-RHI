@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "RHITypes.h"
-
+#include "RHICommands.h"
 namespace FISIR {	
 	class RHITexture;
 	class RHIBuffer;
@@ -37,7 +37,7 @@ namespace FISIR {
 
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) = 0;
 
-		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) = 0;
+		virtual RHIShader* RHICreateShader(ShaderTYP typ, const char* EntryPoint, const unsigned char* Data, size_t size) = 0;
 
 		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) = 0;
 

@@ -12,12 +12,9 @@
 #include "RHISwapChain.h"
 #include "RHITexture.h"
 #include "RHIViewport.h"
+#include "RHICommands.h"
 
 namespace FISIR {
-	class RHICommandListBase;
-
-
-
 
 	class RHICommandListBase {
 	public:
@@ -31,8 +28,8 @@ namespace FISIR {
 
 		void End(RHIFence* fence = nullptr,
 		         const std::vector<RHISemaphore*>& waits = {},
-		         const std::vector<RHISemaphore*>& toSignals = {},
-		         std::atomic<bool>* submitReady = nullptr) {
+		         const std::vector<RHISemaphore*>& toSignals = {}
+		         ) {
 			RHISemaphore** copyDataW;
 			if (waits.size()) {
 				copyDataW = (RHISemaphore**)malloc(waits.size() * sizeof(RHISemaphore*));
@@ -46,9 +43,8 @@ namespace FISIR {
 				memcpy(copyDataS, toSignals.data(), toSignals.size() * sizeof(RHISemaphore*));
 			}
 			else copyDataS = nullptr;
-			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size()), submitReady};
+			End_CmdInfo info {0, fence, copyDataW, static_cast<uint32_t>(waits.size()), copyDataS, static_cast<uint32_t>(toSignals.size())};
 			usingPage->WriteData(RHICommandT::End, info);
-			
 		}
 
 		RingCommandPool::PageFlag getPageFlag() const {
@@ -232,11 +228,6 @@ namespace FISIR {
 			usingPage->WriteData(RHICommandT::CopyBufferToTexture, info);
 		}
 
-
-	};
-
-	class RHICommandListImmediate : public RHICommandListBase {
-	public:
 
 	};
 

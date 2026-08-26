@@ -36,7 +36,7 @@ namespace FISIR {
 
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) override;
 
-		virtual RHIShader* RHICreateShader(ShaderTYP typ, const unsigned char* Data, size_t size) override;
+		virtual RHIShader* RHICreateShader(ShaderTYP typ, const char* EntryPoint, const unsigned char* Data, size_t size) override;
 
 		virtual RHIResourcePackResult RHICreateResourcePack(const std::vector<RHIResource*>& resources) override;
 

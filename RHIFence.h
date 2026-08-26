@@ -22,6 +22,10 @@ namespace FISIR {
 
 		virtual bool waitFor(uint64_t timeout = UINT64_MAX) = 0;
 
+		virtual bool isSubmited() = 0;
+
+		virtual bool waitFenceSubmited(uint64_t timeout = UINT64_MAX) = 0;
+
 		virtual void reset() = 0;
 	};
 

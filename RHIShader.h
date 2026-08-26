@@ -14,6 +14,7 @@ namespace FISIR {
 	public:
 		ShaderTYP getShaderType() const {return typ;}
 		
+		virtual const char* getEntryPoint() const = 0;
 	protected:
 		ShaderTYP typ;
 	};

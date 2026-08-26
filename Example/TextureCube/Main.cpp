@@ -104,7 +104,7 @@ int main(int argc, char* argv[]) {
             float3 color : COLOR;
             float2 uv : TEXCOORD;
         };
-        PSInput main(VSInput input) {
+        PSInput mainVs(VSInput input) {
             PSInput output;
             output.pos = mul(MVP, float4(input.pos, 1.0));
             output.color = input.color;
@@ -113,8 +113,8 @@ int main(int argc, char* argv[]) {
         }
     )";
     FISIR::ShaderComplier* vCompiler = new FISIR::ShaderComplier();
-    vCompiler->compileShader(vsCode, wcslen(vsCode) * sizeof(wchar_t), L"main", L"vs_5_0");
-    auto vs = rhi->RHICreateShader(FISIR::ShaderTYP::__VERTEXSHADER__, vCompiler->getShaderData(), vCompiler->getShaderDataSize());
+    vCompiler->compileShader(vsCode, wcslen(vsCode) * sizeof(wchar_t), L"mainVs", L"vs_5_0");
+    auto vs = rhi->RHICreateShader(FISIR::ShaderTYP::__VERTEXSHADER__, "mainVs", vCompiler->getShaderData(), vCompiler->getShaderDataSize());
     delete vCompiler;
 
     // ---------- 4. 像素着色器 ----------
@@ -126,14 +126,14 @@ int main(int argc, char* argv[]) {
             float3 color : COLOR;
             float2 uv : TEXCOORD;
         };
-        float4 main(PSInput input) : SV_TARGET {
+        float4 mainPs(PSInput input) : SV_TARGET {
             float4 texColor = myTexture.Sample(mySampler, input.uv);
             return texColor;
         }
     )";
     FISIR::ShaderComplier* pCompiler = new FISIR::ShaderComplier();
-    pCompiler->compileShader(psCode, wcslen(psCode) * sizeof(wchar_t), L"main", L"ps_5_0");
-    auto ps = rhi->RHICreateShader(FISIR::ShaderTYP::__FRAGMENTSHADER__, pCompiler->getShaderData(), pCompiler->getShaderDataSize());
+    pCompiler->compileShader(psCode, wcslen(psCode) * sizeof(wchar_t), L"mainPs", L"ps_5_0");
+    auto ps = rhi->RHICreateShader(FISIR::ShaderTYP::__FRAGMENTSHADER__, "mainPs", pCompiler->getShaderData(), pCompiler->getShaderDataSize());
     delete pCompiler;
 
     // ---------- 5. 离屏渲染目标 ----------
@@ -226,7 +226,7 @@ int main(int argc, char* argv[]) {
             .data_CPU = textureData,
             .size = (size_t)texHeight * texWidth * 4,
             .stride = 0,
-            .bufferlayout = FISIR::StorageBuffer | FISIR::TransferSrcBuffer,
+            .bufferlayout = FISIR::TransferSrcBuffer,
             .memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent)
         };
         uploadBuffer = rhi->RHICreateBuffer(uploadBufferInfo);
@@ -426,8 +426,9 @@ int main(int argc, char* argv[]) {
                 cmdList.EndRenderPass();
             }
             std::atomic<bool> submitDone{false};
-            cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish }, &submitDone);
-            submitDone.wait(false);
+            cmdList.End(info.finishFence, { info.avaliable }, { info.renderFinish });
+            info.finishFence->waitFenceSubmited();
+
             swapchain->present(infoid);
 
             angle += 0.02f;

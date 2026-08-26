@@ -346,7 +346,6 @@ namespace FISIR{
 	}
 
 	void CommandExecuteThreadPool::ThreadLoop(uint32_t ThreadID) {
-		
 		while(!StopTag.load()) {
 			ExecutedPageTask exeTask;
 
@@ -363,7 +362,7 @@ namespace FISIR{
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
 			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
-			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals, submitReady] = *result;
+			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals] = *result;
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
@@ -591,7 +590,6 @@ namespace FISIR{
 							signals = std::vector<RHISemaphore*>(info.signals, info.signals + info.signalcount);
 							free(info.signals);
 						}
-						submitReady = info.submitReady;
 						commandsEndTag.store(true, std::memory_order_release);
 						break;
 					}

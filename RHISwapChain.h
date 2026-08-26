@@ -16,7 +16,7 @@ namespace FISIR {
 		RHISemaphore* avaliable{ nullptr };
 		RHISemaphore* renderFinish{ nullptr };
 		RHIFence* finishFence{ nullptr };
-		uint32_t imageIndex {0};
+		uint32_t imageIndex { UINT32_MAX };
 	};
 
 

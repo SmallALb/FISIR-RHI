@@ -208,7 +208,7 @@ namespace FISIR{
 
 	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType,
 		const std::vector<RHISemaphore*>& SignalSemaphores, 
-		const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
+		const std::vector<RHISemaphore*>& WaitSemaphores, VkFence Fence) {
 		switch (poolType) {
 			case CmdType::Render:
 				mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);

@@ -9,6 +9,7 @@
 	struct VkDevice_T;
 	struct VkPhysicalDeviceDescriptorHeapPropertiesEXT;
 	struct VkSurfaceKHR_T;
+	struct VkFence_T;
 	using VkDeviceSize = uint64_t;
 namespace FISIR {
 	struct DescriptorSizes {
@@ -86,7 +87,7 @@ namespace FISIR {
 
 		TextureLayout getTextureLayout(RHITexture* texture);
 
-		void submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence = nullptr);
+		void submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, VkFence_T* Fence = nullptr);
 
 		// 设备丢失：vkQueueSubmit 返回 VK_ERROR_DEVICE_LOST 时由 VulkanQueue 置位，
 		// RHI/资源/Prepare 线程据此停止提交与分配，避免在已丢失设备上无界分配命令缓冲。

@@ -34,7 +34,7 @@ namespace FISIR{
 		delete mData;
 	}
 
-	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, RHIFence* Fence) {
+	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, VkFence Fence) {
 		// ��֤ queue �Ƿ���Ч
 		if (mData->mQue == VK_NULL_HANDLE) {
 			Error("Queue is VK_NULL_HANDLE!");
@@ -74,9 +74,9 @@ namespace FISIR{
 			.pSignalSemaphores = (semaphoresToSignal.empty()) ? nullptr : semaphoresToSignal.data(),
 		};
 
-		VkResult submitRes = vkQueueSubmit(mData->mQue, 1, &info, Fence ? static_cast<VkFence>(Fence->getFenceHandle()) : VK_NULL_HANDLE);
+		VkResult submitRes = vkQueueSubmit(mData->mQue, 1, &info, Fence ? Fence : VK_NULL_HANDLE);
 		if (submitRes != VK_SUCCESS) {
-			Error("Failed to submit command buffer to queue! VkResult={}, fence : 0x{:x}", (int)submitRes, (uint64_t)(Fence ? Fence->getFenceHandle() : 0));
+			Error("Failed to submit command buffer to queue! VkResult={}, fence : 0x{:x}", (int)submitRes, (uint64_t)Fence);
 			if (submitRes == VK_ERROR_DEVICE_LOST) {
 				mDevice->markDeviceLost();
 				Error("VK_ERROR_DEVICE_LOST: device lost, stopping RHI submission to prevent memory explosion.");

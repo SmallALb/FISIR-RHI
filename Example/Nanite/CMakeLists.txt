@@ -72,3 +72,12 @@ add_custom_command(TARGET Nanite POST_BUILD
         "$<TARGET_FILE_DIR:Nanite>/Res"
     COMMENT "Copying Res/ → Nanite output"
 )
+
+# ── Copy HLSL shader sources to output directory ─────────────────
+# Runtime code loads shaders via relative paths like "Shader/ClusterSelection.hlsl".
+add_custom_command(TARGET Nanite POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/Shader"
+        "$<TARGET_FILE_DIR:Nanite>/Shader"
+    COMMENT "Copying Shader/ → Nanite output"
+)

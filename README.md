@@ -43,7 +43,9 @@ cd build/bin/Release && ./TextureCube.exe
 #### 性能基准
 
 > **测试环境**：Intel Core i5-13500HX（14C/20T）· 32 GB DDR5 · NVIDIA GeForce RTX 4060 Laptop（8 GB）· Windows 11
+
 > **构建**：MSVC（cl 14.51）+ Ninja，Debug 与 Release 各测一次
+
 > **负载**：TextureCube 示例，离屏渲染 1024×1024，每帧 2 个渲染通道（离屏 + 呈现），旋转立方体
 
 ##### 使用方式
@@ -84,7 +86,8 @@ TextureCube.exe -Test -DC 10 -DC 100 -DC 1000 -Frames 2000 -Warmup 60
 > **测量口径**：仅 CPU 侧帧时间（含 acquire 等待与提交确认），当前 RHI 尚未暴露 GPU 时间戳查询，故不含纯 GPU 耗时；Mailbox 无垂直同步，FPS 为原始吞吐而非刷新率锁定值。以上数据为固定测试环境的相对值，用于横向对比构建/调用量，不代表绝对吞吐。
 
 #### 目前状态和工作
- - 现已完成 Vulkan 后端的大部分功能，D3D12 后端还未开始设计编写
+
+ - 现已完成 Vulkan 后端的大部分功能（含计算管线，compute dispatch 已用于 GPU 剔除），D3D12 后端还未开始设计编写
  - PSO缓存管理，以及一些资源的管理方式任然需要进一步的优化和简化
  - 对于着色器目前只支持使用DXC编译hlsl为SPIR-V，后续将会将其修改为slang着色器语言
  - 此渲染接口目前只能在windows平台中编译运行，更多平台的兼容和测试仍在开发中

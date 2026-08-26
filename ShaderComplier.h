@@ -1,6 +1,8 @@
 #pragma once
 
 #include <mutex>
+#include <string>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -41,6 +43,23 @@ namespace FISIR {
         IDxcLibrary* dxcLibrary = nullptr;
         IDxcCompiler* dxcCompiler = nullptr;
     };
+
+    // 将 UTF-8 字节串转换为 UTF-16 宽字符串。
+    // 磁盘上的 .hlsl 文件通常以 UTF-8 编码，而 DXC 的编译入口需要 UTF-16 源。
+    inline std::wstring UTF8ToWide(const char* data, size_t size) {
+#ifdef _WIN32
+        if (size == 0) return {};
+        const int len = MultiByteToWideChar(CP_UTF8, 0, data, (int)size, nullptr, 0);
+        std::wstring result(len, L'\0');
+        if (len > 0) MultiByteToWideChar(CP_UTF8, 0, data, (int)size, result.data(), len);
+        return result;
+#else
+        std::wstring result;
+        result.reserve(size);
+        for (size_t i = 0; i < size; ++i) result.push_back((wchar_t)(unsigned char)data[i]);
+        return result;
+#endif
+    }
 
     class ShaderComplier {
     public:
@@ -116,6 +135,7 @@ namespace FISIR {
             std::vector<LPCWSTR> args{
                 L"-E", entryPoint,
                 L"-T", target, L"-spirv",
+                L"-Vd"
             };
             if (RenderAPI == FISIR::RHIAPI::Vulkan) args.push_back(L"-fspv-debug=vulkan-with-source");
 
@@ -149,6 +169,14 @@ namespace FISIR {
                 pCompiledShader->Release();
                 Debug("Shader compiled successfully");
             }
+        }
+
+        // 便捷重载：接受 UTF-8 源（例如从 .hlsl 文件读取的内容），内部转换为 UTF-16 后编译。
+        void compileShader(const char* data, size_t dataSize, const char* entryPoint, const char* target) {
+            const std::wstring wSource = UTF8ToWide(data, dataSize);
+            const std::wstring wEntry  = UTF8ToWide(entryPoint, strlen(entryPoint));
+            const std::wstring wTarget = UTF8ToWide(target, strlen(target));
+            compileShader(wSource.data(), wSource.size() * sizeof(wchar_t), wEntry.c_str(), wTarget.c_str());
         }
 
         unsigned char* getShaderData() const { return shaderData; }

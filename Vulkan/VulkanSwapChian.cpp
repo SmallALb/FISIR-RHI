@@ -86,8 +86,8 @@ namespace FISIR {
             ShaderComplier vsCompiler, psCompiler;
             vsCompiler.compileShader(FullscreenVS, wcslen(FullscreenVS) * sizeof(wchar_t), L"main", L"vs_6_0");
             psCompiler.compileShader(FullscreenPS, wcslen(FullscreenPS) * sizeof(wchar_t), L"main", L"ps_6_0");
-            VShader = usingRHI->RHICreateShader(ShaderTYP::__VERTEXSHADER__, vsCompiler.getShaderData(), vsCompiler.getShaderDataSize());
-            FShader = usingRHI->RHICreateShader(ShaderTYP::__FRAGMENTSHADER__, psCompiler.getShaderData(), psCompiler.getShaderDataSize());
+            VShader = usingRHI->RHICreateShader(ShaderTYP::__VERTEXSHADER__, "main", vsCompiler.getShaderData(), vsCompiler.getShaderDataSize());
+            FShader = usingRHI->RHICreateShader(ShaderTYP::__FRAGMENTSHADER__, "main", psCompiler.getShaderData(), psCompiler.getShaderDataSize());
         }
 
         if (!PresentQueue) PresentQueue = new VulkanQueue(mDevice, mPresentQueFamilyIndex, "SwapChainPresentQue");
@@ -114,7 +114,7 @@ namespace FISIR {
         CurrentFrameID %= SWAPCHAIN_SLOT_COUNT;
 
         auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
-        finishFence->wait();
+        if (index != UINT32_MAX) finishFence->wait();
 
         auto res = vkAcquireNextImageKHR(
             mDevice->getLogicalDevice(),
@@ -296,7 +296,8 @@ namespace FISIR {
             auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[i];
             if (!avaliable)   avaliable   = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
             if (!renderFinish) renderFinish = usingRHI->RHICreateSemaphore("SlotFinishSemphore");
-            if (!finishFence) finishFence = usingRHI->RHICreateFence(true, "FinishFence");
+            if (!finishFence) finishFence = usingRHI->RHICreateFence(false, "FinishFence");
+            index = UINT32_MAX;
         }
 
         // Per-image semaphores & present fences

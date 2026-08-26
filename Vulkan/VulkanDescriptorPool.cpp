@@ -90,6 +90,18 @@ namespace FISIR{
 		}
 	}
 
+	static VkDescriptorType ChoiceDescriptorType(RHIDescriptorTyp typ) {
+		switch (typ) {
+		case RHIDescriptorTyp::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
+		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		case RHIDescriptorTyp::RBuffer:
+		case RHIDescriptorTyp::RWBuffer: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		}
+		return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	}
+
 	PFN_vkWriteResourceDescriptorsEXT fpWriteResourceDescriptors{ nullptr };
 	PFN_vkWriteSamplerDescriptorsEXT fpWriteSamplerDescriptors {nullptr};
 	PFN_vkCmdBindResourceHeapEXT fpCmdBindResourceHeap = {nullptr};
@@ -236,7 +248,7 @@ namespace FISIR{
 			//--create buffer
 			BufferInfo info{
 				.size = totalSize,
-				.bufferlayout = BufferLayout::StorageBuffer,
+				.bufferlayout = BufferLayout::UndefinedBuffer, // 描述符堆宿主缓冲，非着色器直接访问
 				.memoryType = (MemType)(MemTypHostVisable | MemTypHostCoherent),
 			};
 
@@ -457,7 +469,7 @@ namespace FISIR{
 		for (const auto& v : info.Bindings) {
 			VkDescriptorSetLayoutBinding layoutBinding{
 				.binding = v.binding,
-				.descriptorType = static_cast<VkDescriptorType>(v.descriptorTyp),
+				.descriptorType = ChoiceDescriptorType(v.descriptorTyp),
 				.descriptorCount = v.count,
 				.stageFlags = ChoiceDescriptorStage(v.usingStage)
 			};
