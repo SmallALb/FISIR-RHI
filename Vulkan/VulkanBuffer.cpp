@@ -48,12 +48,35 @@ namespace FISIR {
 		mData->stride = info.stride;
 		mData->bufferLayout = info.bufferlayout;
 		mData->memoryType = info.memoryType;
+
+		// 跨队列族共享缓冲：列出全部（去重后的）队列族索引，允许 compute/graphics/transfer
+		// 直接读写而无需显式所有权转移（release/acquire）。仅当用户显式开启时才使用 CONCURRENT，
+		// 默认仍为 EXCLUSIVE 以保留既有行为。
+		uint32_t concurrentFamilies[3] = { 0, 0, 0 };
+		uint32_t concurrentFamilyCount = 0;
+		if (info.concurrentSharing) {
+			const uint32_t families[3] = {
+				mDevice->getGraphicQueue()->getFamilyIndex(),
+				mDevice->getComputeQueue()->getFamilyIndex(),
+				mDevice->getTransferQueue()->getFamilyIndex()
+			};
+			for (uint32_t i = 0; i < 3; ++i) {
+				bool dup = false;
+				for (uint32_t j = 0; j < concurrentFamilyCount; ++j) {
+					if (concurrentFamilies[j] == families[i]) { dup = true; break; }
+				}
+				if (!dup) concurrentFamilies[concurrentFamilyCount++] = families[i];
+			}
+		}
+
 		VkBufferCreateInfo bufferInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = info.size,
-			.usage = (Usage ? (VkBufferUsageFlags)Usage : getBufferUsage(info.bufferlayout)) | 
+			.usage = (Usage ? (VkBufferUsageFlags)Usage : getBufferUsage(info.bufferlayout)) |
 					(mDevice->isDescriptorHeapSupported() ? (VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) : 0),
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+			.sharingMode = info.concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+			.queueFamilyIndexCount = info.concurrentSharing ? concurrentFamilyCount : 0,
+			.pQueueFamilyIndices = info.concurrentSharing ? concurrentFamilies : nullptr
 		};
 		vkCreateBuffer(mDevice->getLogicalDevice(), &bufferInfo, nullptr, &mData->buffer);
 

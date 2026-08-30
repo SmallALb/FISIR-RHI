@@ -71,6 +71,13 @@ HierarchyNodeSlice GetHierarchyNodeSlice(ByteAddressBuffer hierarchyNodeBuffer, 
 
 [numthreads(1, 1, 1)]
 void mainCS(uint3 dispatchThreadID : SV_DispatchThreadID) {
-	HierarchyNodeSlice hierarchyNodeSlice = GetHierarchyNodeSlice(clusterSelectionBuffer, 0, 1);
-	clusterDataBuffer.Store3(0, uint3(hierarchyNodeSlice.ChildStartReference, hierarchyNodeSlice.NumChildren, hierarchyNodeSlice.bLeaf ? 1 : 0));
+	uint offset = 0u;
+	for (uint i=0; i<21; ++i) {
+		HierarchyNodeSlice hierarchyNodeSlice = GetHierarchyNodeSlice(clusterSelectionBuffer, i, 0);
+		uint isLeaf = (hierarchyNodeSlice.NumChildren == 0) ? 1u : 2u;
+		clusterDataBuffer.Store4(offset*16, uint4(i, isLeaf, 0u, 0u));
+	  offset++;
+		clusterDataBuffer.Store4(offset*16, uint4(hierarchyNodeSlice.NumChildren, 0u, 0u, 0u));
+		offset++;
+	}
 }

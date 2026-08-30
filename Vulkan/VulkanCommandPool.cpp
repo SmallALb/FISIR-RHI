@@ -1,5 +1,6 @@
 #include "VulkanCommandPool.h"
 
+#include <cstdio>
 #include <mutex>
 #include <queue>
 #include <unordered_map>
@@ -8,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../Log/Logger.h"
+#include "VulkanDebugNameSet.h"
 #include "VulkanDescriptorPool.h"
 #include "VulkanDevice.h"
 #include "VulkanFencePool.h"
@@ -86,10 +88,33 @@ namespace FISIR{
 			return VK_ACCESS_TRANSFER_READ_BIT;
 		case ResourceAccess::TransferDst:
 			return VK_ACCESS_TRANSFER_WRITE_BIT;
+		case ResourceAccess::ColorAttachmentWrite:
+			return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		default:
 			return VK_ACCESS_NONE;
 		}
 
+	}
+
+	static VkPipelineStageFlags getVulkanStageFlags(RHIUsingStage stage) {
+		switch (stage) {
+		case RHIUsingStage::VertexShaderStage:
+			return VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		case RHIUsingStage::FragmentShaderStage:
+			return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		case RHIUsingStage::ComputeShaderStage:
+			return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		case RHIUsingStage::PipelineTransferStage:
+			return VK_PIPELINE_STAGE_TRANSFER_BIT;
+		case RHIUsingStage::ColorAttachmentOutputStage:
+			return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+		case RHIUsingStage::NoneStage:
+			return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		default:
+			Warn("Unknown RHIUsingStage: %d, falling back to NONE", (int)stage);
+			return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		}
 	}
 
 	static uint32_t getQueFamilyIndex(VulkanDevice* device, CmdType poolType) {
@@ -106,6 +131,26 @@ namespace FISIR{
 		if (!queue) return 0;
 		return queue->getFamilyIndex();
 	}
+
+#ifdef _DEBUG
+	static const char* getCmdTypeName(CmdType type) {
+		switch (type) {
+		case CmdType::Render:   return "Render";
+		case CmdType::Compute:  return "Compute";
+		case CmdType::Transfer: return "Transfer";
+		default:                return "None";
+		}
+	}
+
+	static void setCommandBufferName(VulkanDevice* device, VkCommandBuffer cb, CmdType poolType, CommandBufferType level, size_t index) {
+		char name[64];
+		snprintf(name, sizeof(name), "CmdBuffer_%s_%s_%zu",
+			getCmdTypeName(poolType),
+			level == _Primary_ ? "Primary" : "Secondary",
+			index);
+		setVkObjectName(device->getLogicalDevice(), (uint64_t)cb, VK_OBJECT_TYPE_COMMAND_BUFFER, name);
+	}
+#endif // _DEBUG
 
 	struct __VKCommandPoolData {
 		VkCommandPool mPool;
@@ -137,12 +182,20 @@ namespace FISIR{
 		};
 		mData->PrimaryCommandBufferPool.push_back(new VkCommandBuffer[INITIAL_PRIMARY_COMMAND_BUFFER_COUNT]);
 		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->PrimaryCommandBufferPool[0]);
-
+#ifdef _DEBUG
+		for (uint32_t i = 0; i < INITIAL_PRIMARY_COMMAND_BUFFER_COUNT; ++i) {
+			setCommandBufferName(mDevice, mData->PrimaryCommandBufferPool[0][i], mType, _Primary_, i);
+		}
+#endif
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
 		allocInfo.commandBufferCount = INITIAL_SECONDARY_COMMAND_BUFFER_COUNT;
 		mData->SecondaryCommandBufferPool.push_back(new VkCommandBuffer[INITIAL_SECONDARY_COMMAND_BUFFER_COUNT]);
 		vkAllocateCommandBuffers(mDevice->getLogicalDevice(), &allocInfo, mData->SecondaryCommandBufferPool[0]);
-	
+#ifdef _DEBUG
+		for (uint32_t i = 0; i < INITIAL_SECONDARY_COMMAND_BUFFER_COUNT; ++i) {
+			setCommandBufferName(mDevice, mData->SecondaryCommandBufferPool[0][i], mType, _Secondary_, i);
+		}
+#endif
 		for (size_t i = 0; i < mData->PrimaryCommandBufferPool.size(); ++i) {
 			mData->FreePrimaryCommandBuffers.push(i);
 		}
@@ -175,10 +228,16 @@ namespace FISIR{
 		size_t index = SIZE_MAX;
 
 
-		if (Que.pop(index)) return CBInfo(Pool[index/Count][index%Count], cbType, mPoolType, this, index);
+		if (Que.pop(index)) {
+			//vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
+			return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
+		}
 
 		std::lock_guard<std::mutex> lock(mCommandBufferMutex);
-		if (Que.pop(index)) return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
+		if (Que.pop(index)) {
+			//vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
+			return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
+		}
 		
 		VkCommandBufferAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -195,6 +254,11 @@ namespace FISIR{
 		Pool.push_back(newCB);
 		size_t NewPageBegin = Count * (Pool.size() - 1);
 		for (int i= NewPageBegin+1; i< NewPageBegin+Count; i++) Que.push(i);
+#ifdef _DEBUG
+		for (uint32_t i = 0; i < Count; ++i) {
+			setCommandBufferName(mDevice, newCB[i], mPoolType, cbType, NewPageBegin + i);
+		}
+#endif // _DEBUG
 
 		index = NewPageBegin;
 		return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this , index);
@@ -206,7 +270,6 @@ namespace FISIR{
 			Error("Attempting to release a command buffer that does not belong to this pool!");
 			return;
 		}
-		 //vkResetCommandBuffer(cbInfo.buffer, 0);
 		(cbInfo.type == _Primary_) ? 
 			mData->FreePrimaryCommandBuffers.push(cbInfo.index) : 
 			mData->FreeSecondaryCommandBuffers.push(cbInfo.index);
@@ -294,7 +357,6 @@ namespace FISIR{
 		VulkanCommandPool* res = nullptr;
 
 		if (Que.pop(res)) {
-
 			return res;
 		}
 
@@ -310,12 +372,7 @@ namespace FISIR{
 		return res;
 	}
 
-	VulkanCommandPool* VulkanCommandPoolManager::getCommandPool(uint32_t FamilyIndex) {
-		std::lock_guard<std::mutex> lock(MapMutex);
-		if (FamilyIndexToPool.contains(FamilyIndex)) return FamilyIndexToPool[FamilyIndex];
-		FamilyIndexToPool[FamilyIndex] = new VulkanCommandPool(mDevice, CmdType::None, FamilyIndex);
-		return FamilyIndexToPool[FamilyIndex];
-	}
+
 
 	void VulkanCommandPoolManager::reBackCommandPool(VulkanCommandPool* pool) {
 		if (!pool) return;
@@ -361,8 +418,8 @@ namespace FISIR{
 			auto& [batchInfo, result, finishCount] = exeTask;
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
-			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
 			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals] = *result;
+			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
@@ -486,16 +543,54 @@ namespace FISIR{
 					case RHICommandT::TransferTexture: {
 						TextureTransition_CmdInfo info;
 						batchInfo.getBatchData(info);
+
+						uint32_t curFamily = getQueFamilyIndex(mDevice, batchInfo.page->Pool->cmdType);
+						uint32_t srcFamily = VK_QUEUE_FAMILY_IGNORED;
+						uint32_t dstFamily = VK_QUEUE_FAMILY_IGNORED;
+						VkAccessFlags srcAccess = getVulkanAccessFlags(info.waitForAccessDone);
+						VkAccessFlags dstAccess = getVulkanAccessFlags(info.beginAccessWhenDone);
+						VkPipelineStageFlags srcStage = getVulkanStageFlags(info.waitForStageDone);
+						VkPipelineStageFlags dstStage = getVulkanStageFlags(info.beginStageWhenDone);
+
+						if (info.ResourceQueue != CmdType::None) {
+							if (info.ResourceIsTransferOut) {
+								// release（转出）：从当前队列移交资源到 ResourceQueue 队列。
+								// dst 侧工作尚未发生，release 的 dstAccess 必须为 0。
+								srcFamily = curFamily;
+								dstFamily = getQueFamilyIndex(mDevice, info.ResourceQueue);
+								dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+								dstAccess = 0;
+							} else {
+								// acquire（转入）：从 ResourceQueue 队列接管资源到当前队列。
+								// src 侧工作在另一队列完成，本队列（目标队列）仅能见到 TOP_OF_PIPE，
+								// 且 acquire 的 srcAccess 必须为 0。
+								srcFamily = getQueFamilyIndex(mDevice, info.ResourceQueue);
+								dstFamily = curFamily;
+								srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+								srcAccess = 0;
+							}
+						}
+
 						std::vector<VkImageMemoryBarrier> barriers(info.count);
 						for (size_t i = 0; i < info.count; ++i) {
+							// oldLayout 优先级：调用者显式传入 > 本批内最新 transition > 纹理追踪值。
+							// 显式传入优先，因为 renderpass 的 finalLayout 不回写纹理追踪值，
+							// 离屏渲染目标的追踪值可能滞后于实际布局。
+							TextureLayout oldLayout = info.oldLayout;
+							if (oldLayout == TextureLayout::Undefined) {
+								auto it = cmdInfo.QuoteResources.find(info.texture[i]);
+								if (it != cmdInfo.QuoteResources.end()) oldLayout = it->second.layout;
+								else oldLayout = info.texture[i]->getCurrentLayout();
+							}
+
 							barriers[i] = {
 								.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-								.srcAccessMask = getVulkanAccessFlags(info.waitForAccessDone),
-								.dstAccessMask = getVulkanAccessFlags(info.beginAccessWhenDone),
-								.oldLayout = getVulkanImageLayout(info.texture[i]->getCurrentLayout()),
+								.srcAccessMask = srcAccess,
+								.dstAccessMask = dstAccess,
+								.oldLayout = getVulkanImageLayout(oldLayout),
 								.newLayout = getVulkanImageLayout(info.newLayout),
-								.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-								.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+								.srcQueueFamilyIndex = srcFamily,
+								.dstQueueFamilyIndex = dstFamily,
 								.image = static_cast<VkImage>(info.texture[i]->getResourceAPIHandle()),
 								.subresourceRange = {
 									VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
@@ -505,8 +600,8 @@ namespace FISIR{
 						}
 						free(info.texture);
 						vkCmdPipelineBarrier(
-							cmdInfo.buffer, 
-							VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
+							cmdInfo.buffer,
+							srcStage, dstStage,
 							0, 0, nullptr, 0, nullptr, info.count, barriers.data()
 						);
 						break;
@@ -514,14 +609,39 @@ namespace FISIR{
 					case RHICommandT::TransferBuffer: {
 						BufferTransition_CmdInfo info;
 						batchInfo.getBatchData(info);
+
+						uint32_t curFamily = getQueFamilyIndex(mDevice, batchInfo.page->Pool->cmdType);
+						uint32_t srcFamily = VK_QUEUE_FAMILY_IGNORED;
+						uint32_t dstFamily = VK_QUEUE_FAMILY_IGNORED;
+						VkAccessFlags srcAccess = getVulkanAccessFlags(info.waitForAccessDone);
+						VkAccessFlags dstAccess = getVulkanAccessFlags(info.beginAccessWhenDone);
+						VkPipelineStageFlags srcStage = getVulkanStageFlags(info.waitForStageDone);
+						VkPipelineStageFlags dstStage = getVulkanStageFlags(info.beginStageWhenDone);
+
+						if (info.ResourceQueue != CmdType::None) {
+							if (info.ResourceIsTransferOut) {
+								// release（转出）：从当前队列移交资源到 ResourceQueue 队列。
+								srcFamily = curFamily;
+								dstFamily = getQueFamilyIndex(mDevice, info.ResourceQueue);
+								dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+								dstAccess = 0;
+							} else {
+								// acquire（转入）：从 ResourceQueue 队列接管资源到当前队列。
+								srcFamily = getQueFamilyIndex(mDevice, info.ResourceQueue);
+								dstFamily = curFamily;
+								srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+								srcAccess = 0;
+							}
+						}
+
 						std::vector<VkBufferMemoryBarrier> barriers(info.count);
 						for (size_t i = 0; i < info.count; ++i) {
 							barriers[i] = {
 								.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-								.srcAccessMask = getVulkanAccessFlags(info.waitForAccessDone),
-								.dstAccessMask = getVulkanAccessFlags(info.beginAccessWhenDone),
-								.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-								.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+								.srcAccessMask = srcAccess,
+								.dstAccessMask = dstAccess,
+								.srcQueueFamilyIndex = srcFamily,
+								.dstQueueFamilyIndex = dstFamily,
 								.buffer = static_cast<VkBuffer>(info.buffer[i]->getResourceAPIHandle()),
 								.offset = 0,
 								.size = info.buffer[i]->getSize()
@@ -530,8 +650,8 @@ namespace FISIR{
 						}
 						free(info.buffer);
 						vkCmdPipelineBarrier(
-							cmdInfo.buffer, 
-							VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
+							cmdInfo.buffer,
+							srcStage, dstStage,
 							0, 0, nullptr, info.count, barriers.data(), 0, nullptr
 						);
 						break;
@@ -570,6 +690,29 @@ namespace FISIR{
 							.imageExtent = {info.dstSize.width, info.dstSize.height, info.dstSize.depth}
 						};
 						vkCmdCopyBufferToImage(cmdInfo.buffer, srcBuffer, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+						break;
+					}
+					case RHICommandT::CopyImageToBuffer: {
+						CopyImageToBuffer_CmdInfo info;
+						batchInfo.getBatchData(info);
+						VkImage srcImage = static_cast<VkImage>(info.src->getResourceAPIHandle());
+						VkBuffer dstBuffer = static_cast<VkBuffer>(info.dst->getResourceAPIHandle());
+						// bufferRowLength / bufferImageHeight = 0 表示紧密打包（tightly packed），
+						// 行距 = imageExtent.width，对于 RGBA_8（4 字节）天然满足 4 字节对齐。
+						VkBufferImageCopy region{
+							.bufferOffset = info.dstOffset,
+							.bufferRowLength = 0,
+							.bufferImageHeight = 0,
+							.imageSubresource = {
+								.aspectMask = getVulkanAspectFlagsForUsing(info.src->getTextureUseFor()),
+								.mipLevel = info.mipLevel,
+								.baseArrayLayer = info.arrayindex,
+								.layerCount = info.arraycount,
+							},
+							.imageOffset = {info.srcOffset.x, info.srcOffset.y, info.srcOffset.z},
+							.imageExtent = {info.srcSize.width, info.srcSize.height, info.srcSize.depth}
+						};
+						vkCmdCopyImageToBuffer(cmdInfo.buffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstBuffer, 1, &region);
 						break;
 					}
 					case RHICommandT::Dispatch: {

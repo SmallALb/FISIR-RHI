@@ -132,7 +132,6 @@ namespace FISIR{
 
         VulkanCommandPool* getCommandPool(CmdType type);
 
-		VulkanCommandPool* getCommandPool(uint32_t FamilyIndex);
         
 		void reBackCommandPool(VulkanCommandPool* pool);
 
@@ -183,11 +182,12 @@ namespace FISIR{
 		~CommandExecuteThreadPool();
 
 		void pushCommandBatch(RingCommandPool::Page::BatchInfo batch, ExecuteResultData* result, std::atomic_uint32_t* finishCount);
+
 	private:
 		void ThreadLoop(uint32_t ThreadID);
 
 		LockFreeQue<ExecutedPageTask> NeedExecutePages;
-		
+
 
 		std::vector<std::thread> Threads;
 		std::atomic_bool StopTag {0};

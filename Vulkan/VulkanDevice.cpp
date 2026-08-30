@@ -121,6 +121,8 @@ namespace FISIR{
 			return VK_ACCESS_TRANSFER_READ_BIT;
 		case ResourceAccess::TransferDst:
 			return VK_ACCESS_TRANSFER_WRITE_BIT;
+		case ResourceAccess::ColorAttachmentWrite:
+			return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		default:
 			return (VkAccessFlagBits)0;
 		}
@@ -485,6 +487,9 @@ namespace FISIR{
 		mComputeQue = getVulkanQue(this, mData->CQueFamilyIndex, "Compute");
 		if (mData->TQueFamilyIndex == -1) mData->TQueFamilyIndex = mData->CQueFamilyIndex;
 		mTransferQueue = getVulkanQue(this, mData->TQueFamilyIndex, "Transfer");
+
+		Info("Queue families: Graphics={}, Compute={}, Transfer={}",
+			mData->GQueFamilyIndex, mData->CQueFamilyIndex, mData->TQueFamilyIndex);
 
 		if (!mGraphicQue) Error("Error GraphicQue is null");
 		if (!mComputeQue) Error("Error ComputeQue is null");

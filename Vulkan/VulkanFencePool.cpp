@@ -50,12 +50,14 @@ namespace FISIR{
 	
 	void VulkanFence::wait() {
 		if (fenceStatue.load(std::memory_order_acquire) == Statue::Signaled) return;
+		fenceStatue.store(Statue::Pendding);
 		waitFenceSubmited(UINT64_MAX);
 		auto res = fencePool->wait(mFence, UINT64_MAX);
-		if (res) fenceStatue.store(Statue::Signaled);
+		fenceStatue.store(res ? Statue::Signaled : Statue::UnSignaled, std::memory_order_release);
 	}
 	
 	bool VulkanFence::isSignaled() {
+		if (fenceStatue.load(std::memory_order_acquire) == Statue::Pendding) return false;
 		auto res = fencePool->isSignaled(mFence);
 		if (res) fenceStatue.store(Statue::Signaled);
 		return res;
@@ -63,6 +65,7 @@ namespace FISIR{
 
 	bool VulkanFence::waitFor(uint64_t timeout) {
 		auto start = std::chrono::steady_clock::now();
+		fenceStatue.store(Statue::Pendding);
 		auto resOfSubmit = waitFenceSubmited(timeout);
 		if (!resOfSubmit) return false;
 		
@@ -73,7 +76,8 @@ namespace FISIR{
 		}
 
 		auto res = fencePool->wait(mFence, timeout);
-		if (res) fenceStatue.store(Statue::Signaled);
+		fenceStatue.store(res ? Statue::Signaled : Statue::UnSignaled, std::memory_order_release);
+
 		return res;
 	}
 

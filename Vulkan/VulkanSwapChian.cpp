@@ -114,7 +114,9 @@ namespace FISIR {
         CurrentFrameID %= SWAPCHAIN_SLOT_COUNT;
 
         auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
-        if (index != UINT32_MAX) finishFence->wait();
+        if (index != UINT32_MAX) {
+            finishFence->wait();
+        }
 
         auto res = vkAcquireNextImageKHR(
             mDevice->getLogicalDevice(),
@@ -124,7 +126,6 @@ namespace FISIR {
             VK_NULL_HANDLE,
             &index
         );
-
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
             Error("SwapChain Out Of Data!");
             needReBuildSwapChain.store(1,std::memory_order_release);

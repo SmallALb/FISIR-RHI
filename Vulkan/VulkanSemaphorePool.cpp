@@ -7,6 +7,8 @@
 
 
 namespace FISIR {
+	extern void setVkObjectName(VkDevice device, uint64_t objectHandle, VkObjectType objectType, const char* name);
+
 	VulkanSemaphorePool::VulkanSemaphorePool(VulkanDevice* device, uint32_t initalSize) {
 		mDevice = device;
 		mSemaphores.reserve(initalSize);
@@ -53,8 +55,15 @@ namespace FISIR {
 	
 	VulkanSemaphore::VulkanSemaphore(VulkanDevice* device, const char* name) {
 		mDevice = device;
+		//VkSemaphoreTypeCreateInfo typeInfo{
+		//	.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+		//	.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+		//	.initialValue = 0,
+		//};
+
 		VkSemaphoreCreateInfo info {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			//.pNext = &typeInfo,
 			.flags = 0,
 		};
 		if (vkCreateSemaphore(mDevice->getLogicalDevice(), &info, nullptr, &mSemaphore) != VK_SUCCESS) {
@@ -73,13 +82,14 @@ namespace FISIR {
 	}
 
 	void VulkanSemaphore::wait() {
+		uint64_t waitValue = 1;
 		VkSemaphoreWaitInfo waitInfo{
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
 			.pNext = nullptr,
 			.flags = 0,
 			.semaphoreCount = 1,
 			.pSemaphores = &mSemaphore,
-			.pValues = nullptr
+			.pValues = &waitValue
 		};
 		vkWaitSemaphores(mDevice->getLogicalDevice(), &waitInfo, UINT64_MAX);
 	}
@@ -87,15 +97,8 @@ namespace FISIR {
 	void VulkanSemaphore::reName(const char* name) {
 #ifdef _DEBUG
 		mName = name;
-		VkDebugUtilsObjectNameInfoEXT nameInfo{
-			.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-			.pNext = nullptr,
-			.objectType = VK_OBJECT_TYPE_SEMAPHORE,
-			.objectHandle = (uint64_t)mSemaphore,
-			.pObjectName = mName ? mName : "Unnamed Semaphore"
-		};
+		setVkObjectName(mDevice->getLogicalDevice(), (uint64_t)mSemaphore, VK_OBJECT_TYPE_SEMAPHORE, name ? name : "Unnamed Fence");
 
-		//vkSetDebugUtilsObjectNameEXT(mDevice->getLogicalDevice(), &nameInfo);
 #endif
 	}
 }

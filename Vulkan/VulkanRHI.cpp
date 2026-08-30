@@ -513,11 +513,19 @@ namespace FISIR {
                     vkEndCommandBuffer(MCB.buffer);
                     if (fence || !waits.empty() || !signals.empty()) {
                         // 用户侧围栏负责主线程槽位复用同步（acquireGetImageInfoID 里会 reset）。
+                        
                         VulkanFence* userFence = fence ? static_cast<VulkanFence*>(fence) : nullptr;
-                        auto fencehandle = static_cast<VkFence>(userFence->getFenceHandle());
-                        //if (mFencePool->isSignaled(fencehandle)) vkResetFences(mDevice->getLogicalDevice(), 1, &fencehandle);
+                        
+                        VkFence fencehandle;
+                        if (userFence) {
+                            fencehandle  = static_cast<VkFence>(userFence->getFenceHandle());    
+                        }
+                        else {
+                            fencehandle = mFencePool->createFence(false);
+                        }
+                        if (mFencePool->isSignaled(fencehandle)) vkResetFences(mDevice->getLogicalDevice(), 1, &fencehandle);
                         mDevice->submitCommandBuffer({ MCB.buffer }, page->cmdtype, signals, waits, fencehandle);
-                        userFence->setSubmited();
+                        if (userFence) userFence->setSubmited();
                         SecondCBs.emplace_back(std::move(MCB));
                         PendingReleaseCBs.push(PendingReleaseInfo(fencehandle, std::move(SecondCBs), 0));
 

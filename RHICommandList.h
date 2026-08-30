@@ -77,6 +77,20 @@ namespace FISIR {
 			usingPage->WriteData(RHICommandT::BindResourceAndSamplerPack, info);
 		}
 
+		// 跨队列资源所有权转移（release/acquire）。compute 写 buffer 后、graphics 读之前，
+		// 需要在本队列（compute）释放所有权并在对端（render）接管，否则异队列族读取会挂起。
+		void TransitionBuffers(
+			class RHIBuffer** buffer, size_t count,
+			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
+			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone,
+			CmdType ResourceQueue = CmdType::None, bool ResourceIsTransferOut = false
+		) {
+			RHIBuffer** copyData = (RHIBuffer**)malloc(count * sizeof(RHIBuffer*));
+			memcpy(copyData, buffer, count * sizeof(RHIBuffer*));
+			BufferTransition_CmdInfo info {0, copyData, count, waitForAccessDone, beginAccessWhenDone, waitForStageDone, beginStageWhenDone, ResourceQueue, ResourceIsTransferOut};
+			usingPage->WriteData(RHICommandT::TransferBuffer, info);
+		}
+
 		CmdType getCommandListType() const { return CmdType::Compute; }
 	};
 
@@ -89,11 +103,12 @@ namespace FISIR {
 		void TransitionBuffers(
 			class RHIBuffer** buffer, size_t count,
 			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
-			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
+			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone,
+			CmdType ResourceQueue = CmdType::None, bool ResourceIsTransferOut = false
 		) {
 			RHIBuffer** copyData = (RHIBuffer**)malloc(count * sizeof(RHIBuffer*));
 			memcpy(copyData, buffer, count * sizeof(RHIBuffer*));
-			BufferTransition_CmdInfo info {0, copyData, count, waitForAccessDone, beginAccessWhenDone, waitForStageDone, beginStageWhenDone};
+			BufferTransition_CmdInfo info {0, copyData, count, waitForAccessDone, beginAccessWhenDone, waitForStageDone, beginStageWhenDone, ResourceQueue, ResourceIsTransferOut};
 			usingPage->WriteData(RHICommandT::TransferBuffer, info);
 		}
 
@@ -101,12 +116,13 @@ namespace FISIR {
 			class RHITexture** texture,size_t count,
 			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
 			TextureLayout oldLayout, TextureLayout newLayout,
-			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
+			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone,
+			CmdType ResourceQueue = CmdType::None, bool ResourceIsTransferOut = false
 
 		) {
 			RHITexture** copyData = (RHITexture**)malloc(count * sizeof(RHITexture*));
 			memcpy(copyData, texture, count * sizeof(RHITexture*));
-			TextureTransition_CmdInfo info {0, copyData, count, waitForAccessDone, beginAccessWhenDone, oldLayout, newLayout, waitForStageDone, beginStageWhenDone};
+			TextureTransition_CmdInfo info {0, copyData, count, waitForAccessDone, beginAccessWhenDone, oldLayout, newLayout, waitForStageDone, beginStageWhenDone, ResourceQueue, ResourceIsTransferOut};
 			usingPage->WriteData(RHICommandT::TransferTexture, info);
 		}
 
@@ -118,6 +134,11 @@ namespace FISIR {
 		void CopyToTexture(RHIBuffer* src, RHITexture* dst, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcoffset, TextureSize dstOffset, TextureSize size) {
 			CopyBufferToTexture_CmdInfo info{0, src, dst, miplevel, arrayindex, arraycount, srcoffset, dstOffset, size };
 			usingPage->WriteData(RHICommandT::CopyBufferToTexture, info);
+		}
+
+		void CopyImageToBuffer(RHITexture* src, RHIBuffer* dst, uint32_t mipLevel, uint32_t arrayindex, uint32_t arraycount, TextureSize srcOffset, uint64_t dstOffset, TextureSize size) {
+			CopyImageToBuffer_CmdInfo info{0, src, dst, mipLevel, arrayindex, arraycount, srcOffset, dstOffset, size };
+			usingPage->WriteData(RHICommandT::CopyImageToBuffer, info);
 		}
 
 
@@ -197,11 +218,12 @@ namespace FISIR {
 		void TransitionBuffers(
 			class RHIBuffer** buffer, size_t count,
 			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
-			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
+			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone,
+			CmdType ResourceQueue = CmdType::None, bool ResourceIsTransferOut = false
 		) {
 			RHIBuffer** copyData = (RHIBuffer**)malloc(count * sizeof(RHIBuffer*));
 			memcpy(copyData, buffer, count * sizeof(RHIBuffer*));
-			BufferTransition_CmdInfo info{ 0, copyData, count, waitForAccessDone, beginAccessWhenDone, waitForStageDone, beginStageWhenDone };
+			BufferTransition_CmdInfo info{ 0, copyData, count, waitForAccessDone, beginAccessWhenDone, waitForStageDone, beginStageWhenDone, ResourceQueue, ResourceIsTransferOut };
 			usingPage->WriteData(RHICommandT::TransferBuffer, info);
 		}
 
@@ -209,12 +231,13 @@ namespace FISIR {
 			class RHITexture** texture, size_t count,
 			ResourceAccess waitForAccessDone, ResourceAccess beginAccessWhenDone,
 			TextureLayout oldLayout, TextureLayout newLayout,
-			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone
+			RHIUsingStage waitForStageDone, RHIUsingStage beginStageWhenDone,
+			CmdType ResourceQueue = CmdType::None, bool ResourceIsTransferOut = false
 
 		) {
 			RHITexture** copyData = (RHITexture**)malloc(count * sizeof(RHITexture*));
 			memcpy(copyData, texture, count * sizeof(RHITexture*));
-			TextureTransition_CmdInfo info{ 0, copyData, count, waitForAccessDone, beginAccessWhenDone, oldLayout, newLayout, waitForStageDone, beginStageWhenDone };
+			TextureTransition_CmdInfo info{ 0, copyData, count, waitForAccessDone, beginAccessWhenDone, oldLayout, newLayout, waitForStageDone, beginStageWhenDone, ResourceQueue, ResourceIsTransferOut };
 			usingPage->WriteData(RHICommandT::TransferTexture, info);
 		}
 
@@ -226,6 +249,11 @@ namespace FISIR {
 		void CopyToTexture(RHIBuffer* src, RHITexture* dst, uint32_t miplevel, uint32_t arrayindex, uint32_t arraycount, uint64_t srcoffset, TextureSize dstOffset, TextureSize size) {
 			CopyBufferToTexture_CmdInfo info {0, src, dst, miplevel, arrayindex, arraycount, srcoffset, dstOffset, size};
 			usingPage->WriteData(RHICommandT::CopyBufferToTexture, info);
+		}
+
+		void CopyImageToBuffer(RHITexture* src, RHIBuffer* dst, uint32_t mipLevel, uint32_t arrayindex, uint32_t arraycount, TextureSize srcOffset, uint64_t dstOffset, TextureSize size) {
+			CopyImageToBuffer_CmdInfo info {0, src, dst, mipLevel, arrayindex, arraycount, srcOffset, dstOffset, size};
+			usingPage->WriteData(RHICommandT::CopyImageToBuffer, info);
 		}
 
 

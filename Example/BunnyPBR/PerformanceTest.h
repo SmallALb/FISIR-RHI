@@ -1,9 +1,12 @@
 #pragma once
 
-// TextureCube 性能测试模块（header-only）
+// BunnyPBR 性能测试模块（header-only）
 // 通过 main 参数 `-Test` 启用，测试结束后导出：
-//   - PerfReport.md      配置信息 + 常规性能统计（帧时间 / FPS / 百分位 / 分布）
-//   - PerfFrameTimes.csv 逐帧原始耗时，便于外部工具进一步分析
+//   - PerfReport_C{count}.md      配置信息 + 常规性能统计（帧时间 / FPS / 百分位 / 分布）
+//   - PerfFrameTimes_C{count}.csv 逐帧原始耗时，便于外部工具进一步分析
+//
+// 与 TextureCube 的差异：本样例的性能轴是「兔子数量」（实例数），由 `-C X` 指定，
+// 不再使用 TextureCube 的 `-DC`（绘制调用数）/ `-INS`（实例数）两个独立维度。
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -19,20 +22,18 @@ namespace FISIR {
 
     // 测试配置（最终写入报告的配置信息部分）
     struct PerfConfig {
-        uint32_t offscreenWidth  = 0;
-        uint32_t offscreenHeight = 0;
-        uint32_t swapchainWidth  = 0;
-        uint32_t swapchainHeight = 0;
-        uint32_t sampleCount     = 1;
-        std::string presentMode  = "Mailbox";
+        uint32_t bunnyCount        = 0;   // 兔子数量（实例数）
+        uint32_t trianglesPerBunny = 0;   // 每只兔子三角形数（含兜底球体）
+        uint32_t dispatchGroupX    = 0;   // compute dispatch 组数 X
+        uint32_t offscreenWidth    = 0;
+        uint32_t offscreenHeight   = 0;
+        uint32_t swapchainWidth    = 0;
+        uint32_t swapchainHeight   = 0;
+        std::string presentMode    = "Mailbox";
         uint32_t renderPassesPerFrame = 2;   // 离屏 + 呈现
-        uint32_t drawCallsPerFrame    = 2;   // DrawIndex + DrawPrimitive
-        uint32_t instancesPerDraw     = 1;   // 每次绘制的实例数
-        uint32_t verticesPerFrame     = 36;
-        uint32_t indicesPerFrame      = 36;
-        uint64_t totalFrames     = 0;
-        double   totalSeconds    = 0.0;
-        uint64_t warmupFrames    = 0;    // 已从统计中剔除的前 N 帧（预热）
+        uint64_t totalFrames       = 0;
+        double   totalSeconds      = 0.0;
+        uint64_t warmupFrames      = 0;    // 已从统计中剔除的前 N 帧（预热）
     };
 
     // 统计结果
@@ -107,24 +108,25 @@ namespace FISIR {
                                        const std::string& csvPath) {
         PerfStats s = computeStats(frameMs);
         size_t n = frameMs.size();
+        uint64_t totalTriangles = static_cast<uint64_t>(cfg.bunnyCount) * cfg.trianglesPerBunny;
 
         // ── Markdown 报告 ─────────────────────────────────────
         std::ofstream md(mdPath);
         if (md.is_open()) {
             md << std::fixed << std::setprecision(3);
-            md << "# FISIR-RHI TextureCube 性能测试报告\n\n";
+            md << "# FISIR-RHI BunnyPBR 性能测试报告\n\n";
 
             md << "## 1. 测试配置\n\n";
             md << "| 参数 | 值 |\n|---|---|\n";
             md << "| RHI 后端 | Vulkan (RHIVK.dll) |\n";
+            md << "| 兔子数量（实例数） | " << cfg.bunnyCount << " |\n";
+            md << "| 每只兔子三角形数 | " << cfg.trianglesPerBunny << " |\n";
+            md << "| 总三角形数 | " << totalTriangles << " |\n";
+            md << "| compute dispatch 组数 | " << cfg.dispatchGroupX << " |\n";
             md << "| 离屏渲染分辨率 | " << cfg.offscreenWidth << " x " << cfg.offscreenHeight << " |\n";
             md << "| 交换链分辨率 | " << cfg.swapchainWidth << " x " << cfg.swapchainHeight << " |\n";
-            md << "| 多重采样 (MSAA) | " << cfg.sampleCount << "x |\n";
             md << "| 呈现模式 | " << cfg.presentMode << " |\n";
             md << "| 每帧渲染通道 | " << cfg.renderPassesPerFrame << " (离屏 + 呈现) |\n";
-            md << "| 每帧绘制调用 | " << cfg.drawCallsPerFrame << " |\n";
-            md << "| 每绘制实例数 | " << cfg.instancesPerDraw << " |\n";
-            md << "| 每帧顶点 / 索引 | " << cfg.verticesPerFrame << " / " << cfg.indicesPerFrame << " |\n";
             md << "| 测试帧数 | " << cfg.totalFrames << " |\n";
             md << "| 预热剔除帧数 | " << cfg.warmupFrames << " |\n";
             md << "| 总耗时 | " << std::setprecision(3) << cfg.totalSeconds << " s |\n\n";
@@ -155,6 +157,7 @@ namespace FISIR {
             md << "\n";
             md << "> 注：MAILBOX 呈现模式无垂直同步，测得 FPS 为原始吞吐而非屏幕刷新率锁定值。\n";
             md << "> 当前 RHI 尚未暴露 GPU 时间戳查询，故仅统计 CPU 侧帧时间（含 acquire 等待与提交确认）。\n";
+            md << "> 仿真在每帧由 computeFence->wait() 串行化，故帧时间包含 CPU 等待 compute 完成的开销。\n";
             md.close();
         }
 

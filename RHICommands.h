@@ -26,6 +26,7 @@ namespace FISIR{
 		TransferBuffer,
 		CopyBufferToBuffer,
 		CopyBufferToTexture,
+		CopyImageToBuffer,
 		//Compute
 		Dispatch
 
@@ -148,6 +149,19 @@ namespace FISIR{
 
 	};
 
+	struct CopyImageToBuffer_CmdInfo {
+		RHICommandFlags Flags{ 0 };
+		RHITexture* src;
+		RHIBuffer* dst;
+		uint32_t mipLevel;
+		uint32_t arrayindex;
+		uint32_t arraycount;
+		TextureSize srcOffset{};
+		uint64_t dstOffset;
+		TextureSize srcSize;
+
+	};
+
 	struct BufferTransition_CmdInfo {
 		RHICommandFlags Flags{ 0 };
 		class RHIBuffer** buffer;
@@ -156,6 +170,10 @@ namespace FISIR{
 		ResourceAccess beginAccessWhenDone;
 		RHIUsingStage waitForStageDone;
 		RHIUsingStage beginStageWhenDone;
+		// 跨队列资源所有权转移：ResourceQueue 为对端队列，ResourceIsTransferOut=true 表示转出（release），
+		// false 表示转入（acquire）；ResourceQueue 为 None 时二者无效（同队列转换）。
+		CmdType ResourceQueue{ CmdType::None };
+		bool ResourceIsTransferOut{ false };
 
 	};
 
@@ -169,6 +187,10 @@ namespace FISIR{
 		TextureLayout newLayout;
 		RHIUsingStage waitForStageDone;
 		RHIUsingStage beginStageWhenDone;
+		// 跨队列资源所有权转移：ResourceQueue 为对端队列，ResourceIsTransferOut=true 表示转出（release），
+		// false 表示转入（acquire）；ResourceQueue 为 None 时二者无效（同队列转换）。
+		CmdType ResourceQueue{ CmdType::None };
+		bool ResourceIsTransferOut{ false };
 
 
 	};
@@ -202,17 +224,18 @@ namespace FISIR{
 		RHICommandFlags Flags{ 0 };
 	};
 
-	constexpr size_t MaxCMDPoolSize = 16 * 1024 * 1024;
-	constexpr size_t MaxCMDPageSize = 64 * 1024;
+	constexpr size_t MaxCMDPageSize  = 256 * 1024;                       // 256KB/页：单 render pass 可容纳约 9000 次 drawcall
+	constexpr size_t MaxCMDPageCount = 256;
+	constexpr size_t MaxCMDPoolSize  = MaxCMDPageCount * MaxCMDPageSize; // 64MB
 	constexpr size_t CmdPageMask = MaxCMDPageSize - 1;
-	constexpr size_t PageReverseSize = sizeof(RHICommandT) + sizeof(ReserveInput_CmdInfo);
+	constexpr size_t PageReverseSize = sizeof(RHICommandT) + sizeof(End_CmdInfo);
 
 	struct RingCommandPool {
 
 
 		RingCommandPool() {
 			Buffer = (uint8_t*)malloc(MaxCMDPoolSize);
-			for (size_t i = 0; i < 256; i++) {
+			for (size_t i = 0; i < MaxCMDPageCount; i++) {
 				Pages[i].Pool = this;
 				Pages[i].CommandPoolPtr = (Buffer + i * MaxCMDPageSize);
 				Pages[i].cmdtype = cmdType;
@@ -263,7 +286,7 @@ namespace FISIR{
 					return true;
 				}
 			};
-
+			 
 
 			RingCommandPool* Pool;
 			uint8_t* CommandPoolPtr{ nullptr };
@@ -298,7 +321,7 @@ namespace FISIR{
 				size_t sizeofData = sizeof(T);
 				size_t sizeofCMD = sizeofEnumT + sizeofData;
 				size_t currentSize = PageCurrentSize.load(std::memory_order_acquire);
-				if (currentSize - sizeofCMD < PageReverseSize || (currentSize - sizeofCMD == PageReverseSize && commandT != RHICommandT::End)) {
+				if (commandT != RHICommandT::End && currentSize < sizeofCMD + PageReverseSize) {
 					End_CmdInfo endInfo{ CommandOutOfPageData };
 					WriteData(RHICommandT::End, endInfo);
 					return;
@@ -359,7 +382,7 @@ namespace FISIR{
 
 
 		Page* acquireQue() {
-			size_t index = 256;
+			size_t index = MaxCMDPageCount;
 			FreePages.pop_wait(index);
 			Pages[index].cmdtype = cmdType;
 			return &Pages[index];
@@ -381,7 +404,7 @@ namespace FISIR{
 
 		uint8_t* Buffer{ nullptr };
 		CmdType cmdType;
-		std::array<Page, 256> Pages;
+		std::array<Page, MaxCMDPageCount> Pages;
 		LockFreeQue<size_t> FreePages;
 	};
 

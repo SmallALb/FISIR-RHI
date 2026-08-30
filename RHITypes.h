@@ -70,7 +70,7 @@ namespace FISIR {
         MemTypHostCached = 0x00000008,
     };
 
-    enum class ResourceAccess { Undefined, ShaderReadOnly, ShaderWriteOnly, ShaderReadWrite, TransferSrc, TransferDst };
+    enum class ResourceAccess { Undefined, ShaderReadOnly, ShaderWriteOnly, ShaderReadWrite, TransferSrc, TransferDst, ColorAttachmentWrite };
     
     enum class TextureLayout { Undefined, ColorAttachmentOptimal, DepthStencilAttachmentOptimal, ShaderReadOnlyOptimal, TransferSrcOptimal, TransferDstOptimal, Storage, Present };
     
@@ -96,7 +96,8 @@ namespace FISIR {
         PipelineVertexInputStage = 0x80,
         PipelineBeforeFragmentStage = 0x100,
         PipelineAfterFragmentStage = 0x200,
-        PipelineTransferStage = 0x400
+        PipelineTransferStage = 0x400,
+        ColorAttachmentOutputStage = 0x800
     };
 
     using RHIUsingStageFlags = uint32_t;
@@ -219,6 +220,9 @@ namespace FISIR {
         uint64_t            stride = 0;
         BufferLayoutFlags   bufferlayout = UndefinedBuffer;
         MemType             memoryType = MemType::MemTypNone;
+        // 跨队列族共享：true 时以 VK_SHARING_MODE_CONCURRENT 创建（列出所有队列族），
+        // 允许 compute/graphics 等异队列族直接读写而无需显式所有权转移。
+        bool                concurrentSharing = false;
     };
 
 

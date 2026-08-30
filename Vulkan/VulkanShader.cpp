@@ -18,7 +18,6 @@ namespace FISIR {
 		   .codeSize = size, //TODO: set code size
 		   .pCode = (const uint32_t*)shaderData //TODO: set code data
 		};
-
         vkCreateShaderModule(mDevice->getLogicalDevice(), &shaderModuleCreateInfo, nullptr, &mData->mShader);
     }
 
