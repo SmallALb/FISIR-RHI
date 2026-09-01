@@ -97,7 +97,8 @@ namespace FISIR {
         PipelineBeforeFragmentStage = 0x100,
         PipelineAfterFragmentStage = 0x200,
         PipelineTransferStage = 0x400,
-        ColorAttachmentOutputStage = 0x800
+        ColorAttachmentOutputStage = 0x800,
+        ALLStage = 0xFFF,
     };
 
     using RHIUsingStageFlags = uint32_t;
@@ -148,6 +149,11 @@ namespace FISIR {
 
         Count,
         CountBits = 2,
+    };
+
+    enum class FenceType {
+        Binary,
+        TimeLine,
     };
 
 

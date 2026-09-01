@@ -44,7 +44,7 @@ namespace FISIR {
 
 		virtual RHIFrameBuffer* RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) override;
 
-		virtual RHISemaphore* RHICreateSemaphore(const char* name) override;
+		virtual RHISemaphore* RHICreateSemaphore(const char* name, FenceType typ) override;
 
 		virtual RHISwapChain* RHIGetSwapChain(RHIViewport* viewport) override;
 

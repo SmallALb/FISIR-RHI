@@ -12,13 +12,20 @@ namespace FISIR{
 
 	class VulkanSemaphore : public RHISemaphore {
 	public:
-		VulkanSemaphore(VulkanDevice* device, const char* name = nullptr);
+		
+		VulkanSemaphore(VulkanDevice* device, const char* name = nullptr, FenceType type = FenceType::Binary);
 
 		~VulkanSemaphore();
 
+		virtual void setWaitingStage(RHIUsingStageFlags stage) override;
+
+		virtual RHIUsingStageFlags getWaitingStage() const override;
+
 		virtual void* getSemaphoreHandle() const override;
 
-		virtual void wait() override;
+		virtual bool wait(uint64_t timeout) override;
+
+		virtual FenceType getSemaphoreType() const override;
 
 #ifdef _DEBUG
 		const char* getName() const { return mName; }
@@ -26,9 +33,18 @@ namespace FISIR{
 #endif
 		void reName(const char* name);
 
+		uint64_t getNextSignalValue();
+
+		uint64_t getCurrentValue();
+
+		std::atomic_uint64_t nextSignalValue {1};
+		std::atomic_uint64_t currentValue{0};
+		std::atomic<uint64_t> nextWaitValue{ 1 };
 	private:
 		VulkanDevice* mDevice;
 		VkSemaphore_T* mSemaphore;
+		FenceType mSemaphoreType;
+		RHIUsingStageFlags mWaittingBit { ALLStage };
 #ifdef _DEBUG
 	const char* mName;
 #endif // _DEBUG
@@ -43,16 +59,17 @@ namespace FISIR{
 
 		~VulkanSemaphorePool();
 
-		VulkanSemaphore* createSemaphore(const char* name = nullptr);
+		VulkanSemaphore* createSemaphore(const char* name = nullptr, FenceType typ = FenceType::Binary);
 
 		void release(VulkanSemaphore* semaphore);
 
-		void reset();
 
 		private:
 			VulkanDevice* mDevice;
-			std::vector<VulkanSemaphore*> mSemaphores;
-			LockFreeQue<VulkanSemaphore*> mFreeSemaphores;
-			std::mutex mPoolMutex;
+			std::vector<VulkanSemaphore*> mBinarySemaphores;
+			std::vector<VulkanSemaphore*> mTimeLineSemaphores;
+			LockFreeQue<VulkanSemaphore*> mFreeBinarySemaphores;
+			LockFreeQue<VulkanSemaphore*> mFreeTimeLineSemaphores;
+			std::mutex mBinaryPoolMutex, mTimeLinePoolMutex;
 	};
 }

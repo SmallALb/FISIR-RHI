@@ -45,7 +45,7 @@ namespace FISIR {
 	
 		virtual RHIFrameBuffer* RHICreateFrameBuffer(uint32_t width, uint32_t height, const std::vector<RHITexture*>& textures, const RHIRenderPassInfo& info) = 0;
 		
-		virtual RHISemaphore* RHICreateSemaphore(const char* name = "Unnamed Semaphore") = 0;
+		virtual RHISemaphore* RHICreateSemaphore(const char* name = "Unnamed Semaphore", FenceType typ = FenceType::Binary) = 0;
 		
 		virtual void RHIDestroySemaphore(RHISemaphore* semaphore) = 0;
 

@@ -276,8 +276,8 @@ namespace FISIR {
         return res;
     }
 
-    RHISemaphore* VulkanRHI::RHICreateSemaphore(const char* name) {
-        return mSemaphorePool->createSemaphore(name);
+    RHISemaphore* VulkanRHI::RHICreateSemaphore(const char* name, FenceType typ) {
+        return mSemaphorePool->createSemaphore(name, typ);
     }
 
     RHISwapChain* VulkanRHI::RHIGetSwapChain(RHIViewport* viewport) {

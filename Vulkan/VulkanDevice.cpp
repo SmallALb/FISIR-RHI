@@ -299,8 +299,13 @@ namespace FISIR{
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
 
+		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeature {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+		};
+
 		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainMaintenance1Features {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+			.pNext = &timelineFeature
 		};
 
 		VkPhysicalDeviceBufferDeviceAddressFeatures supportedFeatures {
@@ -327,6 +332,12 @@ namespace FISIR{
 			swapchainMaintenance1Features.swapchainMaintenance1 == VK_TRUE;
 		mData->SwapchainMaintenance1Support = enableSwapchainMaintenance1;
 
+		const bool enableTimeLine = timelineFeature.timelineSemaphore;
+
+		if (!enableTimeLine) {
+			Warn("TimeLine Semaphore No Suport");
+		}
+
 		if (enableSwapchainMaintenance1) {
 			extensions.push_back(VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
 			extensions.push_back(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
@@ -347,7 +358,7 @@ namespace FISIR{
 
 			DescriptorHeapFeatures.pNext = &supportedFeatures;
 			supportedFeatures.bufferDeviceAddress = VK_TRUE;
-			supportedFeatures.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : nullptr;
+			supportedFeatures.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : (void*)&timelineFeature;
 			deviceCreateInfo.pNext = &DescriptorHeapFeatures;
 		}
 		else {

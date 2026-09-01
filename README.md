@@ -3,6 +3,7 @@
 # FISIR RHI
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) ![API](https://img.shields.io/badge/API-Vulkan%20%7C%20D3D12-orange.svg) ![C++](https://img.shields.io/badge/C++-20-00599C?logo=cplusplus&logoColor=white) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
+
 这是一个轻量级、跨API的渲染硬件接口，在尽量减少第三方依赖的同时，保证高效率渲染，高性能计算
 </div>
 

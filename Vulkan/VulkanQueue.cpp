@@ -8,11 +8,45 @@
 
 namespace FISIR{
 
+	static VkPipelineStageFlags getVkFlags(RHIUsingStageFlags stage) {
+		if (stage == RHIUsingStage::ALLStage) return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+		VkPipelineStageFlags res = 0;
+
+		if (stage & RHIUsingStage::VertexShaderStage)
+			res |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		if (stage & RHIUsingStage::FragmentShaderStage)
+			res |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		if (stage & RHIUsingStage::TessShaderStage)
+			res |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+		if (stage & RHIUsingStage::ComputeShaderStage)
+			res |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		if (stage & RHIUsingStage::GeometryShaderStage)
+			res |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+		if (stage & RHIUsingStage::PipelinTopStage)
+			res |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		if (stage & RHIUsingStage::PipelineBottomStage)
+			res |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		if (stage & RHIUsingStage::PipelineVertexInputStage)
+			res |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		if (stage & RHIUsingStage::PipelineBeforeFragmentStage)
+			res |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+		if (stage & RHIUsingStage::PipelineAfterFragmentStage)
+			res |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		if (stage & RHIUsingStage::PipelineTransferStage)
+			res |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+		if (stage & RHIUsingStage::ColorAttachmentOutputStage)
+			res |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+		return res;
+	}
+
 	static std::atomic_uint  QueIndexOfFamilyIndex[32] {0};
 
 	struct __VkQueData {
 		VkQueue mQue;
 	};
+
 
 	VulkanQueue::VulkanQueue(VulkanDevice* device, uint32_t FamilyIndex, const char* DebugName):
 	mFamilyIndex(FamilyIndex), mDevice(device) {
@@ -35,13 +69,11 @@ namespace FISIR{
 	}
 
 	void VulkanQueue::Submit(const std::vector<VkCommandBuffer_T*>& cmds, const std::vector<RHISemaphore*>& SignalSemaphores, const std::vector<RHISemaphore*>& WaitSemaphores, VkFence Fence) {
-		// ��֤ queue �Ƿ���Ч
 		if (mData->mQue == VK_NULL_HANDLE) {
 			Error("Queue is VK_NULL_HANDLE!");
 			return;
 		}
 
-		// ��֤ command buffer �Ƿ���Ч
 		// 允许空命令缓冲：用于「仅 signal 回收围栏」的空提交（围栏解耦）。
 		if (cmds.size() == 0 && Fence == nullptr) {
 			Error("Command buffers are null!");
@@ -49,22 +81,40 @@ namespace FISIR{
 		}
 
 		std::vector<VkSemaphore> semaphoresToWait, semaphoresToSignal;
+		std::vector<uint64_t> ToWaitsValues, ToSignalValues;
 		semaphoresToWait.reserve(SignalSemaphores.size());
 		semaphoresToSignal.reserve(WaitSemaphores.size());
 		std::vector<VkPipelineStageFlags> waitStages;
 		waitStages.reserve(WaitSemaphores.size());
 
-
-
-		for (auto& semaphore : SignalSemaphores) 
+		bool hasTimeLine = 0;
+		for (auto& semaphore : SignalSemaphores) {
 			semaphoresToSignal.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
+			hasTimeLine |= semaphore->getSemaphoreType() == FenceType::TimeLine;
+			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getNextSignalValue() : 1;
+			ToSignalValues.push_back(signalVal);
+		}
 		for (auto& semaphore : WaitSemaphores) {
 			semaphoresToWait.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
-			waitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+			hasTimeLine |= semaphore->getSemaphoreType() == FenceType::TimeLine;
+			waitStages.push_back(getVkFlags(semaphore->getWaitingStage()));
+			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getCurrentValue() : 1;
+			ToWaitsValues.push_back(signalVal);
 		}
+
+
+		VkTimelineSemaphoreSubmitInfo timelineinfo{
+			.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.pNext = nullptr,
+			.waitSemaphoreValueCount = static_cast<uint32_t>(ToWaitsValues.size()),
+			.pWaitSemaphoreValues = ToWaitsValues.data(),
+			.signalSemaphoreValueCount = static_cast<uint32_t>(ToSignalValues.size()),
+			.pSignalSemaphoreValues = ToSignalValues.data(),
+		};
 
 		VkSubmitInfo info{
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.pNext = hasTimeLine ? &timelineinfo : nullptr,
 			.waitSemaphoreCount = (uint32_t)semaphoresToWait.size(),
 			.pWaitSemaphores = (semaphoresToWait.empty()) ? nullptr : semaphoresToWait.data(),
 			.pWaitDstStageMask = (waitStages.empty()) ? nullptr : waitStages.data(),

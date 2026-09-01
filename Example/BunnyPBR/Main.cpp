@@ -363,10 +363,8 @@ int main(int argc, char* argv[]) {
     // 每槽一枚、与 swapchain 槽位一一对应，避免「上一帧 render 仍在 wait 时、下一帧 compute 已 signal」的
     // 跨队列族的 device→device 可见性必须靠信号量建立。
     FISIR::RHISemaphore* computeDoneSem[SLOT_COUNT];
-    FISIR::RHIFence* computeFence[SLOT_COUNT];
     for (uint32_t s = 0; s < SLOT_COUNT; ++s) {
-        computeFence[s] = rhi->RHICreateFence(false, (std::string("computeFence_") + std::to_string(s)).c_str());
-        computeDoneSem[s] = rhi->RHICreateSemaphore((std::string("computeDoneSem_") + std::to_string(s)).c_str());
+        computeDoneSem[s] = rhi->RHICreateSemaphore((std::string("computeDoneSem_") + std::to_string(s)).c_str(), FISIR::FenceType::TimeLine);
     }
 
     FISIR::ClearValue clearFrame{ .ColorClear = 1, .colorinfo = {0.05f, 0.06f, 0.09f, 1.0f}, .depthclearval = 1.0f };
@@ -449,7 +447,7 @@ int main(int argc, char* argv[]) {
         }
         auto testStart = std::chrono::steady_clock::now();
         auto fpsStart = testStart;
-        bool FrameAppare[SLOT_COUNT] = {0};
+        bool FrameAppared[SLOT_COUNT] = {0};
         while (true) {
             auto now = std::chrono::steady_clock::now();
 
@@ -477,9 +475,11 @@ int main(int argc, char* argv[]) {
                 cmdList.SetResourcePack(computePacks[infoid]);
                 cmdList.dispatch(groupCountX, 1, 1);
                 // signal computeDoneSem[infoid]：建立 compute 写 → render 读的跨队列内存依赖。
-                cmdList.End(computeFence[infoid], {}, {computeDoneSem[infoid]});
-                computeFence[infoid]->wait();      // 等 compute 完成
-                computeFence[infoid]->reset();
+                if (FrameAppared[infoid]) computeDoneSem[infoid]->wait();
+                cmdList.End(nullptr, {}, {computeDoneSem[infoid]});
+                FrameAppared[infoid] = 1;
+                //computeFence[infoid]->wait();      // 等 compute 完成
+                //computeFence[infoid]->reset();
             }
 
             // ── 渲染（离屏 PBR → 呈现）───────────────────────────
@@ -559,8 +559,7 @@ int main(int argc, char* argv[]) {
             FISIR::writePerformanceReport(cfg, measured, mdPath, csvPath);
             Info("Performance report exported: {} / {}", mdPath, csvPath);
         }
-        memset(FrameAppare, 0, 5*sizeof(bool));
-        for (auto fence : computeFence) rhi->RHIDestroyFence(fence);
+        memset(FrameAppared, 0, 5*sizeof(bool));
         if (quit) break;
     }
 
