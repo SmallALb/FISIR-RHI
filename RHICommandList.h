@@ -256,6 +256,11 @@ namespace FISIR {
 			usingPage->WriteData(RHICommandT::CopyImageToBuffer, info);
 		}
 
+		void dispatch(uint32_t GroupCountX, uint32_t GroupCountY, uint32_t GroupCountZ) {
+			Dispatch_CmdInfo info{ 0, GroupCountX, GroupCountY, GroupCountZ };
+			usingPage->WriteData(RHICommandT::Dispatch, info);
+		}
+
 
 	};
 

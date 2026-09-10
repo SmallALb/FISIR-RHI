@@ -22,8 +22,11 @@ namespace FISIR{
 
 		virtual Pipeline_t getPipelineHandle() override;
 
-	private:
 
+		virtual bool isComputePipeline() const override;
+
+	private:
+		bool mIsComputePipeline {false};
 		__VKPipelineData* mData;
 		VulkanDevice* mDevice;
 	};

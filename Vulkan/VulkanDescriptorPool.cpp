@@ -15,6 +15,7 @@
 #include "VulkanSampler.h"
 #include "VulkanTexture.h"
 namespace FISIR{
+	extern std::unordered_map<PieplineLayoutHash, VkPipelineLayout_T*>& getPipelineLayoutMap();
 
 
 	static VkShaderStageFlags ChoiceDescriptorStage(RHIUsingStageFlags stage) {
@@ -239,7 +240,7 @@ namespace FISIR{
 			resourceType = typ;
 			reservedSize = (typ == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
 
-			//--caculate Size	
+			//--caculate Size
 			UseDataSize = caculateAndCheck(typ, resources);
 			uint32_t totalSize = UseDataSize + reservedSize;
 			VkDeviceSize alignment = (typ == Type::Sampler) ? sizes.samplerHeapAlignment : sizes.resourceHeapAlignment;
@@ -322,6 +323,18 @@ namespace FISIR{
 			};
 			if (vkCreateDescriptorSetLayout(mDevice->getLogicalDevice(), &layoutInfo, nullptr, &setLayout) != VK_SUCCESS) {
 				Error("Failed to create descriptor set layout!");
+				return;
+			}
+
+			// 4. 为 vkCmdBindDescriptorSets 准备 pipeline layout
+			//    （自带 setLayout，与 pipeline 的 layout 兼容即可，无需是同一个 handle）
+			VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+				.setLayoutCount = 1,
+				.pSetLayouts = &setLayout,
+			};
+			if (vkCreatePipelineLayout(mDevice->getLogicalDevice(), &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+				Error("Failed to create pipeline layout!");
 				return;
 			}
 
@@ -462,23 +475,41 @@ namespace FISIR{
 		delete mData;
 	}
 
-	VkDescriptorSetLayout_T* VulkanDescriptorPool::createDescriptorSetLayout(const RHIPipelineDescribeInfo& info) {
-		if (mData->DescriptorSetLayoutMap.contains(info))
-			return mData->DescriptorSetLayoutMap[info];
+	VkDescriptorSetLayout_T* VulkanDescriptorPool::createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap) {
+		auto& PipelineLayoutMap = getPipelineLayoutMap();
+		PieplineLayoutHash HashVal(info);
 		std::vector<VkDescriptorSetLayoutBinding> bindings;
-		for (const auto& v : info.Bindings) {
-			VkDescriptorSetLayoutBinding layoutBinding{
-				.binding = v.binding,
-				.descriptorType = ChoiceDescriptorType(v.descriptorTyp),
-				.descriptorCount = v.count,
-				.stageFlags = ChoiceDescriptorStage(v.usingStage)
-			};
-			bindings.push_back(layoutBinding);
+		if (!mDevice->isDescriptorHeapSupported()) {
+			if (mData->DescriptorSetLayoutMap.contains(info)) {
+				if (!PipelineLayoutMap.contains(HashVal)) {
+					VkPipelineLayoutCreateInfo PipelineLayoutInfo{
+						.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+						.setLayoutCount = 1,
+						.pSetLayouts = VK_NULL_HANDLE,
+					};
+					vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &Pipelinelayout);
+					PipelineLayoutMap[HashVal] = Pipelinelayout;
+				}
+				else Pipelinelayout = PipelineLayoutMap[HashVal];
+				return mData->DescriptorSetLayoutMap[info];
+
+			}
+			uint32_t index = 0;
+			for (const auto& v : info.Bindings) {
+				VkDescriptorSetLayoutBinding layoutBinding{
+					.binding = bindingMap[index],
+					.descriptorType = ChoiceDescriptorType(v.descriptorTyp),
+					.descriptorCount = v.count,
+					.stageFlags = ChoiceDescriptorStage(v.usingStage)
+				};
+				bindings.push_back(layoutBinding);
+				index++;
+			}
 		}
 		VkDescriptorSetLayoutCreateInfo layoutCreateInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
-			.pBindings = bindings.data()
+			.pBindings = mDevice->isDescriptorHeapSupported() ?  nullptr : bindings.data()
 		};
 		VkDescriptorSetLayout layout;
 		if (vkCreateDescriptorSetLayout(mDevice->getLogicalDevice(), &layoutCreateInfo, nullptr, &layout) != VK_SUCCESS) {
@@ -486,11 +517,25 @@ namespace FISIR{
 			return nullptr;
 		}
 		mData->DescriptorSetLayoutMap[info] = layout;
+
+
+		if (!PipelineLayoutMap.contains(HashVal)) {
+			VkPipelineLayoutCreateInfo PipelineLayoutInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+				.setLayoutCount = 1,
+				.pSetLayouts = &layout,
+			};
+			vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &Pipelinelayout);
+			PipelineLayoutMap[HashVal] = Pipelinelayout;
+		}
+		else Pipelinelayout = PipelineLayoutMap[HashVal];
+		
 		return mData->DescriptorSetLayoutMap[info];
 	}
 
 	RHIResourcePackResult VulkanDescriptorPool::createResourcePack(const std::vector<RHIResource*>& resources) {
-		if (mData->HeapEnable) {
+		if (mDevice->isDescriptorHeapSupported()) {
+			Debug("Create Vk Heap");
 			std::vector<RHIResource*> resourceList;   // Buffer 和 Texture
 			std::vector<RHIResource*> samplerList;    // Sampler
 
@@ -523,6 +568,7 @@ namespace FISIR{
 
 		// 降级路径：无 heap 支持时，用单个 DescriptorSet 容纳全部资源（含采样器）。
 		// binding = 资源在列表中的索引，与管线 describeInfo 的 0..N-1 绑定一一对应。
+		Debug("Create Vk Descriptor Set");
 		for (auto res : resources) {
 			if (!res) {
 				Error("createResourcePack: null resource in list");

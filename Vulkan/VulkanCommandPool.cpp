@@ -493,7 +493,7 @@ namespace FISIR{
 					case RHICommandT::BindPipeline: {
 						BindPipeline_CmdInfo info;
 						batchInfo.getBatchData(info);
-						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
+						VkPipelineBindPoint bindPoint = info.pipeline->isComputePipeline()
 							? VK_PIPELINE_BIND_POINT_COMPUTE
 							: VK_PIPELINE_BIND_POINT_GRAPHICS;
 						vkCmdBindPipeline(cmdInfo.buffer, bindPoint, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));

@@ -1,12 +1,17 @@
 #include "VulkanSwapChian.h"
 
 #include <algorithm>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
 #include "../Log/Logger.h"
+#include "../RHIBuffer.h"
+#include "../RHISampler.h"
 #include "../RHIShader.h"
+#include "../RHITexture.h"
 #include "../ShaderComplier.h"
+#include "VulkanBuffer.h"
 #include "VulkanCommandPool.h"
 #include "VulkanDevice.h"
 #include "VulkanFrameBuffer.h"
@@ -47,7 +52,15 @@ static const wchar_t* FullscreenVS = LR"(
 
 static const wchar_t* FullscreenPS = LR"(
 		Texture2D<float4> g_OffscreenTexture : register(t0);
-		SamplerState g_LinearSampler : register(s1);
+		ByteAddressBuffer g_FrameBuffer : register(t1);
+
+
+		SamplerState g_LinearSampler : register(s2);
+
+		cbuffer BufferToOutPutData : register(b3) {
+			uint2 viewport;
+			uint  BufferEnable;
+		}
 
 		struct PSInput {
 			float4 position : SV_POSITION;
@@ -56,9 +69,17 @@ static const wchar_t* FullscreenPS = LR"(
 
 		[shader("pixel")]
 		float4 main(PSInput input) : SV_Target {
+			if (BufferEnable) {
+				uint2 pixel = uint2(input.uv * float2(viewport));
+				uint pixelIndex = pixel.y * viewport.x + pixel.x;
+				uint packed = g_FrameBuffer.Load(pixelIndex * 8 + 0);
+				float3 rgb = float3(packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu) / 255.0f;
+				return float4(rgb, 1.0f);
+			}
 			return g_OffscreenTexture.Sample(g_LinearSampler, input.uv);
 		}
 		)";
+
 
 
 namespace FISIR {
@@ -83,7 +104,7 @@ namespace FISIR {
         mDevice = device;
         Debug("Try Init SwapChain 0x{:x}", (size_t)this);
         if (VShader == nullptr) {
-            ShaderComplier vsCompiler, psCompiler;
+            ShaderComplier vsCompiler, psCompiler, psBufferCompiler;
             vsCompiler.compileShader(FullscreenVS, wcslen(FullscreenVS) * sizeof(wchar_t), L"main", L"vs_6_0");
             psCompiler.compileShader(FullscreenPS, wcslen(FullscreenPS) * sizeof(wchar_t), L"main", L"ps_6_0");
             VShader = usingRHI->RHICreateShader(ShaderTYP::__VERTEXSHADER__, "main", vsCompiler.getShaderData(), vsCompiler.getShaderDataSize());
@@ -92,15 +113,118 @@ namespace FISIR {
 
         if (!PresentQueue) PresentQueue = new VulkanQueue(mDevice, mPresentQueFamilyIndex, "SwapChainPresentQue");
 
+        // swapchain 自带的 BufferToOutPutData cbuffer 后备缓冲，默认为关闭（BufferEnable=0，
+        // PS 退回采样纹理）。示例把此缓冲绑到 b3；enableBufferInput 后置 viewport 并开启。
+        if (!BufferToOutPutData) {
+            FISIR::BufferInfo obInfo{
+                .size = 16,
+                .bufferlayout = FISIR::UniformBuffer,
+                .memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent)
+            };
+            BufferToOutPutData = new VulkanBuffer(mDevice, obInfo, 0, "SwapChainBufferToOutPutData");
+        }
+        uint32_t defaultOutPut[4] = { 0, 0, 0, 0 };   // viewport=0, BufferEnable=0
+        BufferToOutPutData->updateBufferData(defaultOutPut, sizeof(defaultOutPut));
+
         return createPipelineandRenderPass() && createSwapChian();
     }
 
+    void VulkanSwapChain::UpdateOutputData(uint32_t width, uint32_t height, uint32_t bufferEnable) {
+        if (!BufferToOutPutData) return;
+        uint32_t outPut[4] = { width, height, bufferEnable, 0 };
+        BufferToOutPutData->updateBufferData(outPut, sizeof(outPut));
+    }
+
+    RHIBuffer* VulkanSwapChain::EnsureFallbackBuffer() {
+        if (!FallbackBuffer) {
+            FISIR::BufferInfo info{
+                .size = 64,
+                .bufferlayout = FISIR::RBuffer,
+                .memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent)
+            };
+            FallbackBuffer = usingRHI->RHICreateBuffer(info);
+        }
+        return FallbackBuffer;
+    }
+
+    RHITexture* VulkanSwapChain::EnsureFallbackTexture() {
+        if (!FallbackTexture) {
+            FISIR::TextureInfo info{
+                .size = {1, 1, 1},   // TextureSize 字段序 {height, width, depth}
+                .colorType = FISIR::TextureCOLORType::RGBA_8,
+                .type = FISIR::TextureType::TEXTURE2D,
+                .useFor = FISIR::TextureUseForShaderReadOnly,
+                .mipLevels = 1, .arrayLayers = 1, .sampleCount = 0,   // 0 = 非 MSAA（本 RHI 约定）
+            };
+            FallbackTexture = usingRHI->RHICreateTexture(info);
+        }
+        return FallbackTexture;
+    }
+
+    RHISampler* VulkanSwapChain::EnsureFallbackSampler() {
+        if (!FallbackSampler) {
+            FISIR::SamplerInfo info;
+            FallbackSampler = usingRHI->RHICreateSampler(info);
+        }
+        return FallbackSampler;
+    }
+
+    void VulkanSwapChain::RebuildPresentPack() {
+        if (PresentResourcePack.ResourcePack || PresentResourcePack.SamplerPack) {
+            usingRHI->RHIDestroyResourcePack(PresentResourcePack);
+        }
+
+        // 槽位与管线 describeInfo 顺序一致：0=texture(t0), 1=frameBuffer(t1), 2=sampler(s2), 3=cbuffer(b3)。
+        // texture 模式（BufferEnabled=false）时 t1 用占位缓冲；buffer 模式未给纹理/采样器时用占位纹理/采样器。
+        RHITexture* tex = PresentTexture ? PresentTexture : EnsureFallbackTexture();
+        RHIBuffer*  fb  = (BufferEnabled && PresentBuffer) ? PresentBuffer : EnsureFallbackBuffer();
+        RHISampler* sam = PresentSampler ? PresentSampler : EnsureFallbackSampler();
+
+        std::vector<RHIResource*> resources;
+        resources.reserve(4);
+        resources.push_back(tex);
+        resources.push_back(fb);
+        resources.push_back(sam);
+        resources.push_back(BufferToOutPutData);
+
+        PresentResourcePack = usingRHI->RHICreateResourcePack(resources);
+    }
+
+    void VulkanSwapChain::enableTextureInput(RHITexture* texture, RHISampler* sampler) {
+        PresentBuffer = nullptr;            // 切到纹理模式，清掉缓冲模式输入
+        PresentTexture = texture;
+        PresentSampler = sampler;
+        BufferEnabled = false;
+        UpdateOutputData(0, 0, 0);          // BufferEnable=0
+        RebuildPresentPack();
+    }
+
+    void VulkanSwapChain::enableBufferInput(uint32_t width, uint32_t height, RHIBuffer* frameBuffer) {
+        PresentTexture = nullptr;           // 切到缓冲模式，清掉纹理模式输入
+        PresentSampler = nullptr;
+        PresentBuffer = frameBuffer;
+        BufferEnabled = true;
+        UpdateOutputData(width, height, 1); // BufferEnable=1
+        RebuildPresentPack();
+    }
+
+    RHIResourcePackResult VulkanSwapChain::getSwapchainResourcePack() const {
+        return PresentResourcePack;
+    }
+
     VulkanSwapChain::~VulkanSwapChain() {
+        if (PresentResourcePack.ResourcePack || PresentResourcePack.SamplerPack) {
+            if (usingRHI) usingRHI->RHIDestroyResourcePack(PresentResourcePack);
+        }
+        if (FallbackTexture) usingRHI->RHIDestroyTexture(FallbackTexture);
+        if (FallbackSampler) usingRHI->RHIDestroySampler(FallbackSampler);
+        if (FallbackBuffer)  usingRHI->RHIDestroyBuffer(FallbackBuffer);
         for (uint32_t i = 0; i < MaxSwapChianFramCount; i++)  {
             delete SwapChainTextures[i];
             delete SwapChainFrameBuffers[i];
         }
         if (mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
+        delete BufferToOutPutData;
         delete PresentQueue;
     }
 
@@ -115,7 +239,7 @@ namespace FISIR {
 
         auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
         if (index != UINT32_MAX) {
-            finishFence->wait();
+            //finishFence->wait();
         }
 
         auto res = vkAcquireNextImageKHR(
@@ -211,7 +335,6 @@ namespace FISIR {
     RHIPipeline* VulkanSwapChain::getSwapChainRenderPipeline() const {
         return VulkanViewportPipeline;
     }
-
 
     bool VulkanSwapChain::recreateSwapChain() {
         vkDeviceWaitIdle(mDevice->getLogicalDevice());
@@ -355,8 +478,10 @@ namespace FISIR {
         }
 
 		RHIPipelineDescribeInfo desinfo ({
-			{0, 1, RHIDescriptorTyp::SamplerImage, FragmentShaderStage},
-			{1, 1, RHIDescriptorTyp::Sampler, FragmentShaderStage}
+			{0, 1, RHIDescriptorTyp::SamplerImage, FragmentShaderStage},    // b0 t0 g_OffscreenTexture
+			{1, 1, RHIDescriptorTyp::RBuffer, FragmentShaderStage},        // b1 t1 g_FrameBuffer
+			{2, 1, RHIDescriptorTyp::Sampler, FragmentShaderStage},        // b2 s2 g_LinearSampler
+			{3, 1, RHIDescriptorTyp::UniformBuffer, FragmentShaderStage}   // b3 b3 BufferToOutPutData
 		});
 		RHIPipelineState pipelineState {
 			.describeInfo = desinfo,

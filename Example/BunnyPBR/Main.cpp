@@ -336,7 +336,8 @@ int main(int argc, char* argv[]) {
     auto swapchainPipeline = swapchain->getSwapChainRenderPipeline();
     FISIR::SamplerInfo swapSamplerInfo;
     auto swapSampler = rhi->RHICreateSampler(swapSamplerInfo);
-    auto swapchainPack = rhi->RHICreateResourcePack({ colorTexture, swapSampler });
+    // 呈现资源包改由 swapchain 管理：登记离屏纹理（纹理模式，BufferEnable=0，PS 采样纹理）。
+    swapchain->enableTextureInput(colorTexture, swapSampler);
 
     // ── 10. 共享缓冲 / 围栏 / 清空值 ──
     // 帧常量与仿真参数缓冲内容随 count 变化（相机/盒体/数量），故构造为空，逐组 updateBufferData。
@@ -501,7 +502,7 @@ int main(int argc, char* argv[]) {
             if (frameBuf) {
                 cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
                 cmdList.SetPipelineState(swapchainPipeline);
-                cmdList.SetResourcePack(swapchainPack);
+                cmdList.SetResourcePack(swapchain->getSwapchainResourcePack());
                 cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
                 cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
                 cmdList.DrawPrimitive(0, 3, 1);
@@ -570,7 +571,7 @@ cleanup:
     for (auto& p : allComputePacks) if (p.ResourcePack || p.SamplerPack) rhi->RHIDestroyResourcePack(p);
     for (auto* b : allBunnyState)   if (b) rhi->RHIDestroyBuffer(b);
 
-    if (swapchainPack.ResourcePack || swapchainPack.SamplerPack) rhi->RHIDestroyResourcePack(swapchainPack);
+    // 呈现资源包由 swapchain 拥有，随 destroyRenderInterface 的 swapchain 析构一并销毁，此处不再手动销毁。
     if (swapSampler) rhi->RHIDestroySampler(swapSampler);
     for (uint32_t s = 0; s < SLOT_COUNT; ++s)
         if (computeDoneSem[s]) rhi->RHIDestroySemaphore(computeDoneSem[s]);

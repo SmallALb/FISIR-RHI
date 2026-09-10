@@ -177,35 +177,68 @@ namespace FISIR{
 		VkDescriptorSetLayout Descriptorlayout;
 		VkPipelineLayout PipelineLayout;
 		VkPipeline mPipeline;
+		std::vector<uint32_t> bindingRemap;
+
 	};
 
-	static std::vector<VkDescriptorSetAndBindingMappingEXT> BuildDescriptorMappings(VulkanDevice* device, const RHIPipelineDescribeInfo& describeInfo) {
+	static std::vector<VkDescriptorSetAndBindingMappingEXT> BuildDescriptorMappings(VulkanDevice* device, const RHIPipelineDescribeInfo& describeInfo, std::vector<uint32_t>& outBindingRemap) {
 		std::vector<VkDescriptorSetAndBindingMappingEXT> mappings;
+		outBindingRemap.resize(describeInfo.Bindings.size());
+
+		uint32_t uniqueLayoutBinding = 0;
+
+
 		uint32_t CurrentResourceoffset = 0;
 		uint32_t CurrentSampleroffset = 0;
 		const auto& sizes = device->getHeapSizeInfo();
+		uint32_t index = 0;
 		for (const auto& binding : describeInfo.Bindings) {
 			VkDescriptorType vkType = choiceDescriptorType(binding.descriptorTyp);
 			uint32_t descSize = GetDescriptorSize(device, vkType);
 
+			uint32_t originalBinding = binding.binding;
+
+			VkSpirvResourceTypeFlagsEXT resourceMask = 0;
+
 			// Get alignment requirement for this descriptor type
 			VkDeviceSize alignment = 0;
 			switch (binding.descriptorTyp) {
-			case RHIDescriptorTyp::Sampler:
-				alignment = sizes.samplerAlignment;
-				break;
-			case RHIDescriptorTyp::SamplerImage:
-			case RHIDescriptorTyp::Image:
-				alignment = sizes.imageAlignment;
-				break;
-			case RHIDescriptorTyp::UniformBuffer:
-			case RHIDescriptorTyp::RBuffer:
-			case RHIDescriptorTyp::RWBuffer:
-				alignment = sizes.bufferAlignment;
-				break;
-			default:
-				alignment = 16;
-				break;
+				case RHIDescriptorTyp::Sampler: {
+					alignment = sizes.samplerAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+					break;
+				}
+				case RHIDescriptorTyp::SamplerImage: {
+					alignment = sizes.imageAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
+					break;
+				}
+				case RHIDescriptorTyp::Image: {
+					alignment = sizes.imageAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
+					break;
+				}
+				case RHIDescriptorTyp::UniformBuffer: {
+					alignment = sizes.bufferAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
+					break;
+				}
+				case RHIDescriptorTyp::RBuffer: {
+					alignment = sizes.bufferAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
+					break;
+				}
+				case RHIDescriptorTyp::RWBuffer: {
+					alignment = sizes.bufferAlignment;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
+					break;
+
+				}
+				default: {
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
+					alignment = 16;
+					break;
+				}
 			}
 
 			uint32_t& currentOffset = (binding.descriptorTyp == RHIDescriptorTyp::Sampler)
@@ -221,30 +254,14 @@ namespace FISIR{
 				? alignment
 				: descSize;
 
+
 			VkDescriptorSetAndBindingMappingEXT mapping = {
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
 				.descriptorSet = 0,  // 当前统一使用 set 0
 				.firstBinding = binding.binding,
 				.bindingCount = binding.count,
 				// 根据描述符类型自动选择 resourceMask
-				.resourceMask = [](RHIDescriptorTyp typ)->VkSpirvResourceTypeFlagsEXT {
-					switch (typ) {
-						case RHIDescriptorTyp::Sampler:
-							return VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
-						case RHIDescriptorTyp::SamplerImage:
-							return VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
-						case RHIDescriptorTyp::Image:
-							return VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
-						case RHIDescriptorTyp::UniformBuffer:
-							return VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
-						case RHIDescriptorTyp::RBuffer:
-						case RHIDescriptorTyp::RWBuffer:
-						
-							return VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
-						default:
-							return VK_SPIRV_RESOURCE_TYPE_ALL_EXT;
-					}
-				}(binding.descriptorTyp),
+				.resourceMask = resourceMask,
 				.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
 				.sourceData = {
 					.constantOffset = {
@@ -256,8 +273,18 @@ namespace FISIR{
 
 			mappings.push_back(mapping);
 			currentOffset += descSize * binding.count;
+			index++;
 		}
+#ifdef  _DEBUG
 
+		Debug("=== Generated Mappings ===");
+		for (auto i = 0u; i<mappings.size(); i++) {
+			Debug("mapping[{}]: firstBinding={}, bindingCount={}, resourceMask=0x{:x}",
+				i, mappings[i].firstBinding, mappings[i].bindingCount, (uint64_t)mappings[i].resourceMask);
+		}
+		Debug("=== End Mappings ===");
+
+#endif //  _DEBUG
 		return mappings;
 	}
 
@@ -266,31 +293,16 @@ namespace FISIR{
 	VulkanPipeline::VulkanPipeline(VulkanDevice* inDevice, VulkanDescriptorPool* DescriptorPool, const RHIPipelineState& State) :
 		mDevice(inDevice)
 	{
-		auto& PipelineLayoutMap = getPipelineLayoutMap();
 		mData = new __VKPipelineData();
-		//DesLayout
-		mData->Descriptorlayout = DescriptorPool->createDescriptorSetLayout(State.describeInfo);
-
-
-		//PipelineLayout
-		PieplineLayoutHash HashVal(State.describeInfo);
-
-		if (PipelineLayoutMap.contains(HashVal)) mData->PipelineLayout = PipelineLayoutMap[HashVal];
-		else {
-			VkPipelineLayoutCreateInfo PipelineLayoutInfo{
-				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-				.setLayoutCount = 1,
-				.pSetLayouts = &mData->Descriptorlayout,
-			};
-			vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &mData->PipelineLayout);
-			PipelineLayoutMap[HashVal] = mData->PipelineLayout;
-		}
 
 
 
 		//MappingInfo
 		std::vector<VkDescriptorSetAndBindingMappingEXT> mappingInfo;
-		if (mDevice->isDescriptorHeapSupported()) mappingInfo = std::move(BuildDescriptorMappings(mDevice, State.describeInfo));
+		mappingInfo = std::move(BuildDescriptorMappings(mDevice, State.describeInfo, mData->bindingRemap));
+		
+		//DesLayout and PipelineLayout
+		mData->Descriptorlayout = DescriptorPool->createDescriptorSetLayout(State.describeInfo, mData->PipelineLayout, mData->bindingRemap);
 
 		VkShaderDescriptorSetAndBindingMappingInfoEXT shaderMappingInfo = {
 			.sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
@@ -463,6 +475,7 @@ namespace FISIR{
 
 		}
 		else {
+			mIsComputePipeline = true;
 			VkComputePipelineCreateInfo info = {
 			  .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			  .pNext = mDevice->isDescriptorHeapSupported() ? &flags2info : nullptr,
@@ -484,5 +497,10 @@ namespace FISIR{
 	Pipeline_t VulkanPipeline::getPipelineHandle() {
 		return mData->mPipeline;
 	}
+
+	bool VulkanPipeline::isComputePipeline() const {
+		return mIsComputePipeline;
+	}
+
 
 }

@@ -9,6 +9,8 @@ add_executable(Nanite
 target_include_directories(Nanite
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..   # RHI root (RHI/*.h)
+        ${CMAKE_CURRENT_SOURCE_DIR}         # local: NaniteMesh.h / ClusterSelection.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../glm  # shared glm (Example/glm)
         ${Vulkan_INCLUDE_DIRS}
         ${Vulkan_INCLUDE_DIRS}/dxc
 )

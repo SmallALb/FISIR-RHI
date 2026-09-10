@@ -36,6 +36,7 @@ namespace FISIR {
 
 		void*& getHostVisablePtr() {return Data_GPU;}
 
+
 		virtual void* changeOtherHandle(const std::type_info& typ) override {
 			if (typ == typeid(VulkanResource)) return static_cast<VulkanResource*>(this);
 			else return static_cast<RHIResource*>(this);

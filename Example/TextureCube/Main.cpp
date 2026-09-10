@@ -201,7 +201,7 @@ int main(int argc, char* argv[]) {
     // ---------- 4. 像素着色器 ----------
     const wchar_t* psCode = LR"(
         Texture2D myTexture : register(t1);
-        SamplerState mySampler : register(s2);
+        SamplerState mySampler : register(s0);
         struct PSInput {
             float4 pos : SV_POSITION;
             float3 color : COLOR;
@@ -250,7 +250,7 @@ int main(int argc, char* argv[]) {
     FISIR::RHIPipelineDescribeInfo describeInfo{
         {0, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::VertexShaderStage},
         {1, 1, FISIR::RHIDescriptorTyp::SamplerImage, FISIR::RHIUsingStage::FragmentShaderStage},
-        {2, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
+        {0, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
     };
 
     FISIR::RHIVertexInputInfo vertexInputInfo{
@@ -420,7 +420,8 @@ int main(int argc, char* argv[]) {
     auto swapchainPipeline = swapchain->getSwapChainRenderPipeline();
     FISIR::SamplerInfo swapSamplerInfo;
     auto swapSampler = rhi->RHICreateSampler(swapSamplerInfo);
-    auto swapchainPack = rhi->RHICreateResourcePack({ colorTexture, swapSampler });
+    // 呈现资源包改由 swapchain 管理：登记离屏纹理（纹理模式，BufferEnable=0，PS 采样纹理）。
+    swapchain->enableTextureInput(colorTexture, swapSampler);
 
     // ---------- 11.5 截图读回 ----------
     FISIR::BufferInfo readbackInfo{
@@ -583,7 +584,7 @@ int main(int argc, char* argv[]) {
             if (frameBuf) {
                 cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
                 cmdList.SetPipelineState(swapchainPipeline);
-                cmdList.SetResourcePack(swapchainPack);
+                cmdList.SetResourcePack(swapchain->getSwapchainResourcePack());
                 cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
                 cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
                 cmdList.DrawPrimitive(0, 3, 1);
@@ -678,7 +679,7 @@ cleanup:
         auto& rc = resourcePacks[i];
         if (rc.ResourcePack || rc.SamplerPack) rhi->RHIDestroyResourcePack(rc);
     }
-    if (swapchainPack.ResourcePack || swapchainPack.SamplerPack) rhi->RHIDestroyResourcePack(swapchainPack);
+    // 呈现资源包由 swapchain 拥有，随 destroyRenderInterface 的 swapchain 析构一并销毁，此处不再手动销毁。
     if (sampler)     rhi->RHIDestroySampler(sampler);
     if (swapSampler) rhi->RHIDestroySampler(swapSampler);
     for (int i = 0; i < 5; i++) {

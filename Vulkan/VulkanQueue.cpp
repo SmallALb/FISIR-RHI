@@ -100,6 +100,7 @@ namespace FISIR{
 			waitStages.push_back(getVkFlags(semaphore->getWaitingStage()));
 			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getCurrentValue() : 1;
 			ToWaitsValues.push_back(signalVal);
+
 		}
 
 

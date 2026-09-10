@@ -269,6 +269,8 @@ namespace FISIR {
 
 		virtual Pipeline_t getPipelineHandle() = 0;
 
+		virtual bool isComputePipeline() const = 0;
+
 	};
  
 }

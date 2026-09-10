@@ -73,7 +73,7 @@ namespace FISIR {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = info.size,
 			.usage = (Usage ? (VkBufferUsageFlags)Usage : getBufferUsage(info.bufferlayout)) |
-					(mDevice->isDescriptorHeapSupported() ? (VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) : 0),
+					(mDevice->isDescriptorHeapSupported() ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) : 0),
 			.sharingMode = info.concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
 			.queueFamilyIndexCount = info.concurrentSharing ? concurrentFamilyCount : 0,
 			.pQueueFamilyIndices = info.concurrentSharing ? concurrentFamilies : nullptr
@@ -85,7 +85,15 @@ namespace FISIR {
 
 
 		Data_GPU = nullptr;
-		mData->mBlock = allocator->create(info.size, memReqs.alignment, info.memoryType, this, &Data_GPU);
+		size_t allocAlignment = (size_t)memReqs.alignment;
+		// 描述符堆缓冲：驱动的 memReqs.alignment 可能小于 resourceHeapAlignment / samplerHeapAlignment（本驱动返回 16），
+		// 需强制按 heap 对齐分配，否则 vkCmdBindResourceHeapEXT 的 heapRange.address 校验失败。
+		if ((Usage & VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT) && mDevice->isDescriptorHeapSupported()) {
+			const auto& heap = mDevice->getHeapSizeInfo();
+			if ((size_t)heap.resourceHeapAlignment > allocAlignment) allocAlignment = (size_t)heap.resourceHeapAlignment;
+			if ((size_t)heap.samplerHeapAlignment > allocAlignment) allocAlignment = (size_t)heap.samplerHeapAlignment;
+		}
+		mData->mBlock = allocator->create(info.size, allocAlignment, info.memoryType, this, &Data_GPU);
 		if (!mData->mBlock) {
 			Error("Failed to allocate GPU memory for buffer '{}' ({} bytes)", DebugName ? DebugName : "VulkanBuffer", info.size);
 			return;
@@ -95,7 +103,7 @@ namespace FISIR {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 			.buffer = mData->buffer
 		};
-		mData->Gpuaddress = vkGetBufferDeviceAddress(mDevice->getLogicalDevice(), &addrInfo);
+		if (mDevice->isDescriptorHeapSupported()) mData->Gpuaddress = vkGetBufferDeviceAddress(mDevice->getLogicalDevice(), &addrInfo);
 		if (info.data_CPU) {
 			memcpy(Data_GPU, info.data_CPU, info.size);
 		}

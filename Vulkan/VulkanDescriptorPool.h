@@ -7,6 +7,7 @@ struct VkDescriptorPool_T;
 struct VkDescriptorLayout_T;
 struct VkDescriptorSetLayout_T;
 struct VkCommandBuffer_T;
+struct VkPipelineLayout_T;
 namespace FISIR {
 	class VulkanDevice;
 	class RHIResourcePack;
@@ -20,7 +21,7 @@ namespace FISIR {
 
 		VkDescriptorPool_T* getPool() const { return mPool; }
 	
-		VkDescriptorSetLayout_T* createDescriptorSetLayout(const RHIPipelineDescribeInfo& info);
+		VkDescriptorSetLayout_T* createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap);
 
 
 		RHIResourcePackResult createResourcePack(const std::vector<RHIResource*>& resources);

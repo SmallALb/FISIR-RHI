@@ -29,7 +29,7 @@ namespace FISIR{
 #ifdef _DEBUG
 	static PFN_vkSetDebugUtilsObjectNameEXT    __SetDebugUtilsObjectName = nullptr;
 #endif // _DEBUG
-	
+
 	static sparse_map<uint32_t, VulkanQueue*> FamilyIndexToQue;
 
 	static VulkanQueue* getVulkanQue(VulkanDevice* device, uint32_t familyIndex, const char* name) {
@@ -154,16 +154,16 @@ namespace FISIR{
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, nullptr);
 		mData->mQueueFamilyProperties.resize(queueCount);
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, mData->mQueueFamilyProperties.data());
-		
+
 		if (!InitDevice(viewports, ViewPortSwapChainCache)) return false;
 
 #ifdef _DEBUG
 		__SetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(GetGlobalInstance(), "vkSetDebugUtilsObjectNameEXT");
 #endif
+		mData->mPhysicalDeviceProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 
 		if (isDescriptorHeapSupported()) {
 			mData->mDescriptorHeapProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
-			mData->mPhysicalDeviceProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 			mData->mPhysicalDeviceProperties.pNext = &mData->mDescriptorHeapProperties;
 		}
 		vkGetPhysicalDeviceProperties2(mData->mPhysicalDevice, &mData->mPhysicalDeviceProperties);
@@ -299,8 +299,16 @@ namespace FISIR{
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
 
+		// 64 位原子（RWByteAddressBuffer.InterlockedMin64 等编译出的 OpAtomicUMin(64)）所需的
+		// shaderBufferInt64Atomics。注意必须用专用的 ShaderAtomicInt64 结构，而不是 Vulkan12Features：
+		// 后者与本链里已有的 TimelineSemaphoreFeatures / BufferDeviceAddressFeatures 互斥（见 Vulkan 规范）。
+		VkPhysicalDeviceShaderAtomicInt64Features atomicInt64Features {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES,
+		};
+
 		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeature {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+			.pNext = &atomicInt64Features,
 		};
 
 		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainMaintenance1Features {
@@ -365,6 +373,27 @@ namespace FISIR{
 			Warn("Device Not Support Descriptor Buffer, Fallback To Normal Descriptor Set!");
 			deviceCreateInfo.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : nullptr;
 		}
+		// 开启 shaderInt64（64 位整型运算 / Int64 原子）。设备不支持时回退为关闭并告警，
+		// 避免 vkCreateDevice 因 VK_ERROR_FEATURE_NOT_PRESENT 直接失败。
+		VkPhysicalDeviceFeatures2 enableFeatures2{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		};
+		enableFeatures2.features.shaderInt64 = deviceFeatures2.features.shaderInt64 ? VK_TRUE : VK_FALSE;
+		if (deviceFeatures2.features.shaderInt64 != VK_TRUE) {
+			Warn("Device Does Not Support shaderInt64");
+		}
+		// atomicInt64Features 已通过 timelineFeature.pNext 进入查询链与使能链，
+		// shaderBufferInt64Atomics 字段由 vkGetPhysicalDeviceFeatures2 填充为设备支持值。
+		if (atomicInt64Features.shaderBufferInt64Atomics != VK_TRUE) {
+			Warn("Device Does Not Support shaderBufferInt64Atomics");
+		}
+
+		// 把 enableFeatures2 插到 pNext 链最前端，使 shaderInt64 在 vkCreateDevice 生效。
+		// 注意：VkDeviceCreateInfo::pEnabledFeatures 与 pNext 中的 VkPhysicalDeviceFeatures2 互斥，
+		// 这里只走 pNext 一条链（原链可能是 DescriptorHeap / swapchainMaintenance1 / timeline）。
+		enableFeatures2.pNext = (void*)deviceCreateInfo.pNext;
+		deviceCreateInfo.pNext = &enableFeatures2;
+
 
 		deviceCreateInfo.enabledExtensionCount = uint32_t(extensions.size()),
 		deviceCreateInfo.ppEnabledExtensionNames = extensions.data(),

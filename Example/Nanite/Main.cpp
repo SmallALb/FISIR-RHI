@@ -1,7 +1,13 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <thread>
+
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "Log/Logger.h"
 #include "RHICommandList.h"
@@ -52,7 +58,7 @@ int main() {
 
     // 3. 创建视口并初始化 RHI
     struct Win32Data { HINSTANCE hinstance; HWND hwnd; } win32Data{hInstance, hwnd};
-    auto viewport = rhi->RHICreateViewport(1024, 768,
+    auto viewport = rhi->RHICreateViewport(512, 384,
         FISIR::TextureCOLORType::RGBA_8, (void*)&win32Data);
     rhi->Init();
 
@@ -61,21 +67,78 @@ int main() {
 
     // 4. 交换链 + 清屏值
     auto swapchain = rhi->RHIGetSwapChain(viewport);
+    // buffer 呈现模式：PS 直接读 FrameBuffer，绑定内部封装的呈现资源包
+    swapchain->enableBufferInput(NANITE_RT_WIDTH, NANITE_RT_HEIGHT, GetFrameBuffer());
+
+    auto PresentPipeline = swapchain->getSwapChainRenderPipeline();
     FISIR::ClearValue clearPresent{.ColorClear = 1,
         .colorinfo = {0.1f, 0.1f, 0.2f, 1.f}, .DepthStencilClear = 0};
 
-    // 5. 主循环：清屏 + 呈现
+    // 5. 相机状态
+    // 场景 AABB 中心约 (0,-107,3)，半径约 248；相机置于 +Z 前方，yaw=π 朝 -Z 望向场景。
+    glm::vec3 camPos(0.0f, -60.0f, 400.0f);
+    float camYaw = glm::pi<float>(), camPitch = 0.0f;
+    const float moveStep = 3.f;
+    // 鼠标转向：灵敏度（弧度/像素）与俯仰角钳制（避免 gimbal lock 翻转）
+    const float mouseSens = 0.003f;
+    const float maxPitch = glm::radians(89.0f);
+    POINT lastMouse{};
+    GetCursorPos(&lastMouse);
+    glm::mat4 proj = glm::perspective(glm::radians(60.0f),
+        (float)NANITE_RT_WIDTH / (float)NANITE_RT_HEIGHT, 1.0f, 2000.0f);
+
+    // 6. 主循环：更新相机 → 选择+渲染 → 呈现
     MSG msg = {0};
+    uint64_t frameCount = 0;
+    auto fpsStart = std::chrono::steady_clock::now();
     while (true) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) goto cleanup;
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        FISIR::RHIComputeCommandList list(rhi);
-        ExecuteClusterSelectionPass(list);
 
+        // ── 相机转向：按住右键拖动鼠标（鼠标右移右转，上移抬头）──
+        POINT curMouse;
+        GetCursorPos(&curMouse);
+        if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) {
+            float dx = (float)(curMouse.x - lastMouse.x);
+            float dy = (float)(curMouse.y - lastMouse.y);
+            camYaw   -= dx * mouseSens;   // 此相机约定 yaw 减小为右转（见 lookAt 右向量）
+            camPitch += dy * mouseSens;   // 屏幕 y 向下，故上移 dy<0 → pitch 增大 → 抬头
+            if (camPitch >  maxPitch) camPitch =  maxPitch;
+            if (camPitch < -maxPitch) camPitch = -maxPitch;
+        }
+        lastMouse = curMouse;
+
+        // ── 相机移动：WASD 沿 front 的水平投影前后左右，QE 升降 ──
+        glm::vec3 camDir(
+            cosf(camPitch) * sinf(camYaw),
+            sinf(camPitch),
+            cosf(camPitch) * cosf(camYaw));
+        // 水平前向（忽略 pitch，保证前后左右始终平面移动，避免抬头时 W 上天）
+        glm::vec3 front = glm::normalize(glm::vec3(camDir.x, 0.0f, camDir.z));
+        glm::vec3 right = glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
+
+        if (GetAsyncKeyState('W') & 0x8000) camPos += front * moveStep;
+        if (GetAsyncKeyState('S') & 0x8000) camPos -= front * moveStep;
+        if (GetAsyncKeyState('A') & 0x8000) camPos -= right * moveStep;
+        if (GetAsyncKeyState('D') & 0x8000) camPos += right * moveStep;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) camPos.y -= moveStep;
+        if (GetAsyncKeyState(VK_SPACE) & 0x8000) camPos.y += moveStep;
+
+        glm::vec3 camTarget = camPos + camDir;
+        glm::mat4 view = glm::lookAt(camPos, camTarget, glm::vec3(0, 1, 0));
+        // NaniteRender 使用行向量约定 mul(v, M)，故上传转置后的 VP
+        getRenderParams().VPMatrix = glm::transpose(proj * view);
+        // 选择 shader 的视锥剔除相机同步为移动相机，避免移动后远处簇被错误剔除
+        getInputData().Position = glm::vec4(camPos, 0.0f);
+        getInputData().Direction = glm::vec4(camDir, 0.0f);
+
+        ExecuteClusterSelectionPass(rhi);
+        //Info("[Nanite] before acquire");
         uint32_t frameID = swapchain->acquireGetImageInfoID();
+        //Info("[Nanite] after acquire, frameID={}", frameID);
         if (frameID == FISIR::RHISwapChain::FAILEID) continue;
 
         FISIR::RHIRenderCommandList cmdList(rhi);
@@ -83,13 +146,32 @@ int main() {
         auto frameBuf = swapchain->getSwapChainFrameBuffer(info.imageIndex);
         if (frameBuf) {
             cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
-            // TODO: 在这里录制 Nanite 渲染命令
+            cmdList.SetPipelineState(PresentPipeline);
+            cmdList.SetResourcePack(swapchain->getSwapchainResourcePack());
+            cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
+            cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
+            cmdList.DrawPrimitive(0, 3, 1);
             cmdList.EndRenderPass();
         }
 
         cmdList.End(info.finishFence, {info.avaliable}, {info.renderFinish});
         info.finishFence->waitFenceSubmited();
+        //Info("[Nanite] before present");
         swapchain->present(frameID);
+        //Info("[Nanite] after present");
+        // 每 100 帧更新标题：FPS + 相机参数
+        if (++frameCount % 100 == 0) {
+            auto now = std::chrono::steady_clock::now();
+            float elapsed = std::chrono::duration<float>(now - fpsStart).count();
+            fpsStart = now;
+            char title[192];
+            snprintf(title, sizeof(title),
+                "Nanite | %.1f FPS | clusters %u | pos(%.2f, %.2f, %.2f) yaw %.1f pitch %.1f",
+                100.0f / elapsed, GetEnabledClusterCount(),
+                camPos.x, camPos.y, camPos.z,
+                glm::degrees(camYaw), glm::degrees(camPitch));
+            SetWindowTextA(hwnd, title);
+        }
     }
 
 cleanup:
