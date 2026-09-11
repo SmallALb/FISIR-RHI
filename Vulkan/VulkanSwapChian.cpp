@@ -239,7 +239,7 @@ namespace FISIR {
 
         auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
         if (index != UINT32_MAX) {
-            //finishFence->wait();
+            finishFence->wait();
         }
 
         auto res = vkAcquireNextImageKHR(

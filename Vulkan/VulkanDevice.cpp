@@ -382,6 +382,18 @@ namespace FISIR{
 		if (deviceFeatures2.features.shaderInt64 != VK_TRUE) {
 			Warn("Device Does Not Support shaderInt64");
 		}
+		// 硬光栅 GPU-driven：multiDrawIndirect 允许 vkCmdDrawIndirect 的 drawCount>1（逐簇派发）；
+		// vertexPipelineStoresAndAtomics 允许 VS 读取未加 NonWritable 装饰的存储缓冲
+		// （DXC 对 ByteAddressBuffer/StructuredBuffer 一律不加 NonWritable，见 .claude 内存）。
+		// 两者均为 Vulkan 1.0 核心特性，桌面 GPU 普遍支持。
+		enableFeatures2.features.multiDrawIndirect = deviceFeatures2.features.multiDrawIndirect ? VK_TRUE : VK_FALSE;
+		enableFeatures2.features.vertexPipelineStoresAndAtomics = deviceFeatures2.features.vertexPipelineStoresAndAtomics ? VK_TRUE : VK_FALSE;
+		if (!deviceFeatures2.features.multiDrawIndirect) {
+			Warn("Device Does Not Support multiDrawIndirect");
+		}
+		if (!deviceFeatures2.features.vertexPipelineStoresAndAtomics) {
+			Warn("Device Does Not Support vertexPipelineStoresAndAtomics");
+		}
 		// atomicInt64Features 已通过 timelineFeature.pNext 进入查询链与使能链，
 		// shaderBufferInt64Atomics 字段由 vkGetPhysicalDeviceFeatures2 填充为设备支持值。
 		if (atomicInt64Features.shaderBufferInt64Atomics != VK_TRUE) {

@@ -18,6 +18,7 @@
 #include "RHITypes.h"
 #include "BVH.h"
 #include "ClusterSelection.h"
+
 // 窗口回调
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -31,7 +32,6 @@ int main() {
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
 #endif
-
     Info("============================================");
     Info("|  Nanite -- Minimal Single-Window Mode    |");
     Info("============================================");
@@ -65,10 +65,12 @@ int main() {
     InitClusterSelection(rhi);
     SetClusterSelectionBuffer(rhi);
 
+	getInputData().LodScale = 70.0f;
+
     // 4. 交换链 + 清屏值
     auto swapchain = rhi->RHIGetSwapChain(viewport);
-    // buffer 呈现模式：PS 直接读 FrameBuffer，绑定内部封装的呈现资源包
-    swapchain->enableBufferInput(NANITE_RT_WIDTH, NANITE_RT_HEIGHT, GetFrameBuffer());
+    // 纹理呈现模式：硬光栅把结果渲染进离屏颜色纹理，PS 采样该纹理呈现。
+    swapchain->enableTextureInput(GetOffscreenColorTexture(), GetOffscreenSampler());
 
     auto PresentPipeline = swapchain->getSwapChainRenderPipeline();
     FISIR::ClearValue clearPresent{.ColorClear = 1,
@@ -78,7 +80,7 @@ int main() {
     // 场景 AABB 中心约 (0,-107,3)，半径约 248；相机置于 +Z 前方，yaw=π 朝 -Z 望向场景。
     glm::vec3 camPos(0.0f, -60.0f, 400.0f);
     float camYaw = glm::pi<float>(), camPitch = 0.0f;
-    const float moveStep = 3.f;
+    const float moveStep = 0.3f;
     // 鼠标转向：灵敏度（弧度/像素）与俯仰角钳制（避免 gimbal lock 翻转）
     const float mouseSens = 0.003f;
     const float maxPitch = glm::radians(89.0f);
@@ -97,6 +99,15 @@ int main() {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
+        WaitFrameGPUIdle();
+
+        const uint32_t lastFrameClusterCount = GetEnabledClusterCount();
+
+        // 获取交换链图像。刻意放在簇选择/渲染之前：若失败则整帧跳过，不会留下
+        // 「compute 已提交、present 未提交」的半帧——那会让帧完成信号量多出一次
+        // 无人消费的信号，破坏 wait/signal 配对（binary 信号量不允许重复挂起信号）。
+        uint32_t frameID = swapchain->acquireGetImageInfoID();
+        if (frameID == FISIR::RHISwapChain::FAILEID) continue;
 
         // ── 相机转向：按住右键拖动鼠标（鼠标右移右转，上移抬头）──
         POINT curMouse;
@@ -124,8 +135,8 @@ int main() {
         if (GetAsyncKeyState('S') & 0x8000) camPos -= front * moveStep;
         if (GetAsyncKeyState('A') & 0x8000) camPos -= right * moveStep;
         if (GetAsyncKeyState('D') & 0x8000) camPos += right * moveStep;
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) camPos.y -= moveStep;
-        if (GetAsyncKeyState(VK_SPACE) & 0x8000) camPos.y += moveStep;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) camPos.y += moveStep;
+        if (GetAsyncKeyState(VK_SPACE) & 0x8000) camPos.y -= moveStep;
 
         glm::vec3 camTarget = camPos + camDir;
         glm::mat4 view = glm::lookAt(camPos, camTarget, glm::vec3(0, 1, 0));
@@ -136,10 +147,6 @@ int main() {
         getInputData().Direction = glm::vec4(camDir, 0.0f);
 
         ExecuteClusterSelectionPass(rhi);
-        //Info("[Nanite] before acquire");
-        uint32_t frameID = swapchain->acquireGetImageInfoID();
-        //Info("[Nanite] after acquire, frameID={}", frameID);
-        if (frameID == FISIR::RHISwapChain::FAILEID) continue;
 
         FISIR::RHIRenderCommandList cmdList(rhi);
         auto info = swapchain->getSwapChainGetImageInfo(frameID);
@@ -154,11 +161,14 @@ int main() {
             cmdList.EndRenderPass();
         }
 
-        cmdList.End(info.finishFence, {info.avaliable}, {info.renderFinish});
+        // 帧内最后一个提交：等待 acquire 与渲染完成信号量，信号 present 与帧完成信号量。
+        // 不再等围栏——帧完成信号量在下一帧开头由 WaitFrameGPUIdle() 消费。
+        EndFramePresentPass(cmdList, info);
+        // 唯一保留的围栏调用，且它不是「等 GPU 完成」，只是「等 RHI 线程把这一页提交出去」：
+        // vkQueuePresentKHR 等待的 renderFinish 必须已有对应的 signal 提交，否则校验层报
+        // "has no way to be signaled"。这一步只花一次线程间握手，帧依旧在 GPU 上流水。
         info.finishFence->waitFenceSubmited();
-        //Info("[Nanite] before present");
         swapchain->present(frameID);
-        //Info("[Nanite] after present");
         // 每 100 帧更新标题：FPS + 相机参数
         if (++frameCount % 100 == 0) {
             auto now = std::chrono::steady_clock::now();
@@ -167,7 +177,7 @@ int main() {
             char title[192];
             snprintf(title, sizeof(title),
                 "Nanite | %.1f FPS | clusters %u | pos(%.2f, %.2f, %.2f) yaw %.1f pitch %.1f",
-                100.0f / elapsed, GetEnabledClusterCount(),
+                100.0f / elapsed, lastFrameClusterCount,
                 camPos.x, camPos.y, camPos.z,
                 glm::degrees(camYaw), glm::degrees(camPitch));
             SetWindowTextA(hwnd, title);

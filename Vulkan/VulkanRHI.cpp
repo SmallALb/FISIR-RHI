@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
-
+#include <deque>
 #include "../Log/Logger.h"
 #include "../LockFreeQue.h"
 #include "../RHICommandList.h"
@@ -61,7 +61,7 @@ namespace FISIR {
 
 
     static LockFreeQue<PendingReleaseInfo> PendingReleaseCBs;
-    static LockFreeQue<RingCommandPool::Page*> NeedUsingPages;
+    static LockFreeQue<RingCommandPool::Page*> NeedSubmitQue;
 
 
     //Pending Upload Command Buffers
@@ -118,8 +118,6 @@ namespace FISIR {
         stopTag = 1;
 
         vkDeviceWaitIdle(mDevice->getLogicalDevice());
-        PrepareThread.join();
-        Debug("Prepare Thread Join");
 
         RHIThread.join();
         Debug("VulkanRHI Thread Join");
@@ -131,7 +129,7 @@ namespace FISIR {
 
 
         PendingReleaseCBs.forceClear();
-        NeedUsingPages.forceClear();
+        NeedSubmitQue.forceClear();
         for (auto& pool : CmdMemoryPool) {
             for (auto& page : pool.Pages) {
                 page.BatchQueue.forceClear();
@@ -210,7 +208,6 @@ namespace FISIR {
 
         RHIThread = std::thread(&VulkanRHI::VulkanRHILoop, this);
         RHIResourceThread = std::thread(&VulkanRHI::VulkanResourceLoop, this);
-        PrepareThread = std::thread(&VulkanRHI::PagePrepareLoop, this);
 
         gIsShuttingDown = 0;
 
@@ -303,7 +300,12 @@ namespace FISIR {
     }
 
     RingCommandPool::Page* VulkanRHI::RHIGetCommandPoolPage(CmdType cmdtype) {
-        return CmdMemoryPool[static_cast<int>(cmdtype) - 1].acquireQue();
+        auto* page = CmdMemoryPool[static_cast<int>(cmdtype) - 1].acquireQue();
+        // 页面分配即代表「这一次录制」的开始，而所有录制都发生在用户的提交线程上、顺序即录制顺序，
+        // 因此在分配处发号即可得到全局单调的录制序号。RHI 线程据此保证提交顺序 == 录制顺序。
+        page->recordOrder = mRecordSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+		NeedSubmitQue.push(page);
+        return page;
     }
 
 
@@ -350,22 +352,6 @@ namespace FISIR {
         return Target.empty();
     }
 
-    void VulkanRHI::PagePrepareLoop() {
-        while (!stopTag && !mDevice->isDeviceLost()) {
-            bool pushFailed = 1;
-            for (auto& CmdPool : CmdMemoryPool) {
-                for (auto& page : CmdPool.Pages) {
-                    RingCommandPool::PageFlag expect = RingCommandPool::CanRecord;
-                    if (page.flags.compare_exchange_strong(expect, RingCommandPool::IsRecording, std::memory_order_acq_rel)) {
-                        NeedUsingPages.push(&page);
-                        pushFailed = 0;
-                    }
-                }
-            }
-            if (pushFailed) std::this_thread::yield();
-        }
-    }
-
 
     void VulkanRHI::VulkanRHILoop() {
         Debug("RHI Thread ID: 0x{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -386,6 +372,7 @@ namespace FISIR {
         };
 
         std::unordered_map<RingCommandPool::Page*, ResultInfo> ResultCache;
+        std::deque<RingCommandPool::Page*> SubmitOrder;
 
         auto VkRenderCommandPool = mCmdPoolManager->getCommandPool(CmdType::Render);
         auto VkComputeCommandPool = mCmdPoolManager->getCommandPool(CmdType::Compute);
@@ -424,27 +411,32 @@ namespace FISIR {
             std::vector<RingCommandPool::Page*> NeedClearInThisLoop;
             {
                 RingCommandPool::Page* page;
-                while (NeedUsingPages.pop(page)) {
+                while (NeedSubmitQue.pop(page)) {
                     auto& entry = ResultCache[page];
                     entry.ExecuteResults.clear();
                     entry.FinishCount->store(0, std::memory_order_release);
-                
+					SubmitOrder.push_back(page);
                 }
             }
             NeedClearInThisLoop.clear();
-            for (auto& [page, result] : ResultCache) {
-                //get record
+
+            for (auto& page : SubmitOrder) {
                 while (!page->BatchQueue.empty()) {
                     RingCommandPool::Page::BatchInfo Batch;
                     page->BatchQueue.pop(Batch);
 
+					auto& result = ResultCache[page];
                     result.ExecuteResults.emplace_back(new ExecuteResultData());
                     auto& info = result.ExecuteResults.back();
 
                     ThreadPool->pushCommandBatch(Batch, info.get(), result.FinishCount.get());
                 }
+            }
 
-                //check 
+            for (auto* page : SubmitOrder) {
+                auto& result = ResultCache[page];
+
+                //check
                 VulkanFence* fence = nullptr;
                 std::vector<RHISemaphore*> waits;
                 std::vector<RHISemaphore*> signals;
@@ -540,9 +532,17 @@ namespace FISIR {
                     page->flags.store(RingCommandPool::IsEnd, std::memory_order_release);
                     NeedClearInThisLoop.push_back(page);
                 }
+                else {
+                    // 遇到第一个尚未就绪的页面就结束本轮提交：它录制得更早，后面的页面可能
+                    // 正在等待它的信号量；越过它提交就会打破「signal 先于 wait」的提交顺序。
+                    // 它的批次已在 ① 全部派出，后续循环中终会就绪。
+                    break;
+                }
             }
 
-            for (auto& page : NeedClearInThisLoop) {
+            for (size_t i = 0; i < NeedClearInThisLoop.size(); ++i) {
+                auto* page = SubmitOrder.front();
+                SubmitOrder.pop_front();
                 ResultCache.erase(page);
                 page->Pool->recycleQue(page);
             }
@@ -564,7 +564,7 @@ namespace FISIR {
             page->flags.store(RingCommandPool::IsEnd, std::memory_order_release);
         }
         ResultCache.clear();
-        while (NeedUsingPages.pop()) {}
+        NeedSubmitQue.clear();
 
         Debug("RHI Loop drain complete");
     }

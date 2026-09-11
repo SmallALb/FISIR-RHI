@@ -63,15 +63,19 @@ void AtomicDepthTest(uint2 pixel, float depth, uint color) {
     // DXC 的 SPIR-V 后端不支持 64 位原子：InterlockedMin64 会被静默截断为 32 位
     // OpAtomicUMin（只作用于低 32 位 = color），导致高 32 位的 depth 被丢弃、深度测试失效。
     // 退化为 32 位原子 min 只作用于高 32 位的 depth（float-as-uint 单调，小者近）。
-    uint oldDepthBits;
-    FrameBuffer.InterlockedMin(offset + 4, asuint(depth), oldDepthBits);
+    // uint oldDepthBits;
+    // FrameBuffer.InterlockedMin(offset + 4, asuint(depth), oldDepthBits);
 
-    // 本次更近（新值 < 旧值）才写颜色（低 32 位）。颜色写与深度原子不是同一原子操作，
-    // 极端重叠像素可能有颜色竞争，但深度值始终正确。
-    if (asuint(depth) < oldDepthBits) {
-        uint dummy;
-        FrameBuffer.InterlockedExchange(offset + 0, color, dummy);
-    }
+    // // 本次更近（新值 < 旧值）才写颜色（低 32 位）。颜色写与深度原子不是同一原子操作，
+    // // 极端重叠像素可能有颜色竞争，但深度值始终正确。
+    // if (asuint(depth) < oldDepthBits) {
+    //     uint dummy;
+    //     // FrameBuffer.InterlockedExchange(offset + 0, color, dummy);
+    //     FrameBuffer.Store(offset, color);
+    // }
+    uint64_t packed = (uint64_t(asuint(depth))) | uint64_t(color << 32);
+    uint64_t original;
+    FrameBuffer.InterlockedMin64(offset, packed, original);
 }
 
 void RasterizeTriangle(float4 v0, float4 v1, float4 v2, uint color) {
@@ -128,6 +132,10 @@ void RasterizeTriangle(float4 v0, float4 v1, float4 v2, uint color) {
                 continue;
             }
             
+            uint pixelIndex = y * (uint)screenSize.x + x;
+            uint curDepth = FrameBuffer.Load(pixelIndex * 8 + 4);
+            if (asuint(depth) >= curDepth) continue;   // 已经更远，无需原子
+
             uint2 pixel = uint2(x, y);
             AtomicDepthTest(pixel, depth, color);
         }
@@ -179,10 +187,83 @@ void ProcessCluster(uint clusterIndex) {
 void mainRender(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint clusterIndex = dispatchThreadID.x;
     uint totalClusters = EnableClusterList[0];
-    
+
     if (clusterIndex >= totalClusters) return;
-    
-    
+
+
     ProcessCluster(clusterIndex);
 
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 硬光栅顶点/像素着色器（传统光栅管线，替代软光栅 compute mainRender）。
+// VS 用 SV_VertexID + SV_InstanceID 从簇页缓冲直接取顶点，无需顶点/索引缓冲：
+//   - instanceID = 选中簇的线性序号（DrawIndirect 的 firstInstance）
+//   - vertexID   = 簇内三角形列表的局部顶点序号（0..indexCount-1）
+// 每 3 个连续顶点组成一个三角形，取面法线做 Lambert 明暗（与软光栅完全一致）。
+// PS 无资源，仅输出 VS 传递的平着色灰度颜色。
+// ═══════════════════════════════════════════════════════════════════
+
+struct NaniteVSOutput {
+    float4 clipPos : SV_Position;
+    float3 color   : TEXCOORD0;
+};
+
+struct NanitePSInput {
+    float3 color : TEXCOORD0;
+};
+
+NaniteVSOutput mainVS(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID) {
+    NaniteVSOutput output = (NaniteVSOutput)0;
+
+    // 防御性守卫：DrawIndirect 的尾部残留项已被 CPU 清零（vertexCount=0），
+    // 理论上不会派发到 instanceID >= 选中簇数；此处仅保证极端情况输出退化顶点。
+    uint totalClusters = EnableClusterList[0];
+    if (instanceID >= totalClusters) {
+        output.clipPos = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        output.color = float3(0.0f, 0.0f, 0.0f);
+        return output;
+    }
+
+    // 与软光栅 ProcessCluster 逐字节一致地定位簇数据区 cb
+    uint clusterID = EnableClusterList[instanceID + 1];
+    uint pageIndex = clusterID >> 8;
+    uint clusterOffset = clusterID & NANITE_CLUSTER_OFFSET_MASK;
+
+    uint pageBaseAddressOffset = clusterPagesBuffer.Load(4 + pageIndex * 4);
+    uint clusterCount = clusterPagesBuffer.Load(pageBaseAddressOffset);
+    uint clusterDataOffset = clusterPagesBuffer.Load(pageBaseAddressOffset + 4 + 4 * clusterOffset);
+    uint cb = pageBaseAddressOffset + 4 + clusterCount * 4 + clusterDataOffset;
+
+    uint indexDataOffset = clusterPagesBuffer.Load(cb + 0);
+
+    // 当前顶点所属三角形 = vertexID / 3；三个索引连续存放（三角形列表）
+    uint tri = vertexID / 3;
+    uint i0 = clusterPagesBuffer.Load(cb + indexDataOffset + (tri * 3 + 0) * 4);
+    uint i1 = clusterPagesBuffer.Load(cb + indexDataOffset + (tri * 3 + 1) * 4);
+    uint i2 = clusterPagesBuffer.Load(cb + indexDataOffset + (tri * 3 + 2) * 4);
+
+    float3 p0 = LoadVertexPosition(cb, i0);
+    float3 p1 = LoadVertexPosition(cb, i1);
+    float3 p2 = LoadVertexPosition(cb, i2);
+
+    // Lambert 面着色（与软光栅一致：叉积面法线 + 固定光照方向）
+    float3 faceNormal = normalize(cross(p2 - p0, p1 - p0));
+    float lambert = saturate(dot(faceNormal, normalize(float3(0.3f, 0.5f, 0.8f))));
+    uint shade = uint(64.0f + lambert * 191.0f);   // [64,255]，与软光栅同区间
+    output.color = float3(shade, shade, shade) / 255.0f;
+
+    // 当前顶点位置：按 vertexID 取索引（同一顶点会在相邻三角形里重复取同一位置）
+    uint idx = clusterPagesBuffer.Load(cb + indexDataOffset + vertexID * 4);
+    float3 pos = LoadVertexPosition(cb, idx);
+    output.clipPos = mul(float4(pos, 1.0f), VPMatrix);
+    // 硬光栅 Y 翻转：GLM(RH_NO) 裁剪空间 Y 朝上，而 Vulkan 视口把 +Y 映射到帧缓冲下边缘，
+    // 导致离屏纹理上下颠倒。取反等价于软光栅 RasterizeTriangle 里 -ndc.y 的显式翻转，
+    // 使纹理第 0 行 = 场景上方，与呈现 PS 采样方向一致。
+    output.clipPos.y = -output.clipPos.y;
+    return output;
+}
+
+float4 mainPS(NanitePSInput input) : SV_Target {
+    return float4(input.color, 1.0f);
 }

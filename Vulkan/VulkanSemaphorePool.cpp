@@ -104,13 +104,11 @@ namespace FISIR {
 			Error("You can't wait Binary Semaphore In Cpu");
 			return false;
 		}
+		// 等待「尚未被消费过的最小信号值」。这里绝不能拿 nextSignalValue 做快路径短路：
+		// 它在提交时（RHI 线程调用 getNextSignalValue）就自增，只代表信号「已被承诺」，
+		// 不代表 GPU「已完成」——用它短路会让 CPU 在 GPU 尚未完成时提前返回，同步形同虚设。
+		// vkWaitSemaphores 对已达到的值会立即返回 VK_SUCCESS，因此无需额外快路径。
 		auto waitvalue = nextWaitValue.load(std::memory_order_acquire);
-
-		if (nextSignalValue.load(std::memory_order_acquire) >= waitvalue) {
-			uint64_t expect = waitvalue;
-			nextWaitValue.compare_exchange_strong(expect, waitvalue + 1, std::memory_order_acq_rel);
-			return true;
-		}
 
 		VkSemaphoreWaitInfo waitInfo{
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -123,14 +121,18 @@ namespace FISIR {
 
 		auto res = vkWaitSemaphores(mDevice->getLogicalDevice(), &waitInfo, timeout) == VK_SUCCESS;
 		if (res) {
-			uint64_t current = getCurrentValue();
-			if (current < waitvalue) currentValue.store(waitvalue, std::memory_order_acq_rel);
-			
+			// currentValue 记录「CPU 已确认到达的最大值」，VulkanQueue::Submit 用它作为
+			// 时间线信号量在 GPU 侧的等待值（见该处注释）。
+			// 注意：store 只能用 relaxed / release / seq_cst——acq_rel 是「读改写」专用序，
+			// 用在 store 上会被 STL 的 _Check_store_memory_order 断言挡下（Debug 下直接 abort）。
+			if (currentValue.load(std::memory_order_acquire) < waitvalue)
+				currentValue.store(waitvalue, std::memory_order_release);
+
 			uint64_t expect = waitvalue;
 			nextWaitValue.compare_exchange_strong(expect, waitvalue+1, std::memory_order_acq_rel);
 			return true;
 		}
-		
+
 		return false;
 	}
 

@@ -82,8 +82,8 @@ namespace FISIR{
 
 		std::vector<VkSemaphore> semaphoresToWait, semaphoresToSignal;
 		std::vector<uint64_t> ToWaitsValues, ToSignalValues;
-		semaphoresToWait.reserve(SignalSemaphores.size());
-		semaphoresToSignal.reserve(WaitSemaphores.size());
+		semaphoresToWait.reserve(WaitSemaphores.size());
+		semaphoresToSignal.reserve(SignalSemaphores.size());
 		std::vector<VkPipelineStageFlags> waitStages;
 		waitStages.reserve(WaitSemaphores.size());
 
@@ -91,14 +91,14 @@ namespace FISIR{
 		for (auto& semaphore : SignalSemaphores) {
 			semaphoresToSignal.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
 			hasTimeLine |= semaphore->getSemaphoreType() == FenceType::TimeLine;
-			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getNextSignalValue() : 1;
+			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getNextSignalValue() : 0;
 			ToSignalValues.push_back(signalVal);
 		}
 		for (auto& semaphore : WaitSemaphores) {
 			semaphoresToWait.push_back(static_cast<VkSemaphore>(semaphore->getSemaphoreHandle()));
 			hasTimeLine |= semaphore->getSemaphoreType() == FenceType::TimeLine;
 			waitStages.push_back(getVkFlags(semaphore->getWaitingStage()));
-			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getCurrentValue() : 1;
+			uint64_t signalVal = semaphore->getSemaphoreType() == FenceType::TimeLine ? static_cast<VulkanSemaphore*>(semaphore)->getCurrentValue() : 0;
 			ToWaitsValues.push_back(signalVal);
 
 		}

@@ -68,7 +68,6 @@ namespace FISIR {
 		
 		virtual void RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) override;
 	private:
-		void PagePrepareLoop();
 
 		void VulkanRHILoop();
 
@@ -80,6 +79,8 @@ namespace FISIR {
 		VulkanDescriptorPool* mDescriptorPool;
 		VulkanCommandPoolManager* mCmdPoolManager;
 		std::atomic_bool stopTag {0};
+		// 页面「录制序号」发号器：分配页面时自增，RHI 线程据此按录制顺序提交页面。
+		std::atomic<uint64_t> mRecordSequence {0};
 		RingCommandPool CmdMemoryPool[3];
 		CommandExecuteThreadPool* ThreadPool;
   };

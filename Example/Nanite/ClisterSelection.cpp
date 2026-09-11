@@ -1,5 +1,8 @@
 #include "ClusterSelection.h"
 #include "ShaderComplier.h"
+#include "RHIFence.h"
+#include "RHIFrameBuffer.h"
+#include "RHISampler.h"
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -36,7 +39,28 @@ static FISIR::RHIPipeline* ClearScreenPipeline = nullptr;
 static FISIR::RHIResourcePackResult ClusterSelectionResourcePack;
 static FISIR::RHIResourcePackResult NaniteRenderResourcePack;
 static FISIR::RHIResourcePackResult ClearScreenResourcePack;
-static FISIR::RHIFence* ClusterSelectionFence = nullptr;
+
+// ── 硬光栅资源（传统光栅管线渲染到离屏纹理，替代软光栅 compute mainRender）──
+static FISIR::RHIShader* NaniteRenderVSShader = nullptr;   // NaniteRender.hlsl 的 mainVS
+static FISIR::RHIShader* NaniteRenderPSShader = nullptr;   // NaniteRender.hlsl 的 mainPS
+static FISIR::RHIBuffer* IndirectDrawBuffer = nullptr;      // u6：每条选中簇 16B DrawIndirect 参数
+static FISIR::RHIPipeline* NaniteGraphicsPipeline = nullptr;
+static FISIR::RHITexture* OffscreenColorTexture = nullptr;  // 离屏颜色附件（呈现 PS 采样）
+static FISIR::RHITexture* OffscreenDepthTexture = nullptr;  // 离屏深度附件
+static FISIR::RHIRenderPass* OffscreenRenderPass = nullptr;
+static FISIR::RHIFrameBuffer* OffscreenFrameBuffer = nullptr;
+static FISIR::RHISampler* OffscreenSampler = nullptr;
+
+// ── 帧同步信号量 ──────────────────────────────────────────────
+// 帧内的 clear/select/render/present 全部由信号量在 GPU 侧串联，不再使用围栏；
+// CPU 只在帧首（WaitFrameGPUIdle）等待 FrameDone 一次。
+static FISIR::RHISemaphore* ClearDoneSemaphore  = nullptr;   // 清屏 → 渲染（binary）
+static FISIR::RHISemaphore* SelectDoneSemaphore = nullptr;   // 簇选择 → 渲染（binary）
+static FISIR::RHISemaphore* RenderDoneSemaphore = nullptr;   // 渲染(compute) → 呈现(graphics)（binary）
+static FISIR::RHISemaphore* FrameDoneSemaphore  = nullptr;   // 呈现(graphics) → 下帧帧首 CPU 等待（timeline）
+
+static FISIR::RHIFence* DebugFence = nullptr; // 用于调试：GPU 侧等待帧完成，CPU 侧检查帧内各阶段是否完成。
+
 
 void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 		//Complie and Create Shader（从磁盘加载 HLSL 源文件）
@@ -51,6 +75,18 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 	renderCompiler->compileShader(RenderSource.data(), RenderSource.size(), "mainRender", "cs_6_7");
 	NaniteRenderComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainRender", renderCompiler->getShaderData(), renderCompiler->getShaderDataSize());
 	if (!NaniteRenderComputeShader) Error("[Nanite] NaniteRenderComputeShader creation FAILED!");
+
+	// 硬光栅 VS/PS：与软光栅 compute 同源（NaniteRender.hlsl 新增入口 mainVS/mainPS），
+	// VS 复用顶部的 clusterPagesBuffer(u1)/EnableClusterList(u3)/RenderParams(b6)。
+	FISIR::ShaderComplier* vsCompiler = new FISIR::ShaderComplier();
+	vsCompiler->compileShader(RenderSource.data(), RenderSource.size(), "mainVS", "vs_6_0");
+	NaniteRenderVSShader = rhi->RHICreateShader(FISIR::ShaderTYP::__VERTEXSHADER__, "mainVS", vsCompiler->getShaderData(), vsCompiler->getShaderDataSize());
+	if (!NaniteRenderVSShader) Error("[Nanite] NaniteRenderVSShader creation FAILED!");
+
+	FISIR::ShaderComplier* psCompiler = new FISIR::ShaderComplier();
+	psCompiler->compileShader(RenderSource.data(), RenderSource.size(), "mainPS", "ps_6_0");
+	NaniteRenderPSShader = rhi->RHICreateShader(FISIR::ShaderTYP::__FRAGMENTSHADER__, "mainPS", psCompiler->getShaderData(), psCompiler->getShaderDataSize());
+	if (!NaniteRenderPSShader) Error("[Nanite] NaniteRenderPSShader creation FAILED!");
 
 	//1.reate Buffer
 	// BVH：改用 host-visible + coherent 直接上传（仿 BunnyPBR），避免 transfer→compute
@@ -73,11 +109,13 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 
 	//3.Create PageDataBuffer
-	// mesh 数据同样 host-visible 直接上传。
+	// mesh 数据同样 host-visible 直接上传。硬光栅后此缓冲被 compute（簇选择）与
+	// graphics（VS 读顶点）两个队列族同时读，须并发共享（异队列族 EXCLUSIVE 需所有权转移）。
 	FISIR::BufferInfo clusterPageDataBufferInfo{
 		.size = 4 * 1024 * 1024,
 		.bufferlayout = FISIR::RBuffer,
 		.memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent),
+		.concurrentSharing = true,
 	};
 	ClusterPageDataBuffer = rhi->RHICreateBuffer(clusterPageDataBufferInfo);
 	
@@ -86,10 +124,10 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 		.Direction = {0.f, 0.f, -1.f, 0.f},
 		.LodScale = 1.f,
 		.ZNear = 0.1f,
-		.CountOfClusters = 932,   // mitsuba.nanitemesh 共 932 个簇
+		.CountOfClusters = NANITE_MAX_CLUSTERS,   // mitsuba.nanitemesh 簇总数
 		.TotalBVHNodes = 21,      // mitsuba.bvh = 4368 字节 / 208 = 21 节点
 		.TotalSlices = 84,        // 21 节点 × 4 子槽
-		.MaxClusters = 932,
+		.MaxClusters = NANITE_MAX_CLUSTERS,
 	};
 
 	//4.Create InputDataBuffer
@@ -103,12 +141,13 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	//5.Create EnableClusterListBuffer
 	// 主机可见 + 相干：compute 写完计数与 clusterID 列表后，CPU 经 getBufferData()
-	// 直接读回选中结果（fence->wait() 保证写入完成、相干内存保证可见性）。
+	// 直接读回选中结果（WaitFrameGPUIdle() 之后读，相干内存保证可见性，比实际帧滞后一帧）。
 	FISIR::BufferInfo enableClusterListBufferInfo{
 		.data_CPU = nullptr,
 		.size = 4 * 1024,
 		.bufferlayout = FISIR::RWBuffer,
 		.memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent),
+		.concurrentSharing = true,   // compute 写、graphics VS 读，异队列族需并发共享
 	};
 	EnableClusterListBuffer = rhi->RHICreateBuffer(enableClusterListBufferInfo);
 	
@@ -121,12 +160,24 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 	};
 	DebugClusterListBuffer = rhi->RHICreateBuffer(debugClusterListBufferInfo);
 
+	//7. 间接绘制缓冲：簇选择 compute 写入 DrawIndirect 参数（16B/簇），graphics 用 DrawIndirect 读取。
+	// compute 写、graphics 读，异队列族并发共享；host-visible 以便 CPU 每帧清零尾部残留项。
+	FISIR::BufferInfo indirectDrawBufferInfo{
+		.data_CPU = nullptr,
+		.size = (uint64_t)NANITE_MAX_CLUSTERS * 16,
+		.bufferlayout = FISIR::IndirectBuffer | FISIR::RWBuffer,
+		.memoryType = (FISIR::MemType)(FISIR::MemTypHostVisable | FISIR::MemTypHostCoherent),
+		.concurrentSharing = true,
+	};
+	IndirectDrawBuffer = rhi->RHICreateBuffer(indirectDrawBufferInfo);
+	memset(IndirectDrawBuffer->getBufferData(), 0, (uint64_t)NANITE_MAX_CLUSTERS * 16);
+
 	//7. Nanite 渲染用：FrameBuffer（8B/px）、FrameLock（4B/px）、RenderParams（96B）
 	const uint32_t pixelCount = NANITE_RT_WIDTH * NANITE_RT_HEIGHT;
 	// FrameBuffer 是唯一跨队列族的缓冲：compute（渲染）写、graphics（呈现）读。
 	// 本机 graphics/compute 分属不同队列族（Graphics=0, Compute=2），若保持独占共享模式
 	// 则跨族访问必须做所有权转移，否则触发校验错误甚至挂起。改为并发共享即可免转移；
-	// 帧间仍由 fence->wait() 串行化保证写后读正确。
+	// 帧间由「帧首 CPU 等待 FrameDone」串行化，帧内由 RenderDone 信号量建立跨队列可见性。
 	FISIR::BufferInfo frameBufferInfo{
 		.data_CPU = nullptr,
 		.size = (uint64_t)pixelCount * 8,
@@ -164,7 +215,7 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 	// FrameLock 必须全 0（否则锁初值为 1 → 对应像素永久自旋死锁）
 	memset(FrameLock->getBufferData(), 0, (uint64_t)pixelCount * 4);
 
-	ClusterSelectionResourcePack = rhi->RHICreateResourcePack({ ClusterSelectionBuffer, ClusterPageDataBuffer, ClusterDataBuffer, EnableClusterListBuffer, InputDataBuffer, DebugClusterListBuffer });
+	ClusterSelectionResourcePack = rhi->RHICreateResourcePack({ ClusterSelectionBuffer, ClusterPageDataBuffer, ClusterDataBuffer, EnableClusterListBuffer, InputDataBuffer, DebugClusterListBuffer, IndirectDrawBuffer });
 	
 
 	//Create Descriptor and Pipeline
@@ -178,6 +229,7 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 		{3, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::ComputeShaderStage},      // u3 EnableClusterList
 		{4, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::ComputeShaderStage}, // b4 InputData
 		{5, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::ComputeShaderStage},      // u5 DebugBuffer
+		{6, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::ComputeShaderStage},      // u6 IndirectDrawBuffer
 
 	};
 
@@ -232,130 +284,163 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	ClearScreenResourcePack = rhi->RHICreateResourcePack({ FrameBuffer, RenderParamsBuffer });
 
-	ClusterSelectionFence = rhi->RHICreateFence(false, "ClusterSelectionFence");
-	if (!ClusterSelectionFence) Error("Failed to create ClusterSelectionFence");
+	// ── 硬光栅离屏渲染目标 + 渲染通道 + 帧缓冲 ─────────────────────
+	// 传统光栅把结果写入离屏颜色纹理，呈现 PS 再采样它（enableTextureInput）。
+	FISIR::TextureInfo colorTexInfo{
+		.size = {NANITE_RT_HEIGHT, NANITE_RT_WIDTH, 1},   // TextureSize 字段序为 {height, width, depth}
+		.colorType = FISIR::TextureCOLORType::RGBA_8,
+		.type = FISIR::TextureType::TEXTURE2D,
+		.useFor = FISIR::TextureUseForColorAttachment | FISIR::TextureUseForShaderReadOnly,
+		.mipLevels = 1, .arrayLayers = 1, .sampleCount = 0,
+	};
+	OffscreenColorTexture = rhi->RHICreateTexture(colorTexInfo);
+
+	FISIR::TextureInfo depthTexInfo{
+		.size = {NANITE_RT_HEIGHT, NANITE_RT_WIDTH, 1},
+		.colorType = FISIR::TextureCOLORType::Depth24_Stencil8,
+		.type = FISIR::TextureType::TEXTURE2D,
+		.useFor = FISIR::TextureUseForDepthStencilAttachment,
+		.mipLevels = 1, .arrayLayers = 1, .sampleCount = 0,
+	};
+	OffscreenDepthTexture = rhi->RHICreateTexture(depthTexInfo);
+
+	FISIR::ColorEntry colorEntry{ {.loadOp = FISIR::RenderTargetLoadAction::Clear, .storeOp = FISIR::RenderTargetStoreAction::Store, .dstLayout = FISIR::TextureLayout::ShaderReadOnlyOptimal, .colorType = FISIR::TextureCOLORType::RGBA_8, .sampleCount = 0} };
+	FISIR::DepthStencilEntry depthStencilEntry{ .sampleCount = 0, .dstLayout = FISIR::TextureLayout::DepthStencilAttachmentOptimal, .exeit = true };
+	depthStencilEntry.depthAction.setDWAndSW(true, true);
+	FISIR::SubPassInfo subPassInfo{ .ColorEntryMask = 1, .UseDepthStencil = true, .ReadDepthAsInput = false };
+	FISIR::RHIRenderPassInfo renderPassInfo({ {0, colorEntry} }, depthStencilEntry, { subPassInfo });
+	OffscreenRenderPass = rhi->RHICreateRenderPass(renderPassInfo);
+	OffscreenFrameBuffer = rhi->RHICreateFrameBuffer(NANITE_RT_WIDTH, NANITE_RT_HEIGHT, { OffscreenColorTexture, OffscreenDepthTexture }, renderPassInfo);
+
+	FISIR::SamplerInfo samplerInfo{};
+	OffscreenSampler = rhi->RHICreateSampler(samplerInfo);
+
+	// ── 硬光栅管线（VS + PS，无顶点/索引缓冲，靠 SV_VertexID/SV_InstanceID）──
+	// 复用软光栅 NaniteRenderResourcePack：DXC 编译 VS 时不会剔除未用全局资源，
+	// VS 的 SPIR-V 仍声明 u0..u5/b6 全部 7 个 binding，故 describeInfo 必须逐一列出
+	// （与软光栅 renderDescribeInfo 一致），仅把阶段从 Compute 改为 Vertex。
+	FISIR::RHIPipelineDescribeInfo graphicsDescribe {
+		{0, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{1, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{2, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{3, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{4, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{5, 1, FISIR::RHIDescriptorTyp::RWBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+		{6, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::VertexShaderStage},
+	};
+	FISIR::RHIPipelineState graphicsState{
+		.describeInfo = graphicsDescribe,
+		.topologyType = FISIR::TopologyType::Triangle,
+		.rasterizationState = { false, false, false, FISIR::PolygonMode::Fill, FISIR::FrontFace::CW, FISIR::CullMode::None },
+		.depthStencilState = { true, true, false, 0.0f, 1.0f, FISIR::_Less_ },
+		.colorblendState = { .UsingColorBit = (FISIR::ColorBit)(FISIR::_R_PASS_ | FISIR::_G_PASS_ | FISIR::_B_PASS_) },
+		.renderpass = OffscreenFrameBuffer->getFrameRenderPass(),
+	};
+	graphicsState.Shaders[FISIR::__VERTEXSHADER__] = NaniteRenderVSShader;
+	graphicsState.Shaders[FISIR::__FRAGMENTSHADER__] = NaniteRenderPSShader;
+	NaniteGraphicsPipeline = rhi->RHICreatePipeline(graphicsState);
+	if (!NaniteGraphicsPipeline) Error("[Nanite] NaniteGraphicsPipeline creation FAILED!");
+
+	// ── 帧同步信号量 ──
+	// clear → render 与 select → render 各一枚 binary 信号量（渲染 pass 需同时等待两者：
+	// FrameBuffer 来自清屏、EnableClusterList 来自簇选择）。
+	ClearDoneSemaphore  = rhi->RHICreateSemaphore("NaniteClearDoneSemaphore");
+	SelectDoneSemaphore = rhi->RHICreateSemaphore("NaniteSelectDoneSemaphore");
+	RenderDoneSemaphore = rhi->RHICreateSemaphore("NaniteRenderDoneSemaphore");
+	// 等待阶段决定该信号量的 wait 挂在管线的哪一级：
+	// 前两者由渲染 compute 等待（ComputeShaderStage），后者由呈现 pass 的片元着色器等待。
+	ClearDoneSemaphore->setWaitingStage(FISIR::RHIUsingStage::ComputeShaderStage);
+	// 硬光栅：SelectDone 由 graphics 渲染 pass 等待，等待点须早于 DrawIndirect（读间接缓冲）
+	// 与 VS（读 EnableClusterList/mesh）。TOP_OF_PIPE 是最早阶段，覆盖两者。
+	SelectDoneSemaphore->setWaitingStage(FISIR::RHIUsingStage::PipelinTopStage);
+	RenderDoneSemaphore->setWaitingStage(FISIR::RHIUsingStage::FragmentShaderStage);
+
+	// 帧完成信号量必须是时间线类型：binary 信号量无法在 CPU 侧 wait()。
+	// 值从 1 起（见 VulkanSemaphore 的 nextSignalValue/nextWaitValue 初值），
+	// 每帧末端 signal 一次、下帧帧首 wait 一次，严格配对。
+	FrameDoneSemaphore = rhi->RHICreateSemaphore("NaniteFrameDoneSemaphore", FISIR::FenceType::TimeLine);
+
+	if (!ClearDoneSemaphore || !SelectDoneSemaphore || !RenderDoneSemaphore || !FrameDoneSemaphore)
+		Error("[Nanite] Frame sync semaphore creation FAILED!");
+
+	DebugFence = rhi->RHICreateFence(false, "NaniteDebugFence");
+}
+
+void EndFramePresentPass(FISIR::RHIRenderCommandList& cmdList, const FISIR::SwapChainGetImageInfo& info) {
+	// waits  ：acquire 信号量（等交换链图像可用）+ RenderDone（等渲染 compute 写完 FrameBuffer）
+	// signals：renderFinish（供 present() 等待）+ FrameDone（供下帧帧首 CPU 等待）
+	// fence  ：info.finishFence 不用于等待 GPU，而是「提交握手」：调用方在 present() 前等它被
+	//          RHI 线程提交（见 Main.cpp），保证 vkQueuePresentKHR 等待的 renderFinish 已经有
+	//          对应的 signal 提交在队列里，否则校验层会报 "... has no way to be signaled"。
+	cmdList.End(info.finishFence,
+		{ info.avaliable, RenderDoneSemaphore },
+		{ info.renderFinish, FrameDoneSemaphore });
+}
+
+void WaitFrameGPUIdle() {
+	static bool start = false;
+	if (start) FrameDoneSemaphore->wait();
+	start = true;
 }
 
 void ExecuteClusterSelectionPass(FISIR::DynamicRHI* rhi) {
-	// --- 2. 清屏（GPU compute，替代 CPU std::fill）---
-	// 渲染前把 FrameBuffer 每个像素清为远深度(1.0) + 清屏色(0)，保证 AtomicDepthTest 有正确的初始深度。
-	// 独立命令列表（page 只能提交一次，不能与渲染共用同一 cmdlist 对象）。
-	{
-		FISIR::RHIComputeCommandList cmdlist(rhi);
-		cmdlist.SetPipelineState(ClearScreenPipeline);
-		cmdlist.SetResourcePack(ClearScreenResourcePack);
-		cmdlist.dispatch((NANITE_RT_WIDTH + 15) / 16, (NANITE_RT_HEIGHT + 15) / 16, 1);
-		cmdlist.End(ClusterSelectionFence);
-	}
-	ClusterSelectionFence->wait();
-	ClusterSelectionFence->reset();
-	// --- 1. 簇选择（独立命令列表，每个批次一个 fresh page）---
+	// 硬光栅版：仅保留「簇选择」compute，渲染改为传统光栅（DrawIndirect 渲染到离屏纹理）。
+	// 软光栅的清屏 compute + mainRender compute 的创建代码已保留，但不再录制。
+	// 各 pass 独立命令列表（page 只能提交一次），依赖全部由信号量在 GPU 侧建立。
+	// 前置条件：调用方已执行 WaitFrameGPUIdle()，上一帧 GPU 工作已完成。
+
+	// --- 1. 簇选择（GPU 驱动剔除：写 EnableClusterList + IndirectDrawBuffer）---
+	// 渲染通道 loadOp=Clear 负责清屏，替代原软光栅的清屏 compute。
 	*static_cast<int*>(EnableClusterListBuffer->getBufferData()) = 0;
+	// 清空间接绘制缓冲：尾部残留项置 0（vertexCount=0）→ 派发到未选中簇的 draw 为 no-op。
+	memset(IndirectDrawBuffer->getBufferData(), 0, (uint64_t)NANITE_MAX_CLUSTERS * 16);
 	{
 		FISIR::RHIComputeCommandList cmdlist(rhi);
 		cmdlist.SetPipelineState(ClusterSelectionPipeline);
 		cmdlist.SetResourcePack(ClusterSelectionResourcePack);
 		cmdlist.dispatch(2, 1, 1);
-		cmdlist.End(ClusterSelectionFence);
-	}
-	ClusterSelectionFence->wait();
-	ClusterSelectionFence->reset();
-
-	// 诊断：读回 DebugBuffer（每个 slice 96 字节 = 24 uint32），检查 BVH 数据与叶子遍历
-	static bool dbgDumpLogged = false;
-	if (!dbgDumpLogged) {
-		const uint32_t* dbg = static_cast<const uint32_t*>(DebugClusterListBuffer->getBufferData());
-		if (dbg) {
-			float lx = *reinterpret_cast<const float*>(&dbg[0]);
-			float ly = *reinterpret_cast<const float*>(&dbg[1]);
-			float lz = *reinterpret_cast<const float*>(&dbg[2]);
-			float lw = *reinterpret_cast<const float*>(&dbg[3]);
-			Info("[Nanite] slice0 LODBounds=({}, {}, {}, r={}) bLeaf={} NumChildren={} ChildStartRef={}",
-				lx, ly, lz, lw, dbg[20], dbg[15], dbg[14]);
-			uint32_t leafCount = 0, enabledCount = 0;
-			for (uint32_t i = 0; i < 84; ++i) {
-				if (dbg[i * 24 + 20] != 0) ++leafCount;
-				if (dbg[i * 24 + 18] != 0) ++enabledCount;
-			}
-			Info("[Nanite] leaf slices = {} / 84, enabled slices = {}", leafCount, enabledCount);
-			// 诊断哨兵：DebugBuffer[100]（偏移 100*24 uint32）
-			const uint32_t* s100 = dbg + 100 * 24;
-			Info("[Nanite] sentinel[100]: LODBounds.x=0x{:x} bLeaf=0x{:x} NumChildren=0x{:x}",
-				s100[0], s100[20], s100[15]);
-		}
-		dbgDumpLogged = true;
+		cmdlist.End(nullptr, {}, { SelectDoneSemaphore });
 	}
 
-	//{
-	//	const uint32_t* p = static_cast<const uint32_t*>(FrameBuffer->getBufferData());
-	//	Info("[Nanite] after clear: p[0]=0x{:x} p[1]=0x{:x} (pixel0: low=0x{:x} high=0x{:x})",
-	//		p[0], p[1], p[0], p[1]);
-	//}
-
-	// --- 3. Nanite 渲染（同一执行位置完成选择和渲染）---
-	uint32_t total = GetEnabledClusterCount();
-	static bool diagLogged = false;
-	if (!diagLogged) {
-		Info("[Nanite] selected clusters = {}", total);
-		diagLogged = true;
-	}
-	if (total == 0) return;
-	// 渲染必须用独立的新命令列表：同一 RHIComputeCommandList 复用会导致
-	// 第二个 End 落在已提交的 page 上被静默丢弃（page 只能提交一次）。
-	//Info("[Nanite] render: dispatch submitted");
+	// --- 2. 传统光栅渲染（渲染到离屏纹理，DrawIndirect 派发每个选中簇）---
 	{
-		FISIR::RHIComputeCommandList  cmdlist(rhi);
-		cmdlist.SetPipelineState(NaniteRenderPipeline);
+		FISIR::RHIRenderCommandList cmdlist(rhi);
+		FISIR::ClearValue clearOffscreen{
+			.ColorClear = 1,
+			.colorinfo = {0.149f, 0.165f, 0.180f, 1.0f},   // 与软光栅 ClearColor 0xFF2E2A26(ABGR) 同色背景
+			.DepthStencilClear = 1,
+			.depthclearval = 1.0f,
+		};
+		cmdlist.BeginRenderPass(OffscreenFrameBuffer, 0, clearOffscreen);
+		cmdlist.SetPipelineState(NaniteGraphicsPipeline);
 		cmdlist.SetResourcePack(NaniteRenderResourcePack);
-		cmdlist.dispatch((total + 63) / 64, 1, 1);
-		cmdlist.End(ClusterSelectionFence);
-	}
-	ClusterSelectionFence->wait();
-	ClusterSelectionFence->reset();
-	//{
-	//	const uint32_t* p = static_cast<const uint32_t*>(FrameBuffer->getBufferData());
-	//	// 找一个已知被三角形覆盖的像素，比如屏幕中心
-	//	uint32_t cx = NANITE_RT_WIDTH / 2, cy = NANITE_RT_HEIGHT / 2;
-	//	uint32_t idx = (cy * NANITE_RT_WIDTH + cx) * 2;
-	//	Info("[Nanite] after render center: p[0]=0x{:x} p[1]=0x{:x}", p[idx], p[idx + 1]);
-	//}
-	//{
-	//	uint64_t* p = static_cast<uint64_t*>(GetFrameBuffer()->getBufferData());
-	//	for (uint32_t i = 0; i < 1024; ++i) {
-	//		p[i] = (uint64_t(0x00000000u) << 32) | uint64_t(0x0000FF00u);  // 深度0，红色
-	//	}
-	//}
-
-	// 诊断：统计渲染后颜色槽非零像素数，判断渲染是否真正写出
-	static bool renderDiagLogged = false;
-	if (!renderDiagLogged) {
-		const uint32_t* p = static_cast<const uint32_t*>(FrameBuffer->getBufferData());
-		uint32_t nonZero = 0;
-		for (uint32_t i = 0; i < NANITE_RT_WIDTH * NANITE_RT_HEIGHT; ++i) {
-			if (p[i * 2 + 0] != 0) ++nonZero;   // 颜色槽（高 32 位）
-		}
-		Info("[Nanite] render wrote {} / {} non-zero color pixels", nonZero, NANITE_RT_WIDTH * NANITE_RT_HEIGHT);
-		renderDiagLogged = true;
-		for (int i = 0; i < 5; ++i) {
-			int base = (32 + i * 32) / 4;   // = 8 + i * 8 （uint32 索引）
-			Info("[Nanite] cluster{}: cid=0x{:x} cb=0x{:x} w0=0x{:x} w4=0x{:x} w8=0x{:x} w12=0x{:x}",
-				i, p[base + 0], p[base + 1], p[base + 2], p[base + 3], p[base + 4], p[base + 5]);
-		}
-		float px = *reinterpret_cast<const float*>(&p[68 / 4]);
-		float py = *reinterpret_cast<const float*>(&p[72 / 4]);
-		float pz = *reinterpret_cast<const float*>(&p[76 / 4]);
-		float cx = *reinterpret_cast<const float*>(&p[80 / 4]);
-		float cy = *reinterpret_cast<const float*>(&p[84 / 4]);
-		float cz = *reinterpret_cast<const float*>(&p[88 / 4]);
-		float cw = *reinterpret_cast<const float*>(&p[92 / 4]);
-		Info("[Nanite] p0=({},{},{}) clip0=({},{},{},{}) ndc=({},{})", px, py, pz, cx, cy, cz, cw, cx / cw, cy / cw);
+		cmdlist.SetViewPort(0, 0, NANITE_RT_WIDTH, NANITE_RT_HEIGHT, 1.0f, 0.0f);
+		cmdlist.SetScissor(NANITE_RT_WIDTH, NANITE_RT_HEIGHT);
+		cmdlist.DrawIndirect(IndirectDrawBuffer, 0, NANITE_MAX_CLUSTERS, 16);
+		cmdlist.EndRenderPass();
+		cmdlist.End(nullptr, { SelectDoneSemaphore }, { RenderDoneSemaphore });
 	}
 }
 
 void DestroyClusterResource(FISIR::DynamicRHI* rhi) {
-	if (ClusterSelectionFence) {
-		rhi->RHIDestroyFence(ClusterSelectionFence);
-		ClusterSelectionFence = nullptr;
+	// 信号量在其上所有提交完成前不可销毁，而此处已退出主循环、最后一帧的呈现提交
+	// 未必完成；先等一次帧完成信号量即可保证安全（有未等待的提交时才等）。
+	WaitFrameGPUIdle();
+	if (FrameDoneSemaphore) {
+		rhi->RHIDestroySemaphore(FrameDoneSemaphore);
+		FrameDoneSemaphore = nullptr;
+	}
+	if (RenderDoneSemaphore) {
+		rhi->RHIDestroySemaphore(RenderDoneSemaphore);
+		RenderDoneSemaphore = nullptr;
+	}
+	if (SelectDoneSemaphore) {
+		rhi->RHIDestroySemaphore(SelectDoneSemaphore);
+		SelectDoneSemaphore = nullptr;
+	}
+	if (ClearDoneSemaphore) {
+		rhi->RHIDestroySemaphore(ClearDoneSemaphore);
+		ClearDoneSemaphore = nullptr;
 	}
 
 	if (ClusterSelectionBuffer) {
@@ -379,6 +464,28 @@ void DestroyClusterResource(FISIR::DynamicRHI* rhi) {
 	if (RenderParamsBuffer) {
 		rhi->RHIDestroyBuffer(RenderParamsBuffer);
 		RenderParamsBuffer = nullptr;
+	}
+
+	// ── 硬光栅资源清理 ──
+	if (IndirectDrawBuffer) {
+		rhi->RHIDestroyBuffer(IndirectDrawBuffer);
+		IndirectDrawBuffer = nullptr;
+	}
+	if (OffscreenFrameBuffer) {
+		rhi->RHIDestroyFrameBuffer(OffscreenFrameBuffer);
+		OffscreenFrameBuffer = nullptr;
+	}
+	if (OffscreenColorTexture) {
+		rhi->RHIDestroyTexture(OffscreenColorTexture);
+		OffscreenColorTexture = nullptr;
+	}
+	if (OffscreenDepthTexture) {
+		rhi->RHIDestroyTexture(OffscreenDepthTexture);
+		OffscreenDepthTexture = nullptr;
+	}
+	if (OffscreenSampler) {
+		rhi->RHIDestroySampler(OffscreenSampler);
+		OffscreenSampler = nullptr;
 	}
 
 	rhi->RHIDestroyResourcePack(ClusterSelectionResourcePack);
@@ -462,4 +569,12 @@ RenderParams& getRenderParams() {
 
 FISIR::RHIResourcePackResult& GetClusterSelectionResourcePack(){
 	return ClusterSelectionResourcePack;
+}
+
+FISIR::RHITexture* GetOffscreenColorTexture() {
+	return OffscreenColorTexture;
+}
+
+FISIR::RHISampler* GetOffscreenSampler() {
+	return OffscreenSampler;
 }

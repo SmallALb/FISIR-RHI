@@ -298,6 +298,10 @@ namespace FISIR{
 			uint16_t currentOrder{ 0 };
 			std::atomic<PageFlag> flags = PageFlag::None;
 			bool IsInRenderPass{ false };
+			// 全局单调递增的「录制序号」，由 RHI 在分配页面时写入（见 VulkanRHI::RHIGetCommandPoolPage）。
+			// RHI 线程按它决定提交顺序：页面之间可以存在信号量依赖（compute 页 signal、render 页
+			// wait），而 Vulkan 要求 wait 引用的 signal 必须已被提交，故提交顺序必须等于录制顺序。
+			uint64_t recordOrder{ 0 };
 
 			LockFreeQue<BatchInfo> BatchQueue;
 

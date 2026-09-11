@@ -59,6 +59,17 @@ struct HierarchyNodeSlice {
 };
 RWStructuredBuffer<HierarchyNodeSlice> DebugBuffer : register(u5);
 
+// 间接绘制缓冲：ProcessCluster 为每个选中的簇写一条 VkDrawIndirectCommand
+// （16 字节：vertexCount/instanceCount/firstVertex/firstInstance）。
+// 硬光栅据此派发 DrawIndirect，无需 CPU 回读选中结果。
+struct DrawIndirectArgs {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+};
+RWStructuredBuffer<DrawIndirectArgs> IndirectDrawBuffer : register(u6);
+
 HierarchyNodeSlice UnPackHierarchyNodeSlice(uint4 RawData0, uint4 RawData1, uint4 RawData2, uint RawData3) {
 	const uint4 Misc0 = RawData1;   // BoxBoundsCenter.xyz + MinLODError_MaxParentLODError（两个 half 打包）
 	const uint4 Misc1 = RawData2;   // BoxBoundsExtent.xyz + ChildStartReference
@@ -167,7 +178,7 @@ void ProcessCluster(uint PageIndex, uint ClusterOffset) {
 	float3 toCluster = payload.LODBounds.xyz -  Position.xyz;
 	float projScale = GetProjectionScales( Direction.xyz, toCluster, payload.LODBounds.w);
 
-	float threshold =  LodScale * payload.LODError;
+	float threshold = max(LodScale * payload.LODError, 0.01f);
 
 	uint clusterID = (PageIndex << 8) | ClusterOffset;
 	if (projScale > threshold) {
@@ -182,10 +193,22 @@ void ProcessCluster(uint PageIndex, uint ClusterOffset) {
 		clusterDataBuffer[write].baseIndex = payload.BaseIndex;
 		clusterDataBuffer[write].baseVertex = payload.BaseVertex;
 
+		// 硬光栅间接绘制参数：VS 用 firstInstance 反查 EnableClusterList[write+1]，
+		// vertexCount = 簇索引总数（非索引三角形列表）。CPU 每帧会把尾部残留项清零，
+		// 使 write 超出选中数的 draw 因 vertexCount=0 成为 no-op。
+		IndirectDrawBuffer[write].vertexCount = payload.IndexCount;
+		IndirectDrawBuffer[write].instanceCount = 1;
+		IndirectDrawBuffer[write].firstVertex = 0;
+		IndirectDrawBuffer[write].firstInstance = write;
+
 	}
 }
 
 void ProcessLeafCluster(HierarchyNodeSlice slice) {
+		// ProcessLeafCluster 里
+	InterlockedAdd(DebugBuffer[200].NumChildren, 1);
+	InterlockedAdd(DebugBuffer[202].NumChildren, slice.NumChildren);
+	InterlockedMax(DebugBuffer[203].NumChildren, slice.NumChildren);
 	if (!slice.bLeaf || slice.NumChildren == 0) return;
 
 	uint pageIndex = slice.StartPageIndex;
@@ -200,6 +223,8 @@ void ProcessLeafCluster(HierarchyNodeSlice slice) {
 [numthreads(64, 1, 1)]
 void mainCS(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
+// ProcessCluster 开头
+InterlockedAdd(DebugBuffer[201].NumChildren, 1);
 	// 诊断哨兵：thread 0 写入保留槽 DebugBuffer[100]，用于验证 shader 是否真正执行
 	if (dispatchThreadID.x == 0) {
 		DebugBuffer[100].LODBounds = float4(1.0f, 2.0f, 3.0f, 4.0f);
@@ -215,17 +240,25 @@ void mainCS(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
 	HierarchyNodeSlice slice = GetHierarchyNodeSlice(clusterSelectionBuffer, nodeIndex, childIndex);
 	DebugBuffer[sliceIndex] = slice;   // 逐 slice 写调试输出（每个线程独占一行，无竞争）
+	if (dispatchThreadID.x == 0) {
+		DebugBuffer[200].NumChildren   = 0;   // 处理的叶子数
+		DebugBuffer[201].NumChildren   = 0;   // ProcessCluster 调用总次数
+		DebugBuffer[202].NumChildren   = 0;   // NumChildren 累加值
+		DebugBuffer[203].NumChildren   = 0;   // 每个叶子的 NumChildren 最大值
+	}
 
-	if (!slice.bEnabled || !slice.bLoaded) return;
+
+
+	if (!slice.bEnabled || !slice.bLoaded || !slice.bLeaf) return;
 
 	float3 toCenter = slice.LODBounds.xyz -  Position.xyz;
 	float projScale = GetProjectionScales( Direction.xyz, toCenter, slice.LODBounds.w);
 	float threshold =  LodScale * slice.MaxParentLODError;
 
-	if (projScale == 0.0f) return;
 
-	if (projScale > threshold) {
-		if (slice.bLeaf)  ProcessLeafCluster(slice); 
-	}
-	else if (slice.bLeaf)  ProcessLeafCluster(slice); 
+	if (projScale == 0.0f) return;
+	if (projScale <= threshold) return;
+
+	ProcessLeafCluster(slice);  
 }
+ 
