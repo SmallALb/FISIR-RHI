@@ -88,7 +88,28 @@ void ImGui_ImplFISIR_SetTooltip(const char* fmt, ...);
 // 还要分配命令页。RHI 的 Init() 是在那三个工作线程启动**之前**做这件事的；若改到帧中途的
 // ImGui 渲染回调里做，就会和正在跑的工作线程互等 → 一拖出窗口立刻死锁（实测）。
 // 所以 Platform_SwapBuffers 只把新视口登记下来并跳过本帧，由本函数在安全的时点补建。
+//
+// **非 Win32 平台（Android）上是安全 no-op**：那里只有一个主视口，它的视口/交换链由宿主
+// （示例的 Main.cpp）用 RHICreateViewport 建好、ImGui 管线在第一次 RenderDrawData 时按宿主
+// 传入的 render pass 惰性创建 —— 没有任何「平台窗口」需要在帧首补资源。
 void ImGui_ImplFISIR_PrepareViewportSwapChains();
+
+// ── 命名空间别名 ────────────────────────────────────────────────────────────
+// 上面这些函数声明在**全局命名空间**（桌面示例 Nanite 就是按全局名调用的，行为不能变）；
+// 而 Android 侧的示例是按 FISIR:: 限定的方式调用的。这里用 using 声明把它们在 FISIR 下
+// **再引一遍**：这只是同一实体多一个可见名（不新增符号、不改签名、不产生重载），
+// 两个平台的调用点都落在同一个函数上。
+//
+// 注意必须是 using 声明而不是**在 namespace FISIR 里重新声明一遍**：后者会引入一个独立的
+// 实体，于是 `FISIR::ImGui_ImplFISIR_Init` 与 `ImGui_ImplFISIR_Init` 变成两个候选，
+// 在 FISIR 命名空间内部（Android 的 Main.cpp 就是这样）做未限定调用会报「call is ambiguous」。
+namespace FISIR {
+	using ::ImGui_ImplFISIR_Init;
+	using ::ImGui_ImplFISIR_Shutdown;
+	using ::ImGui_ImplFISIR_RenderDrawData;
+	using ::ImGui_ImplFISIR_SetTooltip;
+	using ::ImGui_ImplFISIR_PrepareViewportSwapChains;
+}
 
 #if defined(_WIN32)
 // 每帧调用一次（在 ImGui::NewFrame() 之前）：同步鼠标位置 / 焦点 / 光标形状。

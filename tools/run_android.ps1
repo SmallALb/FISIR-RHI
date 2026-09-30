@@ -7,15 +7,17 @@
     这个负责「装到手机 → 启动 → 抓日志/截图 → 停掉」。
 
 .EXAMPLE
-    pwsh tools/run_android.ps1 -Apk build-android\apk\TextureCube-arm64-v8a.apk -Seconds 12
+    pwsh tools/run_android.ps1 -Seconds 12                      # 默认装 out\apk\TextureCube-arm64-v8a.apk
+    pwsh tools/run_android.ps1 -Serial e26cb1ab -Seconds 12      # 多台设备时指定
 #>
 [CmdletBinding()]
 param(
-    [string] $Apk      = "build-android\apk\TextureCube-arm64-v8a.apk",
+    [string] $Apk      = "out\apk\TextureCube-arm64-v8a.apk",
     [string] $SdkDir   = "C:\Program Files (x86)\Android\android-sdk",
     [string] $Package  = "com.fisir.texturecube",
     [string] $Activity = "android.app.NativeActivity",
     [int]    $Seconds  = 12,
+    [string] $Serial   = "",           # 空 = 自动取第一台已授权设备
     [string] $ShotPath = "",
     [switch] $KeepRunning
 )
@@ -34,7 +36,12 @@ foreach ($line in (& $adb devices)) {
     if ($line -match '^(\S+)\s+device\b') { $devices += $Matches[1] }
 }
 if (-not $devices) { throw "没有已授权的设备：插上手机、开 USB 调试、在手机上点『允许』" }
-$serial = $devices[0]
+if ($Serial) {
+    if ($devices -notcontains $Serial) { throw "指定设备 $Serial 不在已授权列表: $($devices -join ', ')" }
+    $serial = $Serial
+} else {
+    $serial = $devices[0]
+}
 if ($devices.Count -gt 1) { Write-Host "  多台设备，用第一台：$serial" -ForegroundColor Yellow }
 $adbArgs = @("-s", $serial)
 Write-Host "设备: $serial" -ForegroundColor Cyan
@@ -48,12 +55,13 @@ Write-Host "=== 清空 logcat 并启动 ===" -ForegroundColor Cyan
 & $adb @adbArgs shell am start -n "$Package/$Activity" | Out-Host
 Start-Sleep -Seconds $Seconds
 
-if ($ShotPath -eq "") { $ShotPath = Join-Path $repoRoot "build-android\apk\device-screenshot.png" }
+if ($ShotPath -eq "") { $ShotPath = Join-Path (Split-Path -Parent $Apk) "device-screenshot.png" }
 Write-Host "=== 截图 → $ShotPath ===" -ForegroundColor Cyan
 $shotDir = Split-Path -Parent $ShotPath
 New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
-$bytes = & $adb @adbArgs exec-out screencap -p
-[System.IO.File]::WriteAllBytes($ShotPath, $bytes)
+# 不能用 exec-out 直接接 PowerShell：二进制会被当文本解码而损坏 —— 先在设备上落盘再 pull
+& $adb @adbArgs shell screencap -p /sdcard/fisir-shot.png | Out-Null
+& $adb @adbArgs pull /sdcard/fisir-shot.png $ShotPath | Out-Host
 
 Write-Host "=== logcat（FISIR / Vulkan / 崩溃相关）===" -ForegroundColor Cyan
 & $adb @adbArgs logcat -d -v time |

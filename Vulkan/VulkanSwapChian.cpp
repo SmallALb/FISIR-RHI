@@ -504,7 +504,7 @@ namespace FISIR {
                 vkSurfaceCapabilitiesKHR.maxImageExtent.height);
         }
 
-        Info("Actual viewport size: {} x {}", actualExtent.height, actualExtent.width);
+        Info("Actual viewport size: {} x {}", actualExtent.width, actualExtent.height);   // 注意是 width x height（原先写反了，排查窗口尺寸问题时很容易被误导）
 
         // 选表面格式：优先「viewport 要的格式 + SRGB_NONLINEAR」；找不到就退回列表第一个。
         // 原实现是「循环里命中才赋值」，一个都没命中时 choiceFormat 是**未初始化**的，

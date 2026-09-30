@@ -35,6 +35,15 @@
 #include "PerformanceTest.h"
 #include "Platform.h"   // 平台层：窗口/事件/资源读取（Win32 与 Android 二选一实现）
 
+#ifdef __ANDROID__
+// 安卓端叠一层 ImGui 显示实时帧率（桌面端不引入，保持既有行为）。
+// 后端是仓库根的 ImGui_Impl_FISIR.cpp —— 它把 ImGui 的绘制数据录进我们自己的 RHI 命令列表，
+// 所以这里不需要任何原生窗口/输入后端（安卓只需 io.DisplaySize 与 io.DeltaTime）。
+#include "imgui.h"
+#include "ImGui_Impl_FISIR.h"
+#include <chrono>
+#endif
+
 // 将 RGBA8 像素缓冲写为 24-bit BMP（BGR、自底向上）。截图读回用。
 static void WriteBMP(const char* path, uint32_t width, uint32_t height, const unsigned char* rgba) {
     uint32_t rowSize = (width * 3 + 3) & ~3u;      // 每行按 4 字节对齐
@@ -507,6 +516,34 @@ int main(int argc, char* argv[]) {
             Info("自动启用截图：读回第 {} 帧的离屏结果", exitAfterFrames);
         }
     }
+    // ---------- 11.6 安卓端 ImGui（帧率面板）----------
+    // 必须在 rhi->Init() 之后建：后端会用它建字体图集纹理、采样器与顶点/索引缓冲。
+    // 管线是**按 render pass 懒建**的（见 ImGui_Impl_FISIR.cpp 的说明），所以这里先不指定目标，
+    // 真正画的时候传入呈现 pass 即可。
+#ifdef __ANDROID__
+    bool imguiReady = false;
+    if (hasSwapChain) {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& imguiIO = ImGui::GetIO();
+        imguiIO.IniFilename = nullptr;      // 安卓上没有可写的 .ini，省掉这套文件读写
+        imguiIO.LogFilename = nullptr;
+        imguiIO.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;   // 手机上不需要多视口
+        // 默认字体是 13px，在 2400×1080 上小得看不清：按 48px 光栅化（比 FontGlobalScale 清晰，
+        // 因为图集就是按这个字号生成的）。必须在 ImGui_ImplFISIR_Init 之前加好 —— 后者会立刻上传图集。
+        ImFontConfig imguiFontCfg;
+        imguiFontCfg.SizePixels = 48.0f;
+        imguiIO.Fonts->AddFontDefault(&imguiFontCfg);
+        if (ImGui_ImplFISIR_Init(rhi)) {
+            imguiReady = true;
+            Info("[Android] ImGui 帧率面板已启用");
+        } else {
+            Error("[Android] ImGui_ImplFISIR_Init 失败，本示例继续跑（只是没有帧率面板）");
+        }
+    }
+    auto imguiLastFrame = std::chrono::steady_clock::now();
+#endif
+
     // 无交换链（headless）时自建的槽围栏：每个缓冲槽一个、跨帧复用；收尾时等 GPU 完成再销毁。
     FISIR::RHIFence* frameFences[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
     bool frameFenceUsed[5] = { false, false, false, false, false };
@@ -670,6 +707,35 @@ int main(int argc, char* argv[]) {
             }
 
 
+#ifdef __ANDROID__
+            // ImGui 帧：没有输入后端，DisplaySize/DeltaTime 要自己喂。FPS 由 ImGui 依据
+            // DeltaTime 做滚动平均（io.Framerate），所以这里用 steady_clock 的真实帧间隔。
+            if (imguiReady) {
+                const auto imguiNow = std::chrono::steady_clock::now();
+                const float imguiDt = std::chrono::duration<float>(imguiNow - imguiLastFrame).count();
+                imguiLastFrame = imguiNow;
+
+                ImGuiIO& imguiIO = ImGui::GetIO();
+                imguiIO.DisplaySize = ImVec2((float)viewport->getViewportWidth(), (float)viewport->getViewportHeight());
+                imguiIO.DeltaTime = (imguiDt > 0.0f && imguiDt < 1.0f) ? imguiDt : (1.0f / 60.0f);
+
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_Always);
+                ImGui::SetNextWindowBgAlpha(0.55f);
+                ImGui::Begin("##fisir_fps", nullptr,
+                             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove);
+                const float imguiFps = imguiIO.Framerate;
+                ImGui::Text("FPS  %.1f", imguiFps);
+                ImGui::Text("%.2f ms", imguiFps > 0.0f ? (1000.0f / imguiFps) : 0.0f);
+                ImGui::End();
+                ImGui::Render();
+                // 安卓下没有平台窗口，这个函数是 no-op；保留调用是为了和桌面的每帧序列一致。
+                ImGui_ImplFISIR_PrepareViewportSwapChains();
+            }
+#endif
+
             auto tRec0 = std::chrono::steady_clock::now();
             // 渲染到离屏 Framebuffer
             FISIR::RHIRenderCommandList cmdList(rhi);
@@ -693,6 +759,14 @@ int main(int argc, char* argv[]) {
                     cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
                     cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
                     cmdList.DrawPrimitive(0, 3, 1);
+#ifdef __ANDROID__
+                    // ImGui 叠在**最终呈现**这一趟上：分辨率就是屏幕，字号清晰、位置准确。
+                    // 放在全屏四边形之后 ⇒ 画在画面最上层（不依赖深度测试）。
+                    if (imguiReady && ImGui::GetDrawData()) {
+                        ImGui_ImplFISIR_RenderDrawData(cmdList, frameBuf->getFrameRenderPass(),
+                                                              ImGui::GetDrawData());
+                    }
+#endif
                     cmdList.EndRenderPass();
                 }
             }
@@ -867,6 +941,15 @@ cleanup:
     }
     screenshotStop.store(true);
     for (auto& t : screenshotWorkers) if (t.joinable()) t.join();
+#ifdef __ANDROID__
+    // ImGui 的资源（字体纹理/缓冲/管线）归后端所有，必须在拆 RHI 之前释放。
+    if (imguiReady) {
+        ImGui_ImplFISIR_Shutdown();
+        ImGui::DestroyContext();
+        imguiReady = false;
+        Info("[Android] ImGui 已关闭");
+    }
+#endif
     Info("Destroy RHI Done!");
     FISIR::RHICreator::destroyRenderInterface();
     FISIR::RHICreator::freeCurrentRenderInterfaceApi();

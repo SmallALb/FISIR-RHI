@@ -88,6 +88,17 @@ namespace {
     // 提到最前面：下面的多视口回调要用它
     FISIR::DynamicRHI* g_Rhi = nullptr;
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // 平台分工（为什么要分两段）
+    //
+    // 下面这一段是 Win32 专有的「多视口平台层」：它把 ImGui 拖出来的面板变成**真正的 OS 窗口**，
+    // 每个窗口有一个 HWND、一份 Win32DisplayHandle 和自己的交换链。这套东西在 Android 上没有
+    // 对应物（Surface 归系统管，一个 Activity 只有一个 ANativeWindow，也没有窗口句柄/hit-test 消息），
+    // 所以整段用 _WIN32 圈起来，Android 侧不参与编译。
+    // 渲染侧（FisirRendererData / 管线 / 描述符 / 每视口缓冲，见下面第二段）与平台无关，
+    // 两个平台共用；Android 只用得上其中的「主视口」那一份。
+    // ══════════════════════════════════════════════════════════════════════════
+#if defined(_WIN32)
     // ════════════════════════════════════════════════════════════════════════
     // 多视口（multi-viewport）：把面板拖出主窗口 → 独立的 OS 窗口，由本后端自己渲染
     //
@@ -130,6 +141,7 @@ namespace {
         FISIR::RHIFence*     RecentSlotFences[kMaxRecentSlotFences]{};
         int                  RecentSlotFenceCount = 0;
     };
+#endif // _WIN32（Win32 多视口的视口对象到此为止）
 
     // ── 每个视口一套渲染资源（挂在 ImGuiViewport::RendererUserData 上）────────────
     // 官方后端就是这么做的（如 ImGui_ImplDX11_ViewportData）：**顶点/索引/参数缓冲每视口一份**。
@@ -145,8 +157,10 @@ namespace {
         uint32_t IndexCapacity  = 0;
     };
 
+#if defined(_WIN32)
     std::vector<FisirViewportData*>* g_ViewportPool = nullptr;
     bool g_ViewportClassRegistered = false;
+#endif // _WIN32（视口对象池：只有 Win32 平台窗口才需要）
 
     // ══════════════════════════════════════════════════════════════════════════
     // 交互追踪（**临时诊断设施**，问题定位后整段删除）
@@ -157,6 +171,7 @@ namespace {
     // 我们喂给 ImGui 的是什么、ImGui 当时认为鼠标在哪个视口"。
     // 每 64 行 flush 一次 + 关键事件即时 flush，保证崩溃时也能留下大部分内容。
     // ══════════════════════════════════════════════════════════════════════════
+#if defined(_WIN32)
     FILE* g_TraceFile = nullptr;
     int   g_TraceLines = 0;
 
@@ -185,13 +200,18 @@ namespace {
         fflush(g_TraceFile);   // 出问题时要保证内容已经落盘
         ++g_TraceLines;
     }
+#endif // _WIN32（交互追踪 / TraceOpen / Trace：只服务多视口的诊断）
     // 每视口渲染资源（定义在文件后部的 FisirRendererData 那一段）；渲染回调要用，先声明。
     FisirRendererData* GetOrCreateRendererData(ImGuiViewport* vp);
     void DestroyRendererData(ImGuiViewport* vp);
+#if defined(_WIN32)
     // 上一帧新拖出来、还没建交换链的平台窗口。由 Platform_SwapBuffers 登记、
     // 由 ImGui_ImplFISIR_PrepareViewportSwapChains() 在帧首补建（见头文件里的原因说明）。
+    // Android 没有平台窗口，PrepareViewportSwapChains 整个是 no-op，故这张表也不需要。
     std::vector<ImGuiViewport*>* g_PendingViewports = nullptr;
+#endif // _WIN32
 
+#if defined(_WIN32)
     // 已关闭视口、待释放的渲染资源：帧中途不能销毁（GPU 可能还在用），帧首统一回收。
     // 登记项带上「该视口最近用过的槽围栏」，回收前逐个等它们落定 —— 只靠「帧首」这个
     // 时间点是**不够**的：主视口链的 WaitFrameGPUIdle() 覆盖不到独立视口，而临时 tooltip
@@ -203,7 +223,8 @@ namespace {
     };
     std::vector<PendingRendererDestroy>* g_PendingDestroyRendererData = nullptr;
 
-    // 记录某视口本帧用过的槽围栏（去重；槽位数远小于容量）。
+    // 记录某视口本帧用过的槽围栏（去重；槽位数远小于容量）。只有独立视口（= 平台窗口）需要，
+    // 主视口由宿主的 WaitFrameGPUIdle() 兜住。
     void RecordRecentSlotFence(FisirViewportData* vd, FISIR::RHIFence* fence) {
         if (!vd || !fence) return;
         for (int i = 0; i < vd->RecentSlotFenceCount; ++i)
@@ -211,6 +232,7 @@ namespace {
         if (vd->RecentSlotFenceCount >= FisirViewportData::kMaxRecentSlotFences) return;   // 防御：满了就不再记
         vd->RecentSlotFences[vd->RecentSlotFenceCount++] = fence;
     }
+#endif // _WIN32（待释放登记 + 槽围栏记录：都只服务多视口）
 
     // 等这批围栏对应的 GPU 工作全部结束。未提交过的围栏直接跳过：那说明没有在飞的 GPU 工作
     //（若也 wait()，会等一个永远不会被 signal 的围栏上）。
@@ -221,6 +243,7 @@ namespace {
         }
     }
 
+#if defined(_WIN32)
     bool EnsureViewportWindowClass() {
         if (g_ViewportClassRegistered) return true;
         WNDCLASSEXW wc{};
@@ -526,7 +549,7 @@ namespace {
         if (info.finishFence) info.finishFence->waitFenceSubmited();
         vd->PendingFrameID = UINT32_MAX;
     }
-
+#endif // _WIN32（Win32 多视口的平台回调 / 渲染回调 / 交换链管理到此为止）
 
     // 所以 imconfig.h 必须把 ImDrawIdx 定成 32 位。用 16 位不会编译报错、也不会运行报错，
     // 只会因为 GPU 按 4 字节跨度读 2 字节数据而画出垃圾 —— 这里用 static_assert 把它变成编译期错误。
@@ -758,6 +781,12 @@ bool ImGui_ImplFISIR_Init(FISIR::DynamicRHI* rhi) {
     // 允许窗口停靠 / 拖出成浮动窗口（docking 分支才有这两个 flag）。
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+#if defined(_WIN32)
+    // ══════════════════════════════════════════════════════════════════════════
+    // 多视口平台层：只有 Win32 有「平台窗口」这个概念，所以整段注册都圈在 _WIN32 里。
+    // Android 上一个 Activity 只有一个 ANativeWindow（由 Main.cpp 建主视口并自绘），
+    // 没有窗口句柄/hit-test 消息，也没有第二块 Surface，多视口既无意义也用不了。
+    // ══════════════════════════════════════════════════════════════════════════
     // ── 多视口：把面板拖出主窗口，变成系统里一个**独立的 OS 窗口** ──
     // 需要三样：ViewportsEnable + 后端声明支持平台视口 + 下面这组回调。
     // 少任何一样，拖出去的面板都会因为「没有窗口渲染它」而消失。
@@ -793,11 +822,24 @@ bool ImGui_ImplFISIR_Init(FISIR::DynamicRHI* rhi) {
     // 漏了的话那句 if (g_PendingViewports) 永远是 false —— 视口永远拿不到交换链，
     // 独立窗口就一直空白（实测踩过：gate 日志里 hasSwapChain 恒为 0）。
     if (!g_PendingViewports) g_PendingViewports = new std::vector<ImGuiViewport*>();
-    // 待释放的每视口渲染资源（Renderer_DestroyWindow 只登记围栏，帧首等 GPU 完成后再回收）
+    // 待释放的每视口渲染资源（Renderer_DestroyWindow 只登记围栏，帧首等 GPU 完成后再回收）。
+    // 只有平台窗口会被「关掉」，所以这张表也只在 Win32 上有内容。
     if (!g_PendingDestroyRendererData) g_PendingDestroyRendererData = new std::vector<PendingRendererDestroy>();
+#else
+    // Android（以及将来的其它非 Win32 平台）：宿主只渲染主视口，后端这里只提供渲染侧。
+    // 明确清掉 ViewportsEnable：Main.cpp 已经清过一次，这里再兜一道 —— 万一宿主忘了，
+    // ImGui 会因为「声明了 ViewportsEnable 却没有平台回调/显示器列表」而断言或造出
+    // 永远没人渲染的幽灵视口。
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    // 上面那张「待释放的每视口资源」表在这里保持 nullptr：没有平台窗口就没有东西要回收，
+    // 帧首 / Shutdown 里的回收代码因此会被 if (!g_PendingDestroyRendererData) 直接跳过。
+#endif // _WIN32
+
+#if defined(_WIN32)
     TraceOpen();   // 交互追踪文件（临时诊断，见 TraceOpen 的注释）
     Trace("=== ImGui FISIR backend init (multi-viewport interaction trace) ===");
     UpdateMonitors();   // ViewportsEnable 的硬性前提，见 UpdateMonitors 的注释
+#endif // _WIN32
 
     // ── 字体图集 → 纹理 ──
     unsigned char* pixels = nullptr;
@@ -901,6 +943,7 @@ void ImGui_ImplFISIR_SetTooltip(const char* fmt, ...) {
 }
 
 void ImGui_ImplFISIR_PrepareViewportSwapChains() {
+#if defined(_WIN32)
     // 帧首是安全期（上一帧 GPU 已完）：先把上一帧登记要释放的每视口渲染资源收掉。
     if (g_PendingDestroyRendererData && !g_PendingDestroyRendererData->empty()) {
         for (const PendingRendererDestroy& entry : *g_PendingDestroyRendererData) {
@@ -913,6 +956,18 @@ void ImGui_ImplFISIR_PrepareViewportSwapChains() {
         }
         g_PendingDestroyRendererData->clear();
     }
+#endif // _WIN32
+
+#if !defined(_WIN32)
+    // ── Android：本函数是**安全 no-op** ──
+    // 这里没有「平台窗口」：只有一个主视口，它的视口/交换链由宿主（Main.cpp）在
+    // rhi->RHICreateViewport() 里建好，ImGui 管线在第一次 RenderDrawData 时按宿主传入的
+    // render pass 惰性创建。所以没有任何需要「帧首补建」的东西 —— 整个函数体直接返回。
+    //
+    // 为什么保留这个函数（而不是删掉）：调用方（示例的每帧序列）两边保持一致，
+    // 桌面/Android 的主循环只用同一套调用；Android 侧调用它零开销、零副作用。
+    return;
+#else
     if (!g_PendingViewports || g_PendingViewports->empty()) return;
 
     // 先把列表换出来再处理：补建过程中可能又触发登记（例如尺寸还没算好、本帧先跳过）
@@ -940,6 +995,7 @@ void ImGui_ImplFISIR_PrepareViewportSwapChains() {
             GetOrCreateRendererData(vp);
         }
     }
+#endif // _WIN32
 }
 
 void ImGui_ImplFISIR_Shutdown() {
@@ -952,6 +1008,8 @@ void ImGui_ImplFISIR_Shutdown() {
 
     // 还挂在待释放表里的（已关闭的独立视口）：同样要等 GPU 完成再释放，否则销毁 RHI 时会
     // 带着在飞的引用释放资源。本函数正是在销毁 RHI 之前调用的，时机合适。
+    // 这张表只有 Win32 会有内容（登记来自 Renderer_DestroyWindow，只对平台窗口调用）。
+#if defined(_WIN32)
     if (g_PendingDestroyRendererData && !g_PendingDestroyRendererData->empty()) {
         for (const PendingRendererDestroy& entry : *g_PendingDestroyRendererData) {
             WaitFencesGPUIdle(entry.fences, entry.fenceCount);
@@ -959,6 +1017,7 @@ void ImGui_ImplFISIR_Shutdown() {
         }
         g_PendingDestroyRendererData->clear();
     }
+#endif // _WIN32
 
     // 管线/着色器/render pass 没有对应的 RHIDestroy* 接口（RHI 有意不在示例侧析构它们），
     // 这里只丢指针，资源随进程结束回收 —— 与其它示例（TextureCube / BunnyPBR）一致。
@@ -971,8 +1030,10 @@ void ImGui_ImplFISIR_Shutdown() {
     if (g_FontSampler) { g_Rhi->RHIDestroySampler(g_FontSampler); g_FontSampler = nullptr; }
     if (g_FontTexture) { g_Rhi->RHIDestroyTexture(g_FontTexture); g_FontTexture = nullptr; }
 
-    Trace("=== shutdown ===");
+#if defined(_WIN32)
+    Trace("=== shutdown ===");   // 追踪文件只服务多视口诊断，非 Win32 平台没有这个文件
     if (g_TraceFile) { fclose(g_TraceFile); g_TraceFile = nullptr; }
+#endif // _WIN32
 
     g_Rhi = nullptr;
 }

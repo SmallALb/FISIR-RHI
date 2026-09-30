@@ -13,6 +13,8 @@ if(ANDROID)
     add_library(TextureCube SHARED
         Main.cpp
         PlatformAndroid.cpp
+        ${IMGUI_SOURCES}          # vendor/imgui（核心，无平台后端）
+        ${RHIIMGUI_SOURCES}       # 仓库根的 ImGui_Impl_FISIR.cpp（ImGui 的 FISIR RHI 后端）
         "${GLUE_DIR}/android_native_app_glue.c"
     )
 
@@ -20,6 +22,7 @@ if(ANDROID)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..   # RHI root (RHI/*.h)
             ${CMAKE_CURRENT_SOURCE_DIR}         # local: glm/, stb_image.h, Platform.h
+            ${IMGUI_INCLUDE_DIR}                # vendor/imgui（imgui.h）
             ${GLUE_DIR}
             ${Vulkan_INCLUDE_DIRS}
     )
