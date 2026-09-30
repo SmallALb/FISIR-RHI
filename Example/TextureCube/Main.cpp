@@ -162,7 +162,7 @@ int main(int argc, char* argv[]) {
     //   displayplane ：直连显示器（DisplayPlaneHandle）。Windows 上拿不到（没有 display、也缺
     //                  VK_KHR_display_swapchain），这里用它演示"后端未实现的设备类型会被明确拒绝，
     //                  并自动退化成离屏渲染"，而不是崩在空 surface 上。
-    FISIR::DisplayDeviceType displayType = FISIR::DisplayDeviceType::DisplayPlane;
+    FISIR::DisplayDeviceType displayType = FISIR::DisplayDeviceType::Win32Window;
     bool hiddenWindow = false;
 #ifdef __ANDROID__
     // Android：呈现设备固定是 AndroidWindow（ANativeWindow 由 NativeActivity 交给平台层），
@@ -542,6 +542,11 @@ int main(int argc, char* argv[]) {
         }
     }
     auto imguiLastFrame = std::chrono::steady_clock::now();
+    // 会话级帧率统计（自启动累计；见帧循环里的说明）。声明在此处是为了不跨过后面的 goto cleanup。
+    double   imguiSumDt  = 0.0;
+    uint64_t imguiFrames = 0;
+    float    imguiMinMs  = 1e9f;
+    float    imguiMaxMs  = 0.0f;
 #endif
 
     // 无交换链（headless）时自建的槽围栏：每个缓冲槽一个、跨帧复用；收尾时等 GPU 完成再销毁。
@@ -719,6 +724,18 @@ int main(int argc, char* argv[]) {
                 imguiIO.DisplaySize = ImVec2((float)viewport->getViewportWidth(), (float)viewport->getViewportHeight());
                 imguiIO.DeltaTime = (imguiDt > 0.0f && imguiDt < 1.0f) ? imguiDt : (1.0f / 60.0f);
 
+                // 会话级统计：io.Framerate 只是**滚动**平均（约最近 60 帧），看不出整体水平与抖动。
+                // 这里另外累加「自启动以来的平均帧率」和帧时间的极值 —— 对比不同设备/不同场景
+                // （例如 8+ Gen 1 上的 400+）时，看的是这几项，而不是某一瞬间的读数。
+                // 注意：呈现模式是 MAILBOX（不限帧）时帧率代表「循环吞吐」而非屏幕刷新率，
+                // 也不直接等于 GPU 能力；要量化 GPU 开销应看帧时间分布或 GPU 时间戳。
+                const float imguiMs = imguiIO.DeltaTime * 1000.0f;
+                imguiSumDt += imguiIO.DeltaTime;
+                ++imguiFrames;
+                if (imguiMs < imguiMinMs) imguiMinMs = imguiMs;
+                if (imguiMs > imguiMaxMs) imguiMaxMs = imguiMs;
+                const double imguiAvgFps = (imguiSumDt > 0.0) ? ((double)imguiFrames / imguiSumDt) : 0.0;
+
                 ImGui::NewFrame();
                 ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_Always);
                 ImGui::SetNextWindowBgAlpha(0.55f);
@@ -726,9 +743,11 @@ int main(int argc, char* argv[]) {
                              ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                              ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove);
-                const float imguiFps = imguiIO.Framerate;
-                ImGui::Text("FPS  %.1f", imguiFps);
-                ImGui::Text("%.2f ms", imguiFps > 0.0f ? (1000.0f / imguiFps) : 0.0f);
+                ImGui::Text("FPS   %.1f", imguiIO.Framerate);                 // 滚动（约最近 60 帧）
+                ImGui::Text("avg   %.1f", (float)imguiAvgFps);                // 会话平均
+                ImGui::Text("ms    %.2f", imguiMs);
+                ImGui::Text("min/max %.2f/%.2f", imguiMinMs, imguiMaxMs);
+                ImGui::Text("frames %llu", (unsigned long long)imguiFrames);
                 ImGui::End();
                 ImGui::Render();
                 // 安卓下没有平台窗口，这个函数是 no-op；保留调用是为了和桌面的每帧序列一致。
