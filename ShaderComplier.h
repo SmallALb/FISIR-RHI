@@ -1,9 +1,20 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
+#include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <slang.h>
 
@@ -45,6 +56,160 @@ namespace FISIR {
     struct ShaderComplierData {
         slang::ISession* session = nullptr;
     };
+
+    // ── Slang 运行时的按需加载 ────────────────────────────────────────────
+    // 动机：静态导入（链接 Slang::Slang）会让进程**一启动**就把整个编译器映射进来
+    // （slang-compiler.dll 本体 31MB，加上它的可写段/静态初始化，实测贡献可观），
+    // 而有了 SPIR-V 磁盘缓存后绝大多数启动根本不需要编译 —— 那就不该付这份内存与启动时间。
+    //
+    // Slang 的 C++ API 是 COM 风格的：**只需要解析一个入口** `slang_createGlobalSession2`
+    // （老版本叫 slang_createGlobalSession），之后所有调用都走返回接口上的虚函数，
+    // 不需要任何导入符号。
+    using CreateGlobalSessionFn = SlangResult (*)(const SlangGlobalSessionDesc*, slang::IGlobalSession**);
+    inline void* SlangRuntimeHandle = nullptr;
+    inline CreateGlobalSessionFn SlangCreateGlobalSession = nullptr;
+
+    // 注意：**调用方必须已持有 initMutex**（InitCompiler 持锁后调用它）。
+    // 之前这里自己又去 lock 同一把非递归 mutex，直接死锁 —— 桌面因为缓存已热、根本没走到
+    // 这条分支所以没暴露，Android 冷启动必走，表现为进程活着但黑屏。
+    inline bool LoadSlangRuntimeLocked() {
+        if (SlangCreateGlobalSession) return true;
+
+#ifdef _WIN32
+        const char* candidates[] = { "slang-compiler.dll", "slang.dll" };
+#else
+        const char* candidates[] = { "libslang-compiler.so", "libslang.so" };
+#endif
+        for (const char* name : candidates) {
+#ifdef _WIN32
+            SlangRuntimeHandle = (void*)::LoadLibraryA(name);
+#else
+            SlangRuntimeHandle = ::dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+#endif
+            if (!SlangRuntimeHandle) continue;
+#ifdef _WIN32
+            SlangCreateGlobalSession = reinterpret_cast<CreateGlobalSessionFn>(
+                ::GetProcAddress((HMODULE)SlangRuntimeHandle, "slang_createGlobalSession2"));
+            if (!SlangCreateGlobalSession)
+                SlangCreateGlobalSession = reinterpret_cast<CreateGlobalSessionFn>(
+                    ::GetProcAddress((HMODULE)SlangRuntimeHandle, "slang_createGlobalSession"));
+#else
+            SlangCreateGlobalSession = reinterpret_cast<CreateGlobalSessionFn>(
+                ::dlsym(SlangRuntimeHandle, "slang_createGlobalSession2"));
+            if (!SlangCreateGlobalSession)
+                SlangCreateGlobalSession = reinterpret_cast<CreateGlobalSessionFn>(
+                    ::dlsym(SlangRuntimeHandle, "slang_createGlobalSession"));
+#endif
+            if (SlangCreateGlobalSession) {
+                Info("Slang 运行时按需加载：{}", name);
+                return true;
+            }
+        }
+        Error("Slang 运行时加载失败（slang-compiler.dll / libslang-compiler.so 找不到？）");
+        return false;
+    }
+
+    // 用完编译就把运行时也卸掉（下次需要再加载）：配合磁盘缓存，进程常驻内存能回到
+    // 「只有 Vulkan」的量级。
+    inline void UnloadSlangRuntime() {
+        if (!SlangRuntimeHandle) return;
+#ifdef _WIN32
+        ::FreeLibrary((HMODULE)SlangRuntimeHandle);
+#else
+        ::dlclose(SlangRuntimeHandle);
+#endif
+        SlangRuntimeHandle = nullptr;
+        SlangCreateGlobalSession = nullptr;
+    }
+
+    // ── SPIR-V 磁盘缓存 ───────────────────────────────────────────────────
+    // 动机：Slang 编译的**分配峰值**非常可观（Debug 实测 TextureCube 925MB 私有内存），
+    // 而释放会话后堆也未必还给系统；开发期着色器几乎不变，于是把产物按
+    // 「源 + 入口 + 目标 + 版本盐」哈希缓存到磁盘：命中时**完全不碰 Slang**
+    // （连 global session 都不建），进程内存回到只有 Vulkan 的基线，启动也快得多。
+    // 开关与位置：FISIR_SHADER_CACHE=0 关闭；FISIR_SPV_CACHE_DIR / FISIR_SHADER_CACHE_DIR 指定目录。
+    inline std::filesystem::path SpvCacheDir() {
+        if (const char* env = std::getenv("FISIR_SPV_CACHE_DIR"))   return std::filesystem::path(env);
+        if (const char* env = std::getenv("FISIR_SHADER_CACHE_DIR")) return std::filesystem::path(env);
+#ifdef _WIN32
+        if (const char* local = std::getenv("LOCALAPPDATA")) return std::filesystem::path(local) / "FISIR" / "spv-cache";
+#else
+        if (const char* tmp = std::getenv("TMPDIR")) return std::filesystem::path(tmp) / "fisir-spv-cache";
+        if (const char* tmp = std::getenv("TMP"))    return std::filesystem::path(tmp) / "fisir-spv-cache";
+#endif
+        return {};
+    }
+
+    inline bool SpvCacheEnabled() {
+        const char* flag = std::getenv("FISIR_SHADER_CACHE");
+        return !(flag && flag[0] == '0');
+    }
+
+    // FNV-1a 64：只用它做文件名，不做安全用途。
+    inline void HashCombineBytes(uint64_t& h, const void* data, size_t size) {
+        const unsigned char* p = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    }
+    inline uint64_t HashShaderKey(const std::string& source, const std::string& entry, const std::string& target) {
+        uint64_t h = 1469598103934665603ull;
+        // 盐 = 缓存格式版本 + 编译选项（是否带调试信息）。
+        // 注意**不能**把 Slang 的运行时版本串算进来：版本串要等 global session 建好才知道，
+        // 于是「冷启动算 key」与「编译完成存 key」会用两个不同的 key，缓存永远不会命中。
+        // 需要整体失效缓存时（换 Slang 版本、怀疑产物不对）把版本号 +1 即可。
+        const char* salt = std::getenv("FISIR_SPV_DEBUG_INFO") ? "fisir-spv-cache-v2-debug" : "fisir-spv-cache-v2";
+        HashCombineBytes(h, salt, std::strlen(salt));
+        HashCombineBytes(h, source.data(), source.size());
+        HashCombineBytes(h, entry.data(), entry.size());
+        HashCombineBytes(h, target.data(), target.size());
+        return h;
+    }
+
+    inline bool TryLoadCachedSpirv(uint64_t key, std::vector<unsigned char>& out) {
+        if (!SpvCacheEnabled()) return false;
+        const std::filesystem::path dir = SpvCacheDir();
+        if (dir.empty()) return false;
+        char name[64];
+        std::snprintf(name, sizeof(name), "spv_%016llx.bin", (unsigned long long)key);
+        const std::filesystem::path file = dir / name;
+
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(file, ec);
+        if (ec || size == 0 || (size % 4) != 0) return false;   // SPIR-V 必须按 4 字节字对齐
+        FILE* f = std::fopen(file.string().c_str(), "rb");
+        if (!f) return false;
+        out.resize((size_t)size);
+        const size_t read = std::fread(out.data(), 1, out.size(), f);
+        std::fclose(f);
+        if (read != out.size()) { out.clear(); return false; }
+        return true;
+    }
+
+    inline void StoreCachedSpirv(uint64_t key, const unsigned char* data, size_t size) {
+        if (!SpvCacheEnabled() || !data || size == 0) return;
+        const std::filesystem::path dir = SpvCacheDir();
+        if (dir.empty()) return;
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        if (ec) { Warn("SPIR-V 缓存目录建不出来：{}", dir.string()); return; }
+
+        char name[64];
+        std::snprintf(name, sizeof(name), "spv_%016llx.bin", (unsigned long long)key);
+        const std::filesystem::path file = dir / name;
+        const std::filesystem::path tmp = dir / (std::string(name) + ".tmp");
+
+        // 先写临时文件再改名：避免两个进程同时编译时读到半个文件。
+        FILE* f = std::fopen(tmp.string().c_str(), "wb");
+        if (!f) return;
+        const size_t written = std::fwrite(data, 1, size, f);
+        std::fclose(f);
+        if (written != size) { std::filesystem::remove(tmp, ec); return; }
+        std::filesystem::rename(tmp, file, ec);
+        if (ec) {   // Windows 上目标已存在时 rename 会失败：删掉再来一次
+            std::filesystem::remove(file, ec);
+            std::filesystem::rename(tmp, file, ec);
+            if (ec) std::filesystem::remove(tmp, ec);
+        }
+    }
 
     // UTF-16 → UTF-8。Slang 的源码入口只吃 UTF-8 字节串，而 C++ 侧的内嵌着色器是宽字符串。
     inline std::string WideToUTF8(const wchar_t* data, size_t charCount) {
@@ -170,6 +335,9 @@ namespace FISIR {
             if (!slangLoaded) {
                 std::lock_guard<std::mutex> lock(initMutex);
                 if (!slangLoaded) {
+                    // 运行时按需加载（见文件上方说明）：只有真的要编译时才把 slang-compiler 映射进来。
+                    // 注意：这里已经持有 initMutex，所以调的是不带锁的版本。
+                    if (!LoadSlangRuntimeLocked()) return false;
                     slang::IGlobalSession* globalSession = nullptr;
                     // 语言版本必须显式指定：SlangGlobalSessionDesc 的默认值是
                     // SLANG_LANGUAGE_VERSION_2025，而 2025 语义要求每个模块顶部写 module 声明、
@@ -178,7 +346,7 @@ namespace FISIR {
                     // 注意 SlangGlobalSessionDesc 是**全局命名空间**里的类型（不在 slang:: 下）。
                     SlangGlobalSessionDesc globalSessionDesc{};
                     globalSessionDesc.minLanguageVersion = SLANG_LANGUAGE_VERSION_LEGACY;
-                    const SlangResult result = slang::createGlobalSession(&globalSessionDesc, &globalSession);
+                    const SlangResult result = SlangCreateGlobalSession(&globalSessionDesc, &globalSession);
                     if (SLANG_FAILED(result) || !globalSession) {
                         Error("Failed to create Slang global session, Error: 0x{:x}", (size_t)result);
                     }
@@ -207,19 +375,24 @@ namespace FISIR {
 
         ShaderComplier() {
             ComplierCount++;
-            Info("Create ShaderComplier: {}", ComplierCount.load());
-
-            InitCompiler();
             mData = new ShaderComplierData();
-            if (!slangLoaded || !SlangGlobalSession) {
+            // 刻意**不**在这里初始化 Slang：命中磁盘缓存时整条 Slang 链路都不必碰
+            // （那是几百 MB 常驻内存与可观启动时间），见 compileShader 的懒初始化。
+            Info("Create ShaderComplier: {}", ComplierCount.load());
+        }
+
+        // 真正需要编译时才把 Slang 拉起来（磁盘缓存未命中）。
+        bool EnsureSession() {
+            if (!mData) return false;
+            if (mData->session) return true;
+            if (!InitCompiler() || !SlangGlobalSession) {
                 Error("Slang is not available; shader compilation will fail");
-                return;
+                return false;
             }
-            {
-                std::lock_guard<std::mutex> lock(slangMutex);
-                mData->session = CreateSlangSession(SlangGlobalSession);
-            }
+            std::lock_guard<std::mutex> lock(slangMutex);
+            if (!mData->session) mData->session = CreateSlangSession(SlangGlobalSession);
             if (!mData->session) Error("Slang session is unavailable, shader compilation will fail");
+            return mData->session != nullptr;
         }
 
         ~ShaderComplier() {
@@ -245,6 +418,9 @@ namespace FISIR {
                     Info("Slang global session released (no compiler alive)");
                 }
                 needRelease = false;
+                // 会话没了就把运行时也卸掉：配合磁盘缓存，后续启动根本不映射编译器，
+                // 进程常驻内存可以回到「只有 Vulkan」的量级。
+                if (ComplierCount.load() == 0) UnloadSlangRuntime();
             }
             clear();
         }
@@ -257,16 +433,37 @@ namespace FISIR {
                 Error("Shader data already exists, clear before compiling new shader");
                 return;
             }
-            if (!mData || !mData->session) {
-                Error("Slang session is unavailable; cannot compile '{}'", entryPoint ? entryPoint : "<null>");
+            if (!mData) {
+                Error("ShaderComplier 未初始化");
                 return;
             }
 
             const std::string source(data ? data : "", dataSize);
             const std::string entry = (entryPoint && entryPoint[0]) ? entryPoint : "main";
-            const SlangStage stage = StageFromTarget(target);
+            const std::string targetStr = target ? target : "";
             const std::string moduleName = "FISIRShader" + std::to_string(ShaderModuleSerial.fetch_add(1));
             const std::string modulePath = moduleName + ".slang";
+
+            // ── ① 先查磁盘缓存：命中就完全不碰 Slang（省掉几百 MB 峰值与编译时间）──
+            const uint64_t cacheKey = HashShaderKey(source, entry, targetStr);
+            {
+                std::vector<unsigned char> cached;
+                if (TryLoadCachedSpirv(cacheKey, cached)) {
+                    CodeSize = cached.size();
+                    shaderData = new unsigned char[CodeSize];
+                    std::memcpy(shaderData, cached.data(), CodeSize);
+                    Debug("Shader '{}' 命中 SPIR-V 缓存：{} 字节 / {} 字",
+                          entry, CodeSize, CodeSize / 4);
+                    return;
+                }
+            }
+
+            // ── ② 未命中：这时才把 Slang 拉起来编译 ──
+            if (!EnsureSession()) {
+                Error("Slang session is unavailable; cannot compile '{}'", entry);
+                return;
+            }
+            const SlangStage stage = StageFromTarget(target);
 
             // Slang 的载入/链接阶段不可重入，整段编译串行化（编译都发生在初始化阶段，代价可忽略）。
             std::lock_guard<std::mutex> lock(slangMutex);
@@ -318,6 +515,9 @@ namespace FISIR {
                 shaderData = new unsigned char[CodeSize];
                 memcpy(shaderData, code->getBufferPointer(), CodeSize);
                 Debug("Shader '{}' compiled successfully: {} bytes / {} SPIR-V words", entry, CodeSize, CodeSize / 4);
+
+                // 落盘缓存：下次启动（包括手机）直接命中，不再拉起 Slang。
+                StoreCachedSpirv(cacheKey, shaderData, CodeSize);
 
                 // 调试开关：设了 FISIR_DUMP_SPV=<目录> 就把产物落盘，方便用 slangc 复现/对比编译选项。
                 if (const char* dumpDir = getenv("FISIR_DUMP_SPV")) {

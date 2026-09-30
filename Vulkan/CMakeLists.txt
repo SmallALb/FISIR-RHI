@@ -19,7 +19,7 @@ target_include_directories(RHIVK
 target_link_libraries(RHIVK
     PUBLIC  Vulkan::Vulkan
     PRIVATE Log
-    PRIVATE Slang::Slang
+    PRIVATE Slang::Headers
 )
 
 # ── Output to RHI/Vulkan/ subfolder ──────────────────────────

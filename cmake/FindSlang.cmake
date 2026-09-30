@@ -252,6 +252,20 @@ endif()
 # ═══════════════════════════════════════════════════════════════
 # Create imported target
 # ═══════════════════════════════════════════════════════════════
+# 注意：本工程**不静态链接** Slang —— ShaderComplier.h 在运行期按需 LoadLibrary/dlopen
+# 解析唯一入口 slang_createGlobalSession2（Slang 的 C++ API 是 COM 风格，其余都是虚调用）。
+# 这样配合 SPIR-V 磁盘缓存，命中缓存时进程根本不会映射编译器（省几十 MB 内存与启动时间）。
+# 所以这里提供的是**只带头文件**的 Slang::Headers；Slang::Slang 仍保留（供确需链接的场景）。
+if(Slang_FOUND AND NOT TARGET Slang::Headers)
+    add_library(Slang::Headers INTERFACE IMPORTED)
+    set_target_properties(Slang::Headers PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${Slang_INCLUDE_DIR}"
+    )
+    if(Slang_DLL_DIR)
+        set_target_properties(Slang::Headers PROPERTIES SLANG_DLL_DIR "${Slang_DLL_DIR}")
+    endif()
+endif()
+
 if(Slang_FOUND AND NOT TARGET Slang::Slang)
     add_library(Slang::Slang UNKNOWN IMPORTED)
     set_target_properties(Slang::Slang PROPERTIES

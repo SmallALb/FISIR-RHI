@@ -95,6 +95,14 @@ void android_main(struct android_app* app) {
 	app->userData = &impl;
 	app->onAppCmd = HandleAppCmd;
 
+	// SPIR-V 磁盘缓存目录：Android 上唯一稳定可写的是应用的私有数据目录
+	// （APK 里的 assets 只读、TMPDIR 不保证）。命中缓存时连 Slang 运行时都不会加载，
+	// 手机上启动会快很多（见 ShaderComplier.h 的说明）。
+	if (app->activity && app->activity->internalDataPath) {
+		setenv("FISIR_SPV_CACHE_DIR", app->activity->internalDataPath, 1);
+		Info("[Android] SPIR-V 缓存目录 = {}", app->activity->internalDataPath);
+	}
+
 	Info("[Android] android_main 进入：assetManager=0x{:x}", (size_t)app->activity->assetManager);
 
 	// 窗口会随「息屏 / 切后台 / 分屏」被系统回收，回来时给的是**新的** ANativeWindow。

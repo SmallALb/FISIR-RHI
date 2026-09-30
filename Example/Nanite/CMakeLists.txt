@@ -30,7 +30,7 @@ target_compile_definitions(Nanite
 target_link_libraries(Nanite
     PRIVATE
         Log
-        Slang::Slang
+        Slang::Headers
         $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
 )
 

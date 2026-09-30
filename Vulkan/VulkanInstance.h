@@ -103,11 +103,23 @@ static bool MakeVkInstance() {
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
     std::vector<VkLayerProperties> layerProperties(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, layerProperties.data());
-#ifdef _DEBUG
-    for (const auto& layerP : layerProperties) {
-        if (strstr(layerP.layerName, "validation")) LayerNames.push_back(layerP.layerName);
+    // 验证层：调试价值极高（本工程的描述符/管线布局问题几乎都是它揪出来的），但**很贵** ——
+    // 它要跟踪每个对象与描述符，实测常驻内存多出一百多 MB，启动也明显变慢；而且原来的写法在
+    // Debug/Release 下都会启用（只要装了层就开）。
+    // 所以改成**按需**：默认不启用，需要时设 FISIR_VALIDATION=1（默认给一条 Info 提示怎么开）。
+    {
+        const char* validationEnv = getenv("FISIR_VALIDATION");
+        const bool wantValidation = validationEnv && validationEnv[0] != '0';
+        if (wantValidation) {
+            for (const auto& layerP : layerProperties) {
+                if (strstr(layerP.layerName, "validation")) LayerNames.push_back(layerP.layerName);
+            }
+            Info("Vulkan 验证层：已启用 {} 个（FISIR_VALIDATION 打开）", LayerNames.size());
+        }
+        else {
+            Info("Vulkan 验证层：未启用（需要时设 FISIR_VALIDATION=1；它会显著增加内存与启动时间）");
+        }
     }
-#endif // DEBUG
 
     //CreateInstance
     VkInstanceCreateInfo vkInstanceCreateInfo = {

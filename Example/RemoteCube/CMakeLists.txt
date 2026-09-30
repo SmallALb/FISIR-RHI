@@ -22,7 +22,7 @@ target_compile_definitions(RemoteCube
 target_link_libraries(RemoteCube
     PRIVATE
         Log
-        Slang::Slang
+        Slang::Headers
         ws2_32                              # Winsock2：内置 HTTP 服务
         iphlpapi                            # GetAdaptersAddresses：按网卡列局域网地址
         shell32                             # ShellExecuteEx：-OpenFirewall 弹 UAC 放行端口

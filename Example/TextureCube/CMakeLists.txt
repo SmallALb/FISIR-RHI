@@ -30,7 +30,7 @@ if(ANDROID)
     target_link_libraries(TextureCube
         PRIVATE
             Log
-            Slang::Slang
+            Slang::Headers
             android
             log
             $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
@@ -58,7 +58,7 @@ else()
     target_link_libraries(TextureCube
         PRIVATE
             Log
-            Slang::Slang
+            Slang::Headers
             $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
     )
 

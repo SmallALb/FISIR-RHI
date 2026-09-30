@@ -28,7 +28,7 @@ target_compile_definitions(BunnyPBR
 target_link_libraries(BunnyPBR
     PRIVATE
         Log
-        Slang::Slang
+        Slang::Headers
         $<$<BOOL:${BUILD_VULKAN_RHI}>:RHIVK>
 )
 
