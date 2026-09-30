@@ -131,10 +131,15 @@ namespace FISIR {
         options[optionCount].value.intValue0 = 1;
         ++optionCount;
 
-        if (RHICreator::getCrrentRenderInterfaceApi() == FISIR::RHIAPI::Vulkan) {
+        if (RHICreator::getCrrentRenderInterfaceApi() == FISIR::RHIAPI::Vulkan &&
+            getenv("FISIR_SPV_DEBUG_INFO")) {
             // 等价 DXC 时代的 -fspv-debug=vulkan-with-source：让 Nsight/RenderDoc 能显示源码。
             // Slang 只有「级别」没有「风味」，STANDARD（-g2）是官方文档里验证过 RenderDoc 的档位；
             // 打开后 SPIR-V 会带 NonSemantic.Shader.DebugInfo.100 扩展指令。
+            //
+            // 默认**关闭**：调试信息会显著抬高编译期的内存与时间（每份源码都要带上行号/类型信息，
+            // 且这些指令全程留在 IR 里），而它只在用图形调试器时才需要 —— 需要时设
+            // FISIR_SPV_DEBUG_INFO=1 即可。
             options[optionCount].name = slang::CompilerOptionName::DebugInformation;
             options[optionCount].value.kind = slang::CompilerOptionValueKind::Int;
             options[optionCount].value.intValue0 = SLANG_DEBUG_INFO_LEVEL_STANDARD;
@@ -218,13 +223,29 @@ namespace FISIR {
         }
 
         ~ShaderComplier() {
-            ComplierCount--;
+            // 先放会话再减计数：全局会话只有在「没有任何会话/编译器活着」时才能安全释放。
             if (mData) {
                 if (mData->session) mData->session->release();
                 delete mData;
                 mData = nullptr;
             }
-            if (needRelease) DestroyCompiler();
+            ComplierCount--;
+            // 最后一个编译器用完，就把**全局会话**也放掉。
+            // 为什么必须这么做：Slang 的 global session 会连带 core module 与一大堆内部 arena，
+            // 实测（Debug、TextureCube、含交换链）整个进程私有内存 925MB，而它只在初始化阶段用一次；
+            // 更糟的是示例与 RHIVK 是两个二进制，各自有一份 inline 全局状态 ⇒ **两份 global session
+            // 同时驻留**。这里让计数归零即释放，之后若还有编译需求 InitCompiler() 会重建
+            // （代价是慢一点，换来的是常驻内存大幅下降）。
+            if (needRelease || ComplierCount.load() == 0) {
+                std::lock_guard<std::mutex> lock(initMutex);
+                if (ComplierCount.load() == 0 && SlangGlobalSession) {
+                    SlangGlobalSession->release();
+                    SlangGlobalSession = nullptr;
+                    slangLoaded = false;
+                    Info("Slang global session released (no compiler alive)");
+                }
+                needRelease = false;
+            }
             clear();
         }
 
