@@ -179,6 +179,13 @@ namespace FISIR {
 		for (auto& [id, Que] : FamilyIndexToQue) {
 			delete Que;
 		}
+		// ★ 必须清空：FamilyIndexToQue 是**进程级 static**，跨设备生命周期存活。
+		// 只 delete 不清表的话，同一个进程里第二次初始化时 getVulkanQue() 会命中这些
+		// 悬垂条目并返回**已释放**的 VulkanQueue*，随后一用就段错误 ——
+		// Android 上「切后台/锁屏回来重建 RHI」就是这么崩的（fault addr 0x28 = 解引用野指针）。
+		// 注：队列序号计数器（VulkanQueue.cpp 里的 QueIndexOfFamilyIndex）在 VulkanQueue 的
+		// 构造/析构里成对增减，删完全部队列就自然回到 0，不需要（也访问不到）在这里清。
+		FamilyIndexToQue.clear();
 
 		vkDestroyDevice(mData->mLogicalDevice, nullptr);
 	}

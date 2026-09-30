@@ -179,20 +179,39 @@ namespace FISIR {
         delete ThreadPool;
         Debug("Vulkan Thread Pool Join");
 
-        for (auto& [name, pipeline] : PipelineCacheMap) delete pipeline;
+        for (auto& [name, pipeline] : getPipelineCacheMap()) delete pipeline;
 
+        // ★ 下面这些容器都是**进程级 static**：只 delete 元素而不清表的话，同一个进程里第二次
+        // 初始化（Android 窗口被回收后重建）会从表里取到上一代**已销毁**的对象 ——
+        // 这正是「切后台回来就崩」的根因，所以每个都要 clear。
         for (auto& [info, renderPass] : RenderPassCache) delete renderPass;
+        RenderPassCache.clear();
 
         for (auto& shader : ShadersPool) delete shader;
+        ShadersPool.clear();
 
         for (auto& [viewport, swapchain] : ViewPortSwapChainCache) {
             delete swapchain;
             delete viewport;
         }
+        ViewPortSwapChainCache.clear();
+        for (auto& slot : mSwapChains) slot.store(nullptr);
 
-        for (auto& [name, layout] : PipelineLayoutMap) {
+        for (auto& [name, layout] : getPipelineLayoutMap()) {
 			vkDestroyPipelineLayout(mDevice->getLogicalDevice(), layout, nullptr);
         }
+
+        // ★ 这两个缓存是**进程级 static**（VulkanPipelineLayoutCache.h），必须清空：
+        // 上面刚把 VkPipelineLayout / VulkanPipeline 释放掉，条目留着的话，同一个进程里
+        // 第二次初始化会命中悬垂句柄/野指针 —— Android 上窗口重建走的就是这条路。
+        getPipelineLayoutMap().clear();
+        getPipelineCacheMap().clear();
+
+        // ★ 呈现通道着色器同样是进程级静态（VulkanSwapChian.cpp 的 VShader/FShader），
+        // 必须一起复位：否则窗口被回收后重建时会复用上一代**已销毁**的 RHIShader*，
+        // 在 VulkanPipeline 构造里解引用野指针直接崩（实测 fault addr 0x20，
+        // 栈为 VulkanSwapChain → VulkanRHI → VulkanPipeline）—— Android 切后台回来就是这个。
+        VulkanSwapChain::ResetPresentShaders();
 
         Debug("Destroy Fence and Semaphore Pool");
         mFencePool->destroyPool();
@@ -276,10 +295,10 @@ namespace FISIR {
     }
 
     RHIPipeline* VulkanRHI::RHICreatePipeline(const RHIPipelineState& PipelineState) {
-        if (!PipelineCacheMap.contains(PipelineState)) {
-            PipelineCacheMap[PipelineState] = new VulkanPipeline(mDevice, mDescriptorPool, PipelineState);
+        if (!getPipelineCacheMap().contains(PipelineState)) {
+            getPipelineCacheMap()[PipelineState] = new VulkanPipeline(mDevice, mDescriptorPool, PipelineState);
         }
-        return PipelineCacheMap[PipelineState];
+        return getPipelineCacheMap()[PipelineState];
     }
 
 

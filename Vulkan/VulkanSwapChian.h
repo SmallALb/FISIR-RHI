@@ -18,6 +18,11 @@ namespace FISIR {
 		// presentNow / tryAcquire 只给 RHI 线程用（VkSwapchainKHR 必须单线程触碰）。
 		friend class VulkanRHI;
 	public:
+		// 复位「呈现通道着色器」这组进程级静态（VulkanSwapChian.cpp 里的 VShader/FShader）。
+		// 设备销毁时必须调用：否则窗口被回收后重建时，这里会复用上一代已被销毁的
+		// RHIShader*，管线创建时解引用野指针直接崩（Android 切后台回来就是这个栈）。
+		static void ResetPresentShaders();
+
 		// slotCount：用户指定的槽位数（帧在飞数）。createSwapChian() 会把它夹取到
 		// 「≥1 且 ≤ 交换链图像数」——超出图像数会重现「帧在飞数 > 图像数」的信号量复用
 		// 竞态（曾导致渲染卡死，见 RHISwapChain.h 中 DEFAULT_SWAPCHAIN_SLOT_COUNT 的说明）。

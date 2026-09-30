@@ -90,6 +90,15 @@ namespace FISIR {
     static RHIShader* VShader = nullptr;
     static RHIShader* FShader = nullptr;
 
+    // 呈现通道着色器是懒建的进程级静态，**必须在设备销毁时一起复位**。
+    // 否则「窗口被回收后重建 RHI」时（Android 切后台/锁屏回来）这里仍然返回 true 分支、
+    // 把上一代已被销毁的 RHIShader* 塞进管线状态 ⇒ VulkanPipeline 构造里解引用野指针
+    // （实测 fault addr 0x20，栈是 VulkanSwapChain → VulkanRHI → VulkanPipeline）。
+    void VulkanSwapChain::ResetPresentShaders() {
+        VShader = nullptr;
+        FShader = nullptr;
+    }
+
     struct __VkSwapChainData {
         VkSwapchainKHR swapchain {VK_NULL_HANDLE};
         std::vector<VkImage> swapChainImageHandles;   // 大小 = 交换链实际图像数

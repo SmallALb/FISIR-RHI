@@ -418,9 +418,11 @@ namespace FISIR {
                     Info("Slang global session released (no compiler alive)");
                 }
                 needRelease = false;
-                // 会话没了就把运行时也卸掉：配合磁盘缓存，后续启动根本不映射编译器，
-                // 进程常驻内存可以回到「只有 Vulkan」的量级。
-                if (ComplierCount.load() == 0) UnloadSlangRuntime();
+                // 注意：这里**不**卸载 Slang 运行时映像。
+                // 试过「用完 dlclose/FreeLibrary，下次再加载」，实测在 Android 上会卡死在
+                // 第二个着色器的编译上（bionic 对带静态构造/析构的大型 C++ 库做部分卸载时
+                // 状态不干净，反复 dlopen 也白费时间）。会话才是内存大头，那部分仍然照旧释放；
+                // 配合磁盘缓存，热启动本来就不会走到这里。
             }
             clear();
         }

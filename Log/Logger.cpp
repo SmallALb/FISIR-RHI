@@ -1,5 +1,7 @@
 #include "Logger.h"
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -130,8 +132,7 @@ namespace FISIR {
 #ifndef __ANDROID__
 				printf("%s", colors[(int)Data.level]);
 #endif
-				const char* levelName = "????";
-				switch (Data.level) {
+				const char* levelName = "????";				switch (Data.level) {
 					case LogLevel::INFO_:  levelName = "INFO";  break;
 					case LogLevel::WARN_:  levelName = "WARN";  break;
 					case LogLevel::ERROR_: levelName = "ERROR"; break;
@@ -185,6 +186,33 @@ namespace FISIR {
 				printf("%s\n", buffer.data());
 				fflush(stdout);
 #endif
+
+				// ── 旁路落文件（崩溃安全）────────────────────────────────────────
+				// 日志线程是异步的：进程一旦原生崩溃，队列里还没写出去的消息就永远丢了 ——
+				// 手机上调这种「启动一会儿就 SIGSEGV」的问题时，丢的恰好是最关键的尾巴。
+				// 设了 FISIR_LOG_FILE 就把同样的内容**同步**追加到文件（每行 fflush），
+				// Android 的平台层会自动把它指到应用私有目录。
+				{
+					static FILE* fileSink = nullptr;
+					static bool sinkInit = false;
+					if (!sinkInit) {
+						sinkInit = true;
+						if (const char* path = getenv("FISIR_LOG_FILE")) {
+							fileSink = fopen(path, "w");
+						}
+					}
+					if (fileSink) {
+						// 去掉 ANSI 颜色码再落盘：文件里带转义序列没法读
+						std::string plain;
+						plain.reserve(256);
+						for (const char* p = buffer.data(); *p; ++p) {
+							if (*p == '\033') { while (*p && *p != 'm') ++p; continue; }
+							plain.push_back(*p);
+						}
+						fprintf(fileSink, "%s\n", plain.c_str());
+						fflush(fileSink);   // 关键：崩溃前必须已落盘
+					}
+				}
 			}
 			});
 		}

@@ -519,9 +519,24 @@ namespace FISIR{
 				.basePipelineIndex = -1,
 			};
 
-			vkCreateGraphicsPipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
-			
-
+			// 返回值必须检查：创建失败时 mData->mPipeline 会保持 VK_NULL_HANDLE，
+			// 而执行线程后面会拿它去 vkCmdBindPipeline —— 手机上（无验证层）这是**驱动直接段错误**，
+			// 现场只剩一个 vkCmdBindPipeline 的栈，完全看不出「管线没建出来」这个真因。
+			const VkResult pipeRes =
+				vkCreateGraphicsPipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
+			if (pipeRes != VK_SUCCESS || mData->mPipeline == VK_NULL_HANDLE) {
+				// 把「哪条管线、用什么入口点」一并打出来：Adreno 上这类失败只回一个
+				// VK_ERROR_UNKNOWN（SPIR-V 本身合法），不看上下文根本定位不到。
+				const char* vsEntry = (State.Shaders[ShaderTYP::__VERTEXSHADER__] &&
+				                       State.Shaders[ShaderTYP::__VERTEXSHADER__]->getEntryPoint())
+				                      ? State.Shaders[ShaderTYP::__VERTEXSHADER__]->getEntryPoint() : "?";
+				const char* psEntry = (State.Shaders[ShaderTYP::__FRAGMENTSHADER__] &&
+				                       State.Shaders[ShaderTYP::__FRAGMENTSHADER__]->getEntryPoint())
+				                      ? State.Shaders[ShaderTYP::__FRAGMENTSHADER__]->getEntryPoint() : "?";
+				Error("[Vulkan] vkCreateGraphicsPipelines failed: VkResult={} | renderPass=0x{:x} layout=0x{:x} | VS={} PS={} | vertexAttrs={}",
+					(int)pipeRes, (size_t)info.renderPass, (size_t)info.layout, vsEntry, psEntry,
+					(uint32_t)(info.pVertexInputState ? info.pVertexInputState->vertexAttributeDescriptionCount : 0));
+			}
 		}
 		else {
 			mIsComputePipeline = true;
@@ -531,7 +546,11 @@ namespace FISIR{
 			  .stage = shaderInfos[0],
 			  .layout = mDevice->isDescriptorHeapSupported() ? VK_NULL_HANDLE : mData->PipelineLayout,
 			};
-			vkCreateComputePipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
+			const VkResult pipeRes =
+				vkCreateComputePipelines(mDevice->getLogicalDevice(), nullptr, 1, &info, nullptr, &mData->mPipeline);
+			if (pipeRes != VK_SUCCESS || mData->mPipeline == VK_NULL_HANDLE) {
+				Error("[Vulkan] vkCreateComputePipelines 失败: VkResult={}（管线句柄为空，后续 dispatch 会被跳过）", (int)pipeRes);
+			}
 
 			if (mDevice->isDescriptorHeapSupported()) info.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
 		}

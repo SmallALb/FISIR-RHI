@@ -22,6 +22,7 @@
 #include <android_native_app_glue.h>
 
 #include <cstring>
+#include <string>
 
 #include "Log/Logger.h"
 
@@ -36,31 +37,45 @@ namespace {
 		bool windowReady = false;
 		bool windowLost = false;
 		bool destroyRequested = false;
+		int32_t width = 0;
+		int32_t height = 0;
 	};
 
 	AndroidImpl* g_Impl = nullptr;
+
+	void UpdateWindowSize(AndroidImpl& impl) {
+		if (impl.app && impl.app->window) {
+			impl.width = ANativeWindow_getWidth(impl.app->window);
+			impl.height = ANativeWindow_getHeight(impl.app->window);
+		}
+	}
 
 	void HandleAppCmd(android_app* app, int32_t cmd) {
 		AndroidImpl* impl = static_cast<AndroidImpl*>(app->userData);
 		if (!impl) return;
 		switch (cmd) {
 		case APP_CMD_INIT_WINDOW:
+			UpdateWindowSize(*impl);
 			impl->windowReady = (app->window != nullptr);
 			impl->windowLost = false;
 			Info("[Android] APP_CMD_INIT_WINDOW: ANativeWindow=0x{:x} {}x{}",
-				 (size_t)app->window,
-				 app->window ? ANativeWindow_getWidth(app->window) : 0,
-				 app->window ? ANativeWindow_getHeight(app->window) : 0);
+				 (size_t)app->window, impl->width, impl->height);
 			break;
 		case APP_CMD_TERM_WINDOW:
+			// 切后台 / 锁屏 / 分屏都会走到这里：窗口被系统回收。
+			// 这时**只停渲染**，不要结束 Activity（旧版直接 finish，导致系统恢复同一个
+			// Activity 时已经没有渲染线程，表现为卡死）。
 			impl->windowReady = false;
 			impl->windowLost = true;
-			Warn("[Android] APP_CMD_TERM_WINDOW: 窗口被系统回收（本版直接结束，见文件头说明）");
+			Warn("[Android] APP_CMD_TERM_WINDOW: 窗口被回收 → 停渲染并等新窗口（进程保留）");
 			break;
 		case APP_CMD_WINDOW_RESIZED:
-			Info("[Android] APP_CMD_WINDOW_RESIZED: {}x{}",
-				 app->window ? ANativeWindow_getWidth(app->window) : 0,
-				 app->window ? ANativeWindow_getHeight(app->window) : 0);
+		case APP_CMD_CONFIG_CHANGED:
+			// 旋转/分屏/折叠屏都会改窗口尺寸。交换链在下一次 acquire 时按 surface 的
+			// 最新 capabilities 重建（见 VulkanSwapChain::acquireGetImageInfoID 的 OUT_OF_DATE 处理），
+			// 这里只要把新尺寸记下来、并在需要时触发重建即可。
+			UpdateWindowSize(*impl);
+			Info("[Android] 窗口尺寸变化: {}x{}", impl->width, impl->height);
 			break;
 		case APP_CMD_GAINED_FOCUS:
 		case APP_CMD_LOST_FOCUS:
@@ -99,24 +114,51 @@ void android_main(struct android_app* app) {
 	// （APK 里的 assets 只读、TMPDIR 不保证）。命中缓存时连 Slang 运行时都不会加载，
 	// 手机上启动会快很多（见 ShaderComplier.h 的说明）。
 	if (app->activity && app->activity->internalDataPath) {
-		setenv("FISIR_SPV_CACHE_DIR", app->activity->internalDataPath, 1);
-		Info("[Android] SPIR-V 缓存目录 = {}", app->activity->internalDataPath);
+		// 缓存与日志都放**应用外部私有目录**（/sdcard/Android/data/<包名>/files/）：
+		// adb 能直接读，排查「手机上编出来的 SPIR-V 到底对不对」时可以把 .spv 拉回 PC 校验
+		// （spirv-val），不需要 debuggable、不需要存储权限。
+		const char* dataDir = app->activity->externalDataPath ? app->activity->externalDataPath
+		                                                    : app->activity->internalDataPath;
+		setenv("FISIR_SPV_CACHE_DIR", dataDir, 1);
+		Info("[Android] SPIR-V 缓存目录 = {}", dataDir);
+
+		// 日志旁路落文件：日志线程是异步的，原生崩溃会把队列里没写出去的消息带走 ——
+		// 手机上排查「启动一会儿就 SIGSEGV」时丢的恰好是关键尾巴。
+		std::string logPath = std::string(dataDir) + "/fisir.log";
+		setenv("FISIR_LOG_FILE", logPath.c_str(), 1);
+		Info("[Android] 日志同步落盘 = {}", logPath);
 	}
 
 	Info("[Android] android_main 进入：assetManager=0x{:x}", (size_t)app->activity->assetManager);
 
-	// 窗口会随「息屏 / 切后台 / 分屏」被系统回收，回来时给的是**新的** ANativeWindow。
-	// RHI 目前没有「换 surface / 重建交换链」的接口（只有 RHICreateViewport），所以这一版的处理是：
-	// 窗口没了就结束渲染主体并 finish Activity（进程退出）。
-	//
-	// 试过「进程留住、窗口回来重新初始化」的写法（android_main 里循环重跑 RunTextureCube），
-	// 但实测在**拆 RHI 的时候会 native 崩**：Thread-6（RHI 的常驻工作线程之一）在
-	// destroyRenderInterface 期间 SIGSEGV，fault addr 0x28 —— 说明析构与工作线程的收尾有竞态，
-	// 同一进程里二次初始化也不干净。要支持「切后台再回来」得先把这条收尾链路修干净，
-	// 并补 RHIDestroyViewport / surface 重建接口（见 .claude/Results 里的 TODO）。
-	RunTextureCube();   // ← 与桌面共用的渲染主体
+	// ── 生命周期：窗口会反复被回收/重建，进程要活下来 ──────────────────────────
+	// 症状对照（旧版为什么会卡死）：
+	//   · 锁屏/切后台 → TERM_WINDOW → 旧版直接 finish Activity 并让 android_main 返回；
+	//     而系统往往恢复的是**同一个 Activity 实例**，不会再次调用 ANativeActivity_onCreate，
+	//     于是窗口还在、渲染线程没了 ⇒ 永远停在最后一帧 = 卡死；
+	//   · 从桌面回来同理（没有「窗口回来 → 重建」的路径）；
+	//   · 旋转虽然改了窗口尺寸，但交换链没重建 ⇒ 看起来既没横屏也没画面。
+	// 现在：窗口丢了就结束**本轮**渲染主体（它会把 RHI 干净拆掉），等下一个窗口到手再重建一遍。
+	// 这要求 RHI 的进程级静态缓存必须清干净（VulkanDevice::Destory / ~VulkanRHI 里已修）。
+	while (!app->destroyRequested) {
+		const int ret = RunTextureCube();   // ← 与桌面共用的渲染主体
+		Info("[Android] 渲染主体结束（ret={}）", ret);
+		if (ret != 0) break;                // 初始化失败：别死循环重试
+		if (app->destroyRequested) break;
 
-	Info("[Android] 渲染主体结束，请求结束 Activity");
+		// 等新窗口。阻塞在 looper 上，不空转 CPU。
+		while (!impl.windowReady && !app->destroyRequested) {
+			int events = 0;
+			android_poll_source* source = nullptr;
+			ALooper_pollOnce(-1, nullptr, &events, reinterpret_cast<void**>(&source));
+			if (source) source->process(app, source);
+		}
+		if (app->destroyRequested) break;
+		impl.windowLost = false;
+		Info("[Android] 新窗口已就绪（{}x{}），重建渲染", impl.width, impl.height);
+	}
+
+	Info("[Android] 收到结束请求，finish Activity");
 	if (app->activity) ANativeActivity_finish(app->activity);
 }
 
@@ -159,7 +201,9 @@ namespace Platform {
 		DrainLooper(impl);
 		if (impl.destroyRequested) { Info("[Android] destroyRequested：退出主循环"); return false; }
 		if (impl.windowLost || !impl.windowReady) {
-			Warn("[Android] 窗口已失效：退出主循环（换 surface 需要 RHI 支持重建，见文件头说明）");
+			// 窗口被系统回收：结束**这一轮**渲染主体（它会干净拆掉 RHI），
+			// 由 android_main 等待下一个窗口后整体重建。进程不退出。
+			Warn("[Android] 窗口已失效：结束本轮渲染，等新窗口重建");
 			return false;
 		}
 		return true;

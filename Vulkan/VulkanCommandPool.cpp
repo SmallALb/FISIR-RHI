@@ -434,6 +434,7 @@ namespace FISIR{
 			bool hasBoundPack = false;
 			bool packBound = false;                   // 本命令缓冲里是否已用当前管线绑过 set
 			RHIPipeline* lastBindPipeline = nullptr;  // 上次绑 set 用的管线
+			bool pipelineValid = false;               // 当前管线句柄是否有效（空句柄绝不交给驱动）
 			if (inheritFrameBuffer) {
 				// 拆分后的续接段：继承信息由 RHI 线程预置，本段不以 BeginRenderPass 开头。
 				inheritanceInfo.renderPass = static_cast<VkRenderPass>(inheritFrameBuffer->getFrameRenderPass()->getRenderPassHandle());
@@ -501,6 +502,18 @@ namespace FISIR{
 					}
 				}
 
+				// 管线没建出来时（vkCreate*Pipelines 失败）draw/dispatch 一律跳过：
+				// 给驱动喂缺失的管线状态，轻则验证层报错、重则驱动段错误（手机上是后者 ——
+				// 现场只会看到一个 vkCmdBindPipeline 的栈，看不出「管线没建出来」这个真因）。
+				if (!pipelineValid &&
+					(currentCmd == RHICommandT::DrawPrimitive || currentCmd == RHICommandT::DrawIndex ||
+					 currentCmd == RHICommandT::DrawIndirect || currentCmd == RHICommandT::DrawIndexedIndirect ||
+					 currentCmd == RHICommandT::Dispatch)) {
+					batchInfo.skipCommand();   // 必须跳过负载：否则读游标不前进（死循环）
+					currentCmd = batchInfo.getCommandType();
+					continue;
+				}
+
 				switch (currentCmd) {
 					case RHICommandT::BeginRenderPass: {
 						break;
@@ -542,7 +555,17 @@ namespace FISIR{
 						VkPipelineBindPoint bindPoint = info.pipeline->isComputePipeline()
 							? VK_PIPELINE_BIND_POINT_COMPUTE
 							: VK_PIPELINE_BIND_POINT_GRAPHICS;
-						vkCmdBindPipeline(cmdInfo.buffer, bindPoint, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));
+						const VkPipeline vkPipeline = static_cast<VkPipeline>(info.pipeline->getPipelineHandle());
+						if (vkPipeline == VK_NULL_HANDLE) {
+							// 管线没建出来（创建失败）：绝不能把它交给驱动去绑 —— 那是 vkCmdBindPipeline
+							// 里的空指针解引用（手机上表现为驱动段错误，栈里只有 vkCmdBindPipeline）。
+							// 这里降级成「本帧这批命令不画」并报错，让真正的失败原因（见管线创建处的日志）露出来。
+							Error("[Vulkan] 绑定了空管线句柄（管线创建失败？），跳过该命令批次");
+							pipelineValid = false;
+							break;
+						}
+						vkCmdBindPipeline(cmdInfo.buffer, bindPoint, vkPipeline);
+						pipelineValid = true;
 						currentPipeline = info.pipeline;   // PushConstant 要用它的管线布局
 						break;
 					}
