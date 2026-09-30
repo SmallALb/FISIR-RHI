@@ -541,12 +541,22 @@ namespace FISIR{
 
 		std::vector<VkDescriptorSetLayoutBinding> bindings;
 		if (!mDevice->isDescriptorHeapSupported()) {
-			if (mData->DescriptorSetLayoutMap.contains(info)) {
+			// ── 降级路径（无 VK_EXT_descriptor_heap）────────────────────────────
+			// binding = 资源在 describeInfo / ResourcePack 里的**下标**，两条硬约束：
+			//   · 同一个 set 内 binding 必须唯一 —— 采样器不能再和常量缓冲/纹理共用寄存器号
+			//     （describeInfo 里允许重复号是给描述符堆用的：堆按「资源类型」区分采样器与
+			//      资源，经典 DescriptorSet 没有这个余地）；
+			//   · 着色器里 register(...) 的号必须等于它在 describeInfo 里的下标
+			//     （Nanite 那一套 u0..u12 + b4/b5/b8 就是照这个排的）。
+			// stageFlags 用 ALL：与 DescriptorSet 侧（资源包）自建的布局逐字段一致，
+			// 于是 vkCmdBindDescriptorSets 无论传哪一边的 pipelineLayout 都满足兼容性要求。
+			auto cached = mData->DescriptorSetLayoutMap.find(info);
+			if (cached != mData->DescriptorSetLayoutMap.end()) {
 				if (!PipelineLayoutMap.contains(HashVal)) {
 					VkPipelineLayoutCreateInfo PipelineLayoutInfo{
 						.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 						.setLayoutCount = 1,
-						.pSetLayouts = VK_NULL_HANDLE,
+						.pSetLayouts = &cached->second,
 						.pushConstantRangeCount = pcRange.size > 0 ? 1u : 0u,
 						.pPushConstantRanges = pcRange.size > 0 ? &pcRangeVk : nullptr,
 					};
@@ -554,16 +564,16 @@ namespace FISIR{
 					PipelineLayoutMap[HashVal] = Pipelinelayout;
 				}
 				else Pipelinelayout = PipelineLayoutMap[HashVal];
-				return mData->DescriptorSetLayoutMap[info];
-
+				return cached->second;
 			}
+
 			uint32_t index = 0;
 			for (const auto& v : info.Bindings) {
 				VkDescriptorSetLayoutBinding layoutBinding{
-					.binding = bindingMap[index],
+					.binding = index,
 					.descriptorType = ChoiceDescriptorType(v.descriptorTyp),
 					.descriptorCount = v.count,
-					.stageFlags = ChoiceDescriptorStage(v.usingStage)
+					.stageFlags = VK_SHADER_STAGE_ALL
 				};
 				bindings.push_back(layoutBinding);
 				index++;
@@ -678,7 +688,7 @@ namespace FISIR{
 			ChoiceDescriptorStage(stage), offset, size, data);
 	}
 
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint) {
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIPipeline* pipeline, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint) {
 		const auto& sizes = device->getHeapSizeInfo();
 		if (Resourcepack) {
 			if (device->isDescriptorHeapSupported()) {
@@ -697,9 +707,18 @@ namespace FISIR{
 				fpCmdBindResourceHeap(cmd, &info);
 			}
 			else {
-				// 降级路径：绑定单个 DescriptorSet
+				// 降级路径：绑定单个 DescriptorSet。
+				// pipelineLayout 用**当前管线自己的**布局，而不是资源包自建的那个：
+				// 规范要求 vkCmdBindDescriptorSets 传入的布局与管线创建时的布局「兼容」，
+				// 而资源包自建的布局不含 push constant 范围 —— 实测 HZBBuild（唯一带 push
+				// constant 的降级路径管线）会报 "set 0 is not compatible with the pipeline
+				// layout bound"。set 本身与管线布局逐字段一致（绑定号/类型/数量/阶段），
+				// 所以借用管线的布局既合法又最稳。
 				auto* setPack = static_cast<DescriptorSet*>(Resourcepack);
-				vkCmdBindDescriptorSets(cmd, (VkPipelineBindPoint)bindPoint, setPack->pipelineLayout,
+				VkPipelineLayout layout = pipeline
+					? static_cast<VkPipelineLayout>(pipeline->getPipelineLayoutHandle())
+					: setPack->pipelineLayout;
+				vkCmdBindDescriptorSets(cmd, (VkPipelineBindPoint)bindPoint, layout,
 					0, 1, &setPack->set, 0, nullptr);
 			}
 		}

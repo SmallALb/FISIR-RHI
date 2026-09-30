@@ -1,6 +1,7 @@
 
 #include "VulkanDevice.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -16,13 +17,12 @@
 #include "VulkanTexture.h"
 
 // ============================================================
-// 测试开关：强制所有路径走传统 DescriptorSet 降级实现，
-// 无视设备对 VK_EXT_descriptor_heap 的实际支持。
-// 此开关必须放在唯一事实源 isDescriptorHeapSupported() 上，
-// 才能让「管线创建 / ResourcePack 创建 / 绑定 / Buffer usage」
-// 全部一致地走 Set 路径。测试完成后删除此宏。
+// 描述符路径开关：环境变量 FISIR_DISABLE_DESCRIPTOR_HEAP=1
+// 强制所有路径走传统 DescriptorSet 降级实现，无视设备对
+// VK_EXT_descriptor_heap 的实际支持。判定点就是唯一事实源
+// isDescriptorHeapSupported()（见下方实现），管线创建 /
+// ResourcePack 创建 / 绑定 / Buffer usage 全都问它。
 // ============================================================
-//#define FISIR_FORCE_DESCRIPTOR_SET 1
 
 namespace FISIR {
 	extern VkInstance GetGlobalInstance();
@@ -228,12 +228,16 @@ namespace FISIR {
 	}
 
 	bool VulkanDevice::isDescriptorHeapSupported() const {
-#if FISIR_FORCE_DESCRIPTOR_SET
-		// 测试模式：强制降级到 DescriptorSet
-		return false;
-#else
+		// 运行时开关：FISIR_DISABLE_DESCRIPTOR_HEAP=1 强制走传统 DescriptorSet 降级实现，
+		// 无视设备对 VK_EXT_descriptor_heap 的支持情况。用途：在桌面（有该扩展）上验证
+		// 移动端/无扩展设备的代码路径。必须放在这个唯一事实源上 —— 管线创建、ResourcePack、
+		// 绑定、Buffer usage 全都问这里，开关一改就整条链一致。
+		static const bool forceDescriptorSet = [] {
+			const char* value = getenv("FISIR_DISABLE_DESCRIPTOR_HEAP");
+			return value && value[0] != '\0' && value[0] != '0';
+		}();
+		if (forceDescriptorSet) return false;
 		return mData->DescriptorHeapSupport;
-#endif
 	}
 
 	bool VulkanDevice::isSwapchainMaintenance1Supported() const {

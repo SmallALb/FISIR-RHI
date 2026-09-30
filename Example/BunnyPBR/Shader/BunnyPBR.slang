@@ -43,7 +43,7 @@ struct Bunny {
 };
 
 [[vk::binding(2, 0)]] TextureCube  PrefilteredCube  : register(t2);
-[[vk::binding(0, 0)]] SamplerState CubeSampler      : register(s0);
+[[vk::binding(3, 0)]] SamplerState CubeSampler      : register(s3);
 
 struct VSInput {
     float3 pos    : POSITION;

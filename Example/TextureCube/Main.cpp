@@ -252,7 +252,7 @@ int main(int argc, char* argv[]) {
     // ---------- 4. 像素着色器 ----------
     const wchar_t* psCode = LR"(
         [[vk::binding(1, 0)]] Texture2D myTexture  : register(t1);
-        [[vk::binding(0, 0)]] SamplerState mySampler  : register(s0);
+        [[vk::binding(2, 0)]] SamplerState mySampler  : register(s2);
         struct PSInput {
             float4 pos : SV_POSITION;
             float3 color : COLOR;
@@ -301,7 +301,7 @@ int main(int argc, char* argv[]) {
     FISIR::RHIPipelineDescribeInfo describeInfo{
         {0, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::VertexShaderStage},
         {1, 1, FISIR::RHIDescriptorTyp::SamplerImage, FISIR::RHIUsingStage::FragmentShaderStage},
-        {0, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
+        {2, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
     };
 
     FISIR::RHIVertexInputInfo vertexInputInfo{

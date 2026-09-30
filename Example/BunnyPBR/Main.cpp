@@ -541,7 +541,7 @@ int main(int argc, char* argv[]) {
         {0, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::ALLStage},
         {1, 1, FISIR::RHIDescriptorTyp::RBuffer, FISIR::RHIUsingStage::ALLStage},
         {2, 1, FISIR::RHIDescriptorTyp::SamplerImage, FISIR::RHIUsingStage::FragmentShaderStage},
-        {0, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
+	{3, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
     };
     FISIR::RHIVertexInputInfo vertexInputInfo{
         FISIR::RHIBaseDataTYPE::_Fvec3,
@@ -569,8 +569,8 @@ int main(int argc, char* argv[]) {
 
     FISIR::RHIPipelineDescribeInfo skyDescribe{
         {0, 1, FISIR::RHIDescriptorTyp::UniformBuffer, FISIR::RHIUsingStage::ALLStage},
-        {2, 1, FISIR::RHIDescriptorTyp::SamplerImage, FISIR::RHIUsingStage::FragmentShaderStage},
-        {0, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
+	{1, 1, FISIR::RHIDescriptorTyp::SamplerImage, FISIR::RHIUsingStage::FragmentShaderStage},
+	{2, 1, FISIR::RHIDescriptorTyp::Sampler, FISIR::RHIUsingStage::FragmentShaderStage}
     };
     FISIR::RHIPipelineState skyPipelineState{
         .describeInfo = skyDescribe,

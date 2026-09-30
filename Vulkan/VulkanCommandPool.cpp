@@ -430,6 +430,10 @@ namespace FISIR{
 			};
 			bool isRenderPassContinuation = false;
 			RHIPipeline* currentPipeline = nullptr;   // 当前绑定的管线（PushConstant 取它的布局）
+			RHIResourcePackResult boundPack{};        // 当前绑定的资源包（降级路径按需绑定用）
+			bool hasBoundPack = false;
+			bool packBound = false;                   // 本命令缓冲里是否已用当前管线绑过 set
+			RHIPipeline* lastBindPipeline = nullptr;  // 上次绑 set 用的管线
 			if (inheritFrameBuffer) {
 				// 拆分后的续接段：继承信息由 RHI 线程预置，本段不以 BeginRenderPass 开头。
 				inheritanceInfo.renderPass = static_cast<VkRenderPass>(inheritFrameBuffer->getFrameRenderPass()->getRenderPassHandle());
@@ -466,6 +470,36 @@ namespace FISIR{
 			};
 			vkBeginCommandBuffer(cmdInfo.buffer, &BeginInfo);
 			while(batchInfo.ReadBegin < batchInfo.ReadEnd) {
+
+				// ── 降级路径：把 descriptor set 的绑定推迟到真正要画之前 ──────────────
+				// 经典 DescriptorSet 路径下，vkCmdBindDescriptorSets 传的 pipelineLayout 必须与
+				// 「即将用这个 set 绘制的那条管线」的布局兼容，而 push constant 范围也参与这个判定。
+				// 于是两条要求同时成立才行：
+				//   · 用当前管线的布局（不能用资源包自建的 —— 它没有 push constant 范围，实测
+				//     HZBBuild 会报 "set 0 is not compatible with the pipeline layout bound"）；
+				//   · 又必须是「将要用它」的那条管线（录制顺序可能是「先绑包、后绑管线」，
+				//     Nanite 的 HZB 建塔就是这样；而像 ImGui 之后紧跟呈现包的情况，绑定时刻的
+				//     currentPipeline 还停留在上一条管线上）。
+				// 推迟到 draw/dispatch 之前取 currentPipeline，就与录制顺序无关了。
+				// 描述符堆路径不需要这一层（堆与管线布局无绑定关系）。
+				if (!mDevice->isDescriptorHeapSupported() && hasBoundPack && currentPipeline &&
+				    (!packBound || lastBindPipeline != currentPipeline)) {
+					const bool needDescriptor =
+						currentCmd == RHICommandT::DrawPrimitive ||
+						currentCmd == RHICommandT::DrawIndex ||
+						currentCmd == RHICommandT::DrawIndirect ||
+						currentCmd == RHICommandT::DrawIndexedIndirect ||
+						currentCmd == RHICommandT::Dispatch;
+					if (needDescriptor) {
+						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
+							? VK_PIPELINE_BIND_POINT_COMPUTE
+							: VK_PIPELINE_BIND_POINT_GRAPHICS;
+						CmdBindResourcePack(mDevice, cmdInfo.buffer, currentPipeline,
+							boundPack.ResourcePack, boundPack.SamplerPack, (uint32_t)bindPoint);
+						packBound = true;
+						lastBindPipeline = currentPipeline;
+					}
+				}
 
 				switch (currentCmd) {
 					case RHICommandT::BeginRenderPass: {
@@ -554,10 +588,19 @@ namespace FISIR{
 					case RHICommandT::BindResourceAndSamplerPack: {
 						BindResourcePack_CmdInfo info;
 						batchInfo.getBatchData(info);
-						VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
-							? VK_PIPELINE_BIND_POINT_COMPUTE
-							: VK_PIPELINE_BIND_POINT_GRAPHICS;
-						CmdBindResourcePack(mDevice, cmdInfo.buffer, info.Pack.ResourcePack, info.Pack.SamplerPack, (uint32_t)bindPoint);
+						boundPack = info.Pack;
+						hasBoundPack = true;
+						if (mDevice->isDescriptorHeapSupported()) {
+							// 描述符堆路径：与管线布局无关，立即绑定。
+							VkPipelineBindPoint bindPoint = (batchInfo.page->Pool->cmdType == CmdType::Compute)
+								? VK_PIPELINE_BIND_POINT_COMPUTE
+								: VK_PIPELINE_BIND_POINT_GRAPHICS;
+							CmdBindResourcePack(mDevice, cmdInfo.buffer, currentPipeline, info.Pack.ResourcePack, info.Pack.SamplerPack, (uint32_t)bindPoint);
+						}
+						else {
+							// 降级路径：真正的 vkCmdBindDescriptorSets 推迟到 draw/dispatch 前（见循环开头那段）
+							packBound = false;
+						}
 						break;
 					}
 					case RHICommandT::TransferTexture: {

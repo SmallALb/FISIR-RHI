@@ -199,6 +199,23 @@ namespace FISIR {
                 .mipLevels = 1, .arrayLayers = 1, .sampleCount = 0,   // 0 = 非 MSAA（本 RHI 约定）
             };
             FallbackTexture = usingRHI->RHICreateTexture(info);
+
+            // 纹理创建出来是 VK_IMAGE_LAYOUT_UNDEFINED，而呈现 PS 会把它当采样图像用
+            // （描述符里声明的 layout 是 SHADER_READ_ONLY_OPTIMAL）—— 采样一张 UNDEFINED 布局的
+            // 图像是未定义行为。经典 DescriptorSet 路径下验证层会直接报
+            //   expects VkImage ... SHADER_READ_ONLY_OPTIMAL -- instead, current layout is UNDEFINED
+            // （描述符堆路径因为校验层还没跟踪该扩展的布局，反而看不出来）。
+            // 这里立刻记一次布局转换：与字体图集上传同一套写法，用的是**渲染队列**命令列表，
+            // 因此按「提交顺序 == 录制顺序」的不变量，它必然排在第一次呈现之前 —— 无需等 fence。
+            if (FallbackTexture) {
+                FISIR::RHITexture* textures[] = { FallbackTexture };
+                FISIR::RHIRenderCommandList transitionList(usingRHI);
+                transitionList.TransitionTextures(textures, 1,
+                    FISIR::ResourceAccess::Undefined, FISIR::ResourceAccess::ShaderReadOnly,
+                    FISIR::TextureLayout::Undefined, FISIR::TextureLayout::ShaderReadOnlyOptimal,
+                    FISIR::RHIUsingStage::NoneStage, FISIR::RHIUsingStage::FragmentShaderStage);
+                transitionList.End(nullptr);
+            }
         }
         return FallbackTexture;
     }

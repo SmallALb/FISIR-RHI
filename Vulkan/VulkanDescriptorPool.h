@@ -33,7 +33,11 @@ namespace FISIR {
 		__VKDescriptorPoolData* mData;
 	};
 
-	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint);
+	// 绑定资源包。pipeline 只在降级路径（经典 DescriptorSet）里用：vkCmdBindDescriptorSets
+	// 传的布局必须与「管线创建时的布局」兼容，所以直接借用当前管线自己的布局最稳；
+	// 描述符堆路径忽略它。
+	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIPipeline* pipeline,
+	                         RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint);
 
 	// 推 push constant。两条路径：
 	//   · 描述符堆路径（VK_EXT_descriptor_heap）：用 vkCmdPushDataEXT —— 该扩展下

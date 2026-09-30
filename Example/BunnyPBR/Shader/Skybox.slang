@@ -25,8 +25,8 @@
     float4   SH[9];            // 环境辐射亮度 SH9（本着色器不用，仅为保持布局一致）
 };
 
-[[vk::binding(2, 0)]] TextureCube  EnvCube      : register(t2);
-[[vk::binding(0, 0)]] SamplerState CubeSampler  : register(s0);
+[[vk::binding(1, 0)]] TextureCube  EnvCube      : register(t1);
+[[vk::binding(2, 0)]] SamplerState CubeSampler  : register(s2);
 
 struct VSOutput {
     float4 pos : SV_POSITION;
