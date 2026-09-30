@@ -188,9 +188,10 @@ void mainRender(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
 // ═══════════════════════════════════════════════════════════════════
 // 硬光栅顶点/像素着色器。
-// VS 用 SV_VertexID + SV_InstanceID 从簇页缓冲直接取顶点，无需顶点/索引缓冲：
-//   - instanceID = 硬光栅列表里的簇序号（DrawIndirect 的 firstInstance）
-//   - vertexID   = 簇内三角形列表的局部顶点序号（0..indexCount-1）
+// VS 用 SV_VertexID + 实例号从簇页缓冲直接取顶点，无需顶点/索引缓冲：
+//   - 实例号 = 硬光栅列表里的簇序号（DrawIndirect 的 firstInstance，见下面的说明）
+//   - vertexID = 簇内三角形列表的局部顶点序号（0..indexCount-1；firstVertex 恒为 0，
+//                所以 SV_VertexID 的「相对/绝对」两种读法在这里一致）
 // PS 不写附件，也不着色，只把 (深度, clusterID, triIndex) 打包写进 VisBuffer —— 与软光栅
 // 写的是同一个缓冲，两者靠那里的 64 位原子 min 决出可见性。最终颜色由
 // FrameBufferWrite.slang 的解析管线统一产生（离屏附件只是占位，管线关掉了深度测试/写）。
@@ -203,19 +204,30 @@ struct NaniteVSOutput {
     nointerpolation uint triIndex  : TEXCOORD1;
 };
 
-NaniteVSOutput mainVS(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID) {
+NaniteVSOutput mainVS(uint vertexID : SV_VertexID,
+                      uint instanceID : SV_InstanceID,             // InstanceIndex - BaseInstance
+                      uint baseInstance : SV_StartInstanceLocation) // BaseInstance
+{
     NaniteVSOutput output = (NaniteVSOutput)0;
 
+    // ⚠ 列表槽号必须是 **InstanceIndex**（= 我们写进 DrawIndirect.firstInstance 的那个值），
+    // 但 Slang 把 SV_InstanceID 实现成 D3D 语义的「相对本次 draw 的实例号」
+    // （slang-ir-glsl-legalize.cpp：Replace SV_InstanceID with gl_InstanceIndex - gl_BaseInstance），
+    // 而本项目「每条 DrawIndirect 只画 1 个实例、槽号放在 firstInstance」——
+    // 于是相对号恒为 0：208 个 draw 全都去画列表里的第一个簇（实测 VisBuffer 里只剩 1 个 clusterID）。
+    // 把 BaseInstance 加回来才是槽号（Slang 文档 a2-01-spirv-target-specific.md 的推荐写法）。
+    const uint slot = instanceID + baseInstance;
+
     // 防御性守卫：DrawIndirect 的尾部残留项已被 CPU 清零（vertexCount=0），
-    // 理论上不会派发到 instanceID >= 选中簇数；此处仅保证极端情况输出退化顶点。
+    // 理论上不会派发到 slot >= 选中簇数；此处仅保证极端情况输出退化顶点。
     uint totalClusters = EnableClusterListHw[0];
-    if (instanceID >= totalClusters) {
+    if (slot >= totalClusters) {
         output.clipPos = float4(0.0f, 0.0f, 0.0f, 1.0f);
         return output;
     }
 
     // 与软光栅一致地定位簇数据区 cb
-    uint clusterID = EnableClusterListHw[instanceID + 1];
+    uint clusterID = EnableClusterListHw[slot + 1];
     uint pageIndex = clusterID >> 8;
     uint clusterOffset = clusterID & NANITE_CLUSTER_OFFSET_MASK;
 

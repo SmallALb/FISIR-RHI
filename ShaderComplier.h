@@ -297,6 +297,16 @@ namespace FISIR {
                 shaderData = new unsigned char[CodeSize];
                 memcpy(shaderData, code->getBufferPointer(), CodeSize);
                 Debug("Shader '{}' compiled successfully: {} bytes / {} SPIR-V words", entry, CodeSize, CodeSize / 4);
+
+                // 调试开关：设了 FISIR_DUMP_SPV=<目录> 就把产物落盘，方便用 slangc 复现/对比编译选项。
+                if (const char* dumpDir = getenv("FISIR_DUMP_SPV")) {
+                    const std::string dumpPath = std::string(dumpDir) + "/fisir_" + entry + ".spv";
+                    if (FILE* f = fopen(dumpPath.c_str(), "wb")) {
+                        fwrite(shaderData, 1, CodeSize, f);
+                        fclose(f);
+                        Info("SPIR-V dumped: {}", dumpPath);
+                    }
+                }
             }
             else {
                 LogSlangDiagnostics("generate SPIR-V", diagnostics);
