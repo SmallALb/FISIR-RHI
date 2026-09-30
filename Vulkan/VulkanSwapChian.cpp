@@ -492,6 +492,19 @@ namespace FISIR {
         VkSurfaceCapabilitiesKHR vkSurfaceCapabilitiesKHR;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(mDevice->getPhysicalDevice(), Surface, &vkSurfaceCapabilitiesKHR);
 
+        // ── 表面变换（Android 屏幕方向）────────────────────────────────────────
+        // currentTransform 描述「当前这块 surface 相对设备自然方向被旋转了多少」。
+        // 手机锁横屏时系统会把**整个显示**转过去，此时通常给 IDENTITY + 横向 extent（我们的
+        // 做法天然正确）；但平板/桌面模式下显示不跟着转，会给 ROTATE_90/270 —— 这时
+        // extent 的坐标系与渲染坐标系不一致，preTransform 必须配合 extent 一起处理，
+        // 否则画面会整体转 90° 甚至上下颠倒（Y 轴反）。
+        Info("Surface 变换: currentTransform={} supported=0x{:x} currentExtent={}x{} 图像范围=[{}x{}]-[{}x{}]",
+             (uint32_t)vkSurfaceCapabilitiesKHR.currentTransform,
+             (uint32_t)vkSurfaceCapabilitiesKHR.supportedTransforms,
+             vkSurfaceCapabilitiesKHR.currentExtent.width, vkSurfaceCapabilitiesKHR.currentExtent.height,
+             vkSurfaceCapabilitiesKHR.minImageExtent.width, vkSurfaceCapabilitiesKHR.minImageExtent.height,
+             vkSurfaceCapabilitiesKHR.maxImageExtent.width, vkSurfaceCapabilitiesKHR.maxImageExtent.height);
+
         VkExtent2D actualExtent;
         if (vkSurfaceCapabilitiesKHR.currentExtent.width != UINT32_MAX) {
             actualExtent = vkSurfaceCapabilitiesKHR.currentExtent;
@@ -504,7 +517,34 @@ namespace FISIR {
                 vkSurfaceCapabilitiesKHR.maxImageExtent.height);
         }
 
+        // ── 表面变换 / 预旋转（Android 屏幕方向）─────────────────────────────────
+        // 规则来自 Android 官方《Handle device orientation with Vulkan pre-rotation》：
+        //   · preTransform = currentTransform ⇒ 我们向系统**承诺「旋转我已经处理」**，合成器不再
+        //     代为旋转；此时 imageExtent 必须是自然方向（identity）分辨率，也就是 90°/270° 时要
+        //     把宽高交换，**并且**应用还得把旋转矩阵乘进 MVP。
+        //   · preTransform = IDENTITY（supportedTransforms 里通常都有）⇒ 旋转交给合成器，
+        //     应用按自己的逻辑方向渲染即可 —— 与桌面行为一致，也不需要任何 MVP 补偿。
+        // 我们原先无条件用 currentTransform 却什么都没做 ⇒ 画面被多转一个 currentTransform
+        // （实测平板 ROTATE_270 时表现为整体旋转/上下颠倒，用户看到的就是「Y 轴反了」）。
+        // 所以这里**优先 IDENTITY**，只有设备不支持时才退回预旋转模式（并把 extent 换成自然方向，
+        // 否则 extent 与 preTransform 不一致会得到更离谱的图像）。
+        const bool identitySupported =
+            (vkSurfaceCapabilitiesKHR.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0;
+        VkSurfaceTransformFlagBitsKHR preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        if (!identitySupported) {
+            preTransform = vkSurfaceCapabilitiesKHR.currentTransform;
+            if ((preTransform & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) ||
+                (preTransform & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+                std::swap(actualExtent.width, actualExtent.height);
+            }
+            Warn("设备不支持 IDENTITY 变换，退回预旋转模式（preTransform=0x{:x}，extent 换成 {}x{}）："
+                 "此时画面方向需要应用自己把旋转乘进 MVP，否则会整体旋转/镜像",
+                 (uint32_t)preTransform, actualExtent.width, actualExtent.height);
+        }
+
         Info("Actual viewport size: {} x {}", actualExtent.width, actualExtent.height);   // 注意是 width x height（原先写反了，排查窗口尺寸问题时很容易被误导）
+        Info("交换链 preTransform=0x{:x}（0x1=IDENTITY：旋转交给合成器；其它值=预旋转，需应用补偿）",
+             (uint32_t)preTransform);
 
         // 选表面格式：优先「viewport 要的格式 + SRGB_NONLINEAR」；找不到就退回列表第一个。
         // 原实现是「循环里命中才赋值」，一个都没命中时 choiceFormat 是**未初始化**的，
@@ -559,9 +599,9 @@ namespace FISIR {
             .imageSharingMode = isCxclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
             .queueFamilyIndexCount = 2,
             .pQueueFamilyIndices = QuefamilyIndex,
-            // 必须用 surface 当前的变换（Android 上横屏应用可能拿到 ROTATE_90/270；
-            // 写死 IDENTITY 在只支持旋转的设备上会直接创建失败）。
-            .preTransform = vkSurfaceCapabilitiesKHR.currentTransform,
+            // 见上面「表面变换 / 预旋转」的说明：优先 IDENTITY（旋转交给合成器），
+            // 只有设备不支持时才退回 currentTransform（预旋转模式，需应用自行补偿）。
+            .preTransform = preTransform,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
             .presentMode = presentMode,
             .oldSwapchain = oldSwapChain,
