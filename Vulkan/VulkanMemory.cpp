@@ -59,6 +59,7 @@ namespace FISIR{
 
 
 	void VulkanMemoryAllocator::free(GpuBlock* Block) {
+		if (!Block) return;
 		mData->DevicePoolMap[Block->Info.MemoryType][Block->PoolID]->FreeBlock(Block);
 	}
 

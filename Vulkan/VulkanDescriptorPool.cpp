@@ -95,6 +95,7 @@ namespace FISIR{
 		switch (typ) {
 		case RHIDescriptorTyp::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
 		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		case RHIDescriptorTyp::RWImage: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		case RHIDescriptorTyp::RBuffer:
@@ -107,6 +108,27 @@ namespace FISIR{
 	PFN_vkWriteSamplerDescriptorsEXT fpWriteSamplerDescriptors {nullptr};
 	PFN_vkCmdBindResourceHeapEXT fpCmdBindResourceHeap = {nullptr};
 	PFN_vkCmdBindSamplerHeapEXT fpCmdBindSamplerHeap = {nullptr};
+	// 描述符堆路径下 push constant 由 vkCmdPushDataEXT 承担（见 CmdPushConstant）
+	PFN_vkCmdPushDataEXT fpCmdPushDataEXT = {nullptr};
+
+	// 描述符堆里「实现预留区」的起点：**固定常量，与 UseDataSize 无关**。
+	// 取固定值是为了满足 VUID-vkCmdBindResourceHeapEXT-pBindInfo-11236 —— 同一段内存不允许
+	// 在别的命令缓冲里以**不同的**预留区出现（完全相同才允许）。而堆缓冲是走 suballocator 从
+	// 同一个池子里切的，某个堆释放后地址会被下一个堆复用；如果预留区跟着 UseDataSize 走，
+	// 复用同一地址的新堆就会和在飞命令缓冲里的旧预留区冲突（实测报过：地址同为 0xf788480，
+	// 偏移 128 vs 160）。固定偏移 + 固定预留大小 ⇒ 同一地址永远得到完全相同的预留区。
+	// 代价：每个堆多占一点（预留区本来就要 minResourceHeapReservedRange ≈ 94KB，可忽略）。
+	constexpr VkDeviceSize kDescriptorHeapReservedOffset = 4096;
+
+	// 预留区**大小**也必须与堆类型无关，取资源堆 / 采样器堆两者的较大值。
+	// 理由与固定偏移相同：同一段内存被复用时预留区要**完全相同**。堆缓冲是 suballocator 从
+	// 同一个池子里切的，采样器堆释放后地址可能被资源堆复用，而两者的
+	// minResourceHeapReservedRange / minSamplerHeapReservedRange 通常不同 → 预留区就不同了，
+	// 校验层会报 VUID-11236。统一取较大值对两者都不小于规范要求的最小值，合法。
+	inline VkDeviceSize DescriptorHeapReservedBytes(const DescriptorSizes& sizes) {
+		return (sizes.minResourceReserved > sizes.minSamplerReserved)
+			? sizes.minResourceReserved : sizes.minSamplerReserved;
+	}
 
 	/*
 
@@ -166,18 +188,38 @@ namespace FISIR{
 				}
 				else if (resource->getResourceType() == Type::Texture) {
 					auto Image = static_cast<VulkanTexture*>(resource);
+					// 视图类型与子资源范围必须**从纹理本身推导**，不能写死 2D + 单 mip 单层：
+					//   · TEXTUREARRAY（arrayLayers == 6，VkImage 带 CUBE_COMPATIBLE）需要的是
+					//     VK_IMAGE_VIEW_TYPE_CUBE；写死 2D 会让着色器里的 TextureCube 只看到
+					//     第 0 张 face，环境贴图采样退化成一张平面图。
+					//   · mipLevels > 1 的纹理（IBL 的预滤波环境图）写死 levelCount = 1 会把
+					//     LOD 钳在第 0 级，按粗糙度取 mip 的预滤波反射全部退化成镜面反射。
+					// 取值方式与 VulkanImageView::build 完全一致（顺带修正深度/模板纹理的 aspect）。
 					VkImageViewCreateInfo viewInfo{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 						.image = (VkImage)Image->getResourceAPIHandle(),
-						.viewType = VK_IMAGE_VIEW_TYPE_2D,
+						.viewType = (VkImageViewType)getVulkanViewTypeFromTextureType(Image->getTextureType()),
 						.format = (VkFormat)Image->getVkColorType(),
-						.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+						.subresourceRange = {
+							.aspectMask = (VkImageAspectFlags)getVulkanAspectFlagsForUsing(Image->getTextureUseFor()),
+							.baseMipLevel = 0,
+							.levelCount = Image->getMipLevelCount(),
+							.baseArrayLayer = 0,
+							.layerCount = Image->getLayerCount(),
+						}
 					};
 
+					// 布局按**描述符类型**固定，不再读创建瞬间的 currentLayout：
+					// 纹理的 currentLayout 由资源线程在围栏置位后回填（VulkanRHI 的
+					// QuoteResources → transitionLayout），而资源包完全可能在该回填之前创建
+					//（发起转换命令后 fence->wait() 返回即建包），此时读到的是 Undefined，
+					// 会被原样烧进描述符堆。与 DescriptorSet 降级路径（同样固定
+					// SHADER_READ_ONLY_OPTIMAL）统一后两条路径行为一致，也不再依赖创建时序。
+					const bool asStorageImage = ((VkDescriptorType)VkHandle->getVkDescriptorType() == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 					VkImageDescriptorInfoEXT ImageInfo{
 						.sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
 						.pView = &viewInfo,
-						.layout = (VkImageLayout)Image->getVkTextureLayout()
+						.layout = asStorageImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 					};
 
 					VkResourceDescriptorInfoEXT desInfo{
@@ -212,7 +254,10 @@ namespace FISIR{
 						.compareEnable = info.compareEnable,
 						.compareOp = getVkOperation(info.compareOP),
 						.minLod = info.minLop,
-						.maxLod = info.minLop,
+						// 曾被误写成 info.minLop：默认 SamplerInfo 的 minLop == maxLop == 1.0
+						// 时看不出差别，但预滤波环境图（mipLevels > 1，按粗糙度取 LOD）会被
+						// 钳在 1.0 以内，粗糙度反射全部退化成镜面。
+						.maxLod = info.maxLop,
 						.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
 						.unnormalizedCoordinates = info.unNormalized,
 					};
@@ -238,13 +283,16 @@ namespace FISIR{
 			//Create Heap
 			mDevice = Device;
 			resourceType = typ;
-			reservedSize = (typ == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+			reservedSize = DescriptorHeapReservedBytes(sizes);
 
 			//--caculate Size
 			UseDataSize = caculateAndCheck(typ, resources);
-			uint32_t totalSize = UseDataSize + reservedSize;
 			VkDeviceSize alignment = (typ == Type::Sampler) ? sizes.samplerHeapAlignment : sizes.resourceHeapAlignment;
-			totalSize = (totalSize + alignment - 1) & ~(alignment - 1);
+			// 宿主缓冲必须覆盖到「预留区起点 + 预留大小」：预留区固定在 kDescriptorHeapReservedOffset，
+			// 不再是 align(UseDataSize)。长度按对齐向上取整，保证预留区完整落在本缓冲内 ——
+			// 越界就会落到紧邻的分配里（描述符堆缓冲是走 suballocator 从同一个大池子里切的）。
+			// 上一版按 align(UseDataSize) 起算，已经踩过一次 reserved range 冲突。
+			uint32_t totalSize = (uint32_t)((kDescriptorHeapReservedOffset + reservedSize + alignment - 1) & ~(alignment - 1));
 
 			//--create buffer
 			BufferInfo info{
@@ -463,6 +511,9 @@ namespace FISIR{
 
 			fpCmdBindSamplerHeap = reinterpret_cast<PFN_vkCmdBindSamplerHeapEXT>(
 				vkGetDeviceProcAddr(logicDevice, "vkCmdBindSamplerHeapEXT"));
+
+			fpCmdPushDataEXT = reinterpret_cast<PFN_vkCmdPushDataEXT>(
+				vkGetDeviceProcAddr(logicDevice, "vkCmdPushDataEXT"));
 		}
 
 
@@ -475,9 +526,19 @@ namespace FISIR{
 		delete mData;
 	}
 
-	VkDescriptorSetLayout_T* VulkanDescriptorPool::createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap) {
+	VkDescriptorSetLayout_T* VulkanDescriptorPool::createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, const RHIPushConstantRange& pcRange, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap) {
 		auto& PipelineLayoutMap = getPipelineLayoutMap();
-		PieplineLayoutHash HashVal(info);
+		PieplineLayoutHash HashVal(info, pcRange, (uint32_t)pcRange.usingStage);
+
+		// push constant 范围：只有声明了 size 才进布局。顶点/片元/计算三个阶段按位选，
+		// 与描述符绑定的 stage 选择共用同一套映射。
+		VkPushConstantRange pcRangeVk{};
+		if (pcRange.size > 0) {
+			pcRangeVk.stageFlags = ChoiceDescriptorStage(pcRange.usingStage);
+			pcRangeVk.offset     = pcRange.offset;
+			pcRangeVk.size       = pcRange.size;
+		}
+
 		std::vector<VkDescriptorSetLayoutBinding> bindings;
 		if (!mDevice->isDescriptorHeapSupported()) {
 			if (mData->DescriptorSetLayoutMap.contains(info)) {
@@ -486,6 +547,8 @@ namespace FISIR{
 						.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 						.setLayoutCount = 1,
 						.pSetLayouts = VK_NULL_HANDLE,
+						.pushConstantRangeCount = pcRange.size > 0 ? 1u : 0u,
+						.pPushConstantRanges = pcRange.size > 0 ? &pcRangeVk : nullptr,
 					};
 					vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &Pipelinelayout);
 					PipelineLayoutMap[HashVal] = Pipelinelayout;
@@ -524,6 +587,8 @@ namespace FISIR{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 				.setLayoutCount = 1,
 				.pSetLayouts = &layout,
+				.pushConstantRangeCount = pcRange.size > 0 ? 1u : 0u,
+				.pPushConstantRanges = pcRange.size > 0 ? &pcRangeVk : nullptr,
 			};
 			vkCreatePipelineLayout(mDevice->getLogicalDevice(), &PipelineLayoutInfo, nullptr, &Pipelinelayout);
 			PipelineLayoutMap[HashVal] = Pipelinelayout;
@@ -588,14 +653,37 @@ namespace FISIR{
 
 		
 	
+	// 预留区用固定偏移 kDescriptorHeapReservedOffset（声明在文件上方，理由见那里）。
+	void CmdPushConstant(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIPipeline* pipeline,
+	                     uint32_t offset, uint32_t size, const void* data, RHIUsingStageFlags stage) {
+		if (!cmd || !data || size == 0) return;
+
+		if (device->isDescriptorHeapSupported()) {
+			// 描述符堆路径：push constant 走 vkCmdPushDataEXT。
+			// （该扩展下 vkCmdPushConstants 不会真正写入，校验层会报
+			//   "uses push-constant statically ... no call to vkCmdPushDataEXT"。）
+			if (!fpCmdPushDataEXT) return;
+			VkPushDataInfoEXT info{
+				.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+				.pNext = nullptr,
+				.offset = offset,
+				.data = { data, (size_t)size },
+			};
+			fpCmdPushDataEXT(cmd, &info);
+			return;
+		}
+
+		if (!pipeline) return;
+		vkCmdPushConstants(cmd, static_cast<VkPipelineLayout>(pipeline->getPipelineLayoutHandle()),
+			ChoiceDescriptorStage(stage), offset, size, data);
+	}
+
 	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint) {
 		const auto& sizes = device->getHeapSizeInfo();
 		if (Resourcepack) {
 			if (device->isDescriptorHeapSupported()) {
 				auto PackHandle = static_cast<DescriptorHeap*>(Resourcepack);
-				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
-				VkDeviceSize alignment = (PackHandle->resourceType == Type::Sampler) ? sizes.samplerHeapAlignment : sizes.resourceHeapAlignment;
-				VkDeviceSize alignedOffset = (PackHandle->UseDataSize + alignment - 1) & ~(alignment - 1);
+				VkDeviceSize reservedSize = DescriptorHeapReservedBytes(sizes);
 				VkBindHeapInfoEXT info{
 					.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
 					.heapRange = {
@@ -603,7 +691,7 @@ namespace FISIR{
 						.size = PackHandle->mHeadBuffer->getSize(),
 
 					},
-					.reservedRangeOffset = alignedOffset,
+					.reservedRangeOffset = kDescriptorHeapReservedOffset,
 					.reservedRangeSize = reservedSize
 				};
 				fpCmdBindResourceHeap(cmd, &info);
@@ -619,14 +707,14 @@ namespace FISIR{
 		if (Samplerpack) {
 			if (device->isDescriptorHeapSupported()) {
 				auto PackHandle = static_cast<DescriptorHeap*>(Samplerpack);
-				VkDeviceSize reservedSize = (PackHandle->resourceType == Type::Sampler) ? sizes.minSamplerReserved : sizes.minResourceReserved;
+				VkDeviceSize reservedSize = DescriptorHeapReservedBytes(sizes);
 				VkBindHeapInfoEXT info{
 					.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
 					.heapRange = {
 						.address = PackHandle->mHeadBuffer->getDeviceAddress(),
 						.size = PackHandle->mHeadBuffer->getSize(),
 					},
-					.reservedRangeOffset = PackHandle->UseDataSize,
+					.reservedRangeOffset = kDescriptorHeapReservedOffset,
 					.reservedRangeSize = reservedSize
 				};
 				fpCmdBindSamplerHeap(cmd, &info);

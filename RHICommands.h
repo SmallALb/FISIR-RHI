@@ -4,6 +4,7 @@
 
 namespace FISIR{
 
+	class RHISwapChain;
 
 	enum class RHICommandT {
 		End = 0,
@@ -21,6 +22,8 @@ namespace FISIR{
 		BindResourceAndSamplerPack,
 		BindViewPort,
 		BindScissor,
+		//常量
+		PushConstant,
 		//Transfer
 		TransferTexture,
 		TransferBuffer,
@@ -28,7 +31,9 @@ namespace FISIR{
 		CopyBufferToTexture,
 		CopyImageToBuffer,
 		//Compute
-		Dispatch
+		Dispatch,
+		//Present
+		Present                     // ← 末尾追加，不动既有取值
 
 	};
 
@@ -101,6 +106,8 @@ namespace FISIR{
 
 	struct BindScissor_CmdInfo {
 		RHICommandFlags Flags{ 0 };
+		int32_t x;
+		int32_t y;
 		uint32_t width;
 		uint32_t height;
 
@@ -209,6 +216,21 @@ namespace FISIR{
 	};
 
 
+	// PushConstant：一次向当前管线推送常量。
+	// data **内联**在命令里（不堆分配）：命令页写入后到提交前的生命周期不好管，
+	// 内联最省事也最快。上限 64 字节 —— 规范只保证 128 字节可用，取一半足够覆盖
+	// 本项目所有用途（层号/轮次、若干标量、一个 4×4 矩阵）。超过就截断（见命令列表侧断言）。
+	constexpr uint32_t RHI_PUSH_CONSTANT_MAX_BYTES = 64;
+
+	struct PushConstant_CmdInfo {
+		RHICommandFlags    Flags{ 0 };
+		uint32_t           offset;
+		uint32_t           size;
+		RHIUsingStageFlags usingStage;
+		uint8_t            data[RHI_PUSH_CONSTANT_MAX_BYTES];
+	};
+
+
 
 	struct End_CmdInfo {
 		RHICommandFlags Flags{ 0 };
@@ -217,6 +239,15 @@ namespace FISIR{
 		uint32_t waitcount{ 0 };
 		RHISemaphore** signals;
 		uint32_t signalcount{ 0 };
+	};
+
+	// 呈现指令：录制线程只登记（哪个交换链、哪个帧 ID），真正的 vkQueuePresentKHR 由
+	// RHI 线程在本页/本节点 vkQueueSubmit 之后执行。acquire、present、提交因此全在同一线程，
+	// VkQueue 与 VkSwapchainKHR 都不会被跨线程触碰。
+	struct Present_CmdInfo {
+		RHICommandFlags      Flags{ 0 };
+		class RHISwapChain*  swapchain{ nullptr };
+		uint32_t             frameID{ 0 };
 	};
 
 
@@ -265,6 +296,44 @@ namespace FISIR{
 
 				RHICommandT getCommandType() const {
 					return page->GetCommandType(ReadBegin);
+				}
+
+				// 命令负载字节数（不含 RHICommandT 头）。用于按命令边界拆分大批次，
+				// 使多个工作线程能并行翻译同一渲染通道内的不同命令段。
+				static size_t CommandPayloadSize(RHICommandT t) {
+					switch (t) {
+					case RHICommandT::End:                      return sizeof(End_CmdInfo);
+					case RHICommandT::BeginRenderPass:          return sizeof(BeginRenderPass_CmdInfo);
+					case RHICommandT::EndRenderPass:            return sizeof(ReserveInput_CmdInfo);
+					case RHICommandT::DrawPrimitive:            return sizeof(DrawPrimitive_CmdInfo);
+					case RHICommandT::DrawIndex:                return sizeof(DrawIndex_CmdInfo);
+					case RHICommandT::DrawIndirect:             return sizeof(DrawIndirect_CmdInfo);
+					case RHICommandT::DrawIndexedIndirect:      return sizeof(DrawIndexedIndirect_CmdInfo);
+					case RHICommandT::BindPipeline:             return sizeof(BindPipeline_CmdInfo);
+					case RHICommandT::BindVertexBuffer:         return sizeof(BindVertextBuffer_CmdInfo);
+					case RHICommandT::BindIndexBuffer:          return sizeof(BindIndexBuffer_CmdInfo);
+					case RHICommandT::BindResourceAndSamplerPack: return sizeof(BindResourcePack_CmdInfo);
+					case RHICommandT::BindViewPort:             return sizeof(BindViewPort_CmdInfo);
+					case RHICommandT::BindScissor:              return sizeof(BindScissor_CmdInfo);
+					case RHICommandT::PushConstant:             return sizeof(PushConstant_CmdInfo);
+					case RHICommandT::TransferTexture:          return sizeof(TextureTransition_CmdInfo);
+					case RHICommandT::TransferBuffer:           return sizeof(BufferTransition_CmdInfo);
+					case RHICommandT::CopyBufferToBuffer:       return sizeof(CopyBufferToBuffer_CmdInfo);
+					case RHICommandT::CopyBufferToTexture:      return sizeof(CopyBufferToTexture_CmdInfo);
+					case RHICommandT::CopyImageToBuffer:        return sizeof(CopyImageToBuffer_CmdInfo);
+					case RHICommandT::Dispatch:                 return sizeof(Dispatch_CmdInfo);
+					case RHICommandT::Present:                  return sizeof(Present_CmdInfo);
+					default:                                    return 0;
+					}
+				}
+
+				// 把 ReadBegin 前进一条命令，返回被跳过的命令类型。
+				// 前进量与 getBatchData 一致（sizeof(RHICommandT)+负载），
+				// 保证拆分点始终落在命令边界上。
+				RHICommandT skipCommand() {
+					RHICommandT t = getCommandType();
+					ReadBegin += sizeof(RHICommandT) + CommandPayloadSize(t);
+					return t;
 				}
 
 				template<class T>

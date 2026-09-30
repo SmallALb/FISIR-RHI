@@ -1,6 +1,8 @@
 #pragma once
 
 #include <iostream>
+#include <cstring>
+#include <type_traits>
 
 #include "DynamicRHI.h"
 #include "LockFreeQue.h"
@@ -26,6 +28,16 @@ namespace FISIR {
 
 		virtual CmdType getCommandListType() const {return CmdType::None;}
 
+		// Present：本页提交给 RHI 后，由提交线程（RHI 线程）在本页 vkQueueSubmit 之后执行
+		//（见 VulkanRHI 的 presents 落地）。**必须写在 End() 之前** —— Present 落在最后一个
+		// 批次里，随该页一起被采集；写在 End() 之后就落在页尾哨兵之外，永远不会被读到。
+		void Present(class RHISwapChain* swapchain, uint32_t frameID) {
+			Present_CmdInfo info{};
+			info.swapchain = swapchain;
+			info.frameID   = frameID;
+			usingPage->WriteData(RHICommandT::Present, info);
+		}
+
 		void End(RHIFence* fence = nullptr,
 		         const std::vector<RHISemaphore*>& waits = {},
 		         const std::vector<RHISemaphore*>& toSignals = {}
@@ -50,6 +62,30 @@ namespace FISIR {
 		RingCommandPool::PageFlag getPageFlag() const {
 			if (usingPage) return usingPage->flags.load(std::memory_order_acquire);
 			else return RingCommandPool::PageFlag::None;
+		}
+
+		// 向**当前已绑定**的管线推送常量（图形/计算命令列表都可用，放在基类避免重复）。
+		// 数据内联进命令，所以调用方传完即可放手；超过 64 字节的部分会被丢弃并告警。
+		void PushConstant(const void* data, uint32_t size,
+		                  RHIUsingStageFlags stage, uint32_t offset = 0) {
+			if (!data || size == 0) return;
+			if (size > RHI_PUSH_CONSTANT_MAX_BYTES) {
+				Warn("PushConstant: requested {} bytes > limit {}, truncated", size, RHI_PUSH_CONSTANT_MAX_BYTES);
+				size = RHI_PUSH_CONSTANT_MAX_BYTES;
+			}
+			PushConstant_CmdInfo info{};
+			info.offset = offset;
+			info.size = size;
+			info.usingStage = stage;
+			memcpy(info.data, data, size);
+			usingPage->WriteData(RHICommandT::PushConstant, info);
+		}
+
+		// 模板便利重载：PushConstant(某个 POD)，自动取 sizeof 与首地址
+		template<typename T>
+		void PushConstant(const T& value, RHIUsingStageFlags stage, uint32_t offset = 0) {
+			static_assert(std::is_trivially_copyable_v<T>, "PushConstant accepts only trivially copyable PODs");
+			PushConstant(&value, (uint32_t)sizeof(T), stage, offset);
 		}
 
 
@@ -170,7 +206,14 @@ namespace FISIR {
 		}
 
 		void SetScissor(uint32_t width, uint32_t height) {
-			BindScissor_CmdInfo info {0, width, height};
+			BindScissor_CmdInfo info {0, 0, 0, width, height};
+			usingPage->WriteData(RHICommandT::BindScissor, info);
+		}
+
+		// 带左上角偏移的裁剪矩形。ImGui 的每个 DrawCmd 都带自己的 ClipRect，
+		// 只给 w/h 的 SetScissor 无法表达（子窗口/滚动区会溢出绘制）。
+		void SetScissorRect(int32_t x, int32_t y, uint32_t width, uint32_t height) {
+			BindScissor_CmdInfo info {0, x, y, width, height};
 			usingPage->WriteData(RHICommandT::BindScissor, info);
 		}
 

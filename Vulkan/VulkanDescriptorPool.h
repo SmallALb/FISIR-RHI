@@ -21,7 +21,7 @@ namespace FISIR {
 
 		VkDescriptorPool_T* getPool() const { return mPool; }
 	
-		VkDescriptorSetLayout_T* createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap);
+		VkDescriptorSetLayout_T* createDescriptorSetLayout(const RHIPipelineDescribeInfo& info, const RHIPushConstantRange& pcRange, VkPipelineLayout_T*& Pipelinelayout, const std::vector<uint32_t>& bindingMap);
 
 
 		RHIResourcePackResult createResourcePack(const std::vector<RHIResource*>& resources);
@@ -34,5 +34,13 @@ namespace FISIR {
 	};
 
 	void CmdBindResourcePack(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIResourcePack* Resourcepack, RHIResourcePack* Samplerpack, uint32_t bindPoint);
+
+	// 推 push constant。两条路径：
+	//   · 描述符堆路径（VK_EXT_descriptor_heap）：用 vkCmdPushDataEXT —— 该扩展下
+	//     vkCmdPushConstants 不算数，着色器静态使用 push constant 时会报
+	//     "uses push-constant statically ... while there was no call to vkCmdPushDataEXT"；
+	//   · 普通路径：vkCmdPushConstants，需要管线的布局（用 pipeline 取）。
+	void CmdPushConstant(VulkanDevice* device, VkCommandBuffer_T* cmd, RHIPipeline* pipeline,
+	                     uint32_t offset, uint32_t size, const void* data, RHIUsingStageFlags stage);
 
 }

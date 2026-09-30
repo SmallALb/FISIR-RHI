@@ -24,7 +24,7 @@
 // ============================================================
 //#define FISIR_FORCE_DESCRIPTOR_SET 1
 
-namespace FISIR{
+namespace FISIR {
 	extern VkInstance GetGlobalInstance();
 #ifdef _DEBUG
 	static PFN_vkSetDebugUtilsObjectNameEXT    __SetDebugUtilsObjectName = nullptr;
@@ -58,7 +58,7 @@ namespace FISIR{
 
 
 	void setVkObjectName(VkDevice device, uint64_t objectHandle, VkObjectType objectType, const char* name) {
-	#ifdef _DEBUG
+#ifdef _DEBUG
 
 		if (__SetDebugUtilsObjectName) {
 			VkDebugUtilsObjectNameInfoEXT nameInfo{
@@ -70,7 +70,7 @@ namespace FISIR{
 			};
 			__SetDebugUtilsObjectName(device, &nameInfo);
 		}
-	#endif // _DEBUG
+#endif // _DEBUG
 	}
 
 	static ResourceAccess getResourceAccessFromVK(VkAccessFlagBits Access) {
@@ -80,14 +80,14 @@ namespace FISIR{
 			return ResourceAccess::ShaderReadOnly;
 		case VK_ACCESS_SHADER_WRITE_BIT:
 			return ResourceAccess::ShaderWriteOnly;
-		case (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT):
-			return ResourceAccess::ShaderReadWrite;
-		case VK_ACCESS_TRANSFER_READ_BIT:
-			return ResourceAccess::TransferSrc;
-		case VK_ACCESS_TRANSFER_WRITE_BIT:
-			return ResourceAccess::TransferDst;
-		default:
-			return ResourceAccess::Undefined;
+			case (VkAccessFlagBits)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT) :
+				return ResourceAccess::ShaderReadWrite;
+			case VK_ACCESS_TRANSFER_READ_BIT:
+				return ResourceAccess::TransferSrc;
+			case VK_ACCESS_TRANSFER_WRITE_BIT:
+				return ResourceAccess::TransferDst;
+			default:
+				return ResourceAccess::Undefined;
 		}
 	}
 
@@ -149,13 +149,13 @@ namespace FISIR{
 		delete mData;
 	}
 
-	bool VulkanDevice::Init(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
+	bool VulkanDevice::Init() {
 		uint32_t queueCount = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, nullptr);
 		mData->mQueueFamilyProperties.resize(queueCount);
 		vkGetPhysicalDeviceQueueFamilyProperties(mData->mPhysicalDevice, &queueCount, mData->mQueueFamilyProperties.data());
 
-		if (!InitDevice(viewports, ViewPortSwapChainCache)) return false;
+		if (!InitDevice()) return false;
 
 #ifdef _DEBUG
 		__SetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(GetGlobalInstance(), "vkSetDebugUtilsObjectNameEXT");
@@ -173,10 +173,10 @@ namespace FISIR{
 
 	void VulkanDevice::Destory() {
 		vkDeviceWaitIdle(mData->mLogicalDevice);
-		
+
 		delete mAllocator;
 
-		for (auto &[id, Que] : FamilyIndexToQue) {
+		for (auto& [id, Que] : FamilyIndexToQue) {
 			delete Que;
 		}
 
@@ -209,20 +209,20 @@ namespace FISIR{
 	}
 
 	void VulkanDevice::submitCommandBuffer(const std::vector<VkCommandBuffer_T*>& cmds, CmdType poolType,
-		const std::vector<RHISemaphore*>& SignalSemaphores, 
+		const std::vector<RHISemaphore*>& SignalSemaphores,
 		const std::vector<RHISemaphore*>& WaitSemaphores, VkFence Fence) {
 		switch (poolType) {
-			case CmdType::Render:
-				mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
-				break;
-			case CmdType::Compute:
-				mComputeQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
-				break;
-			case CmdType::Transfer:
-				mTransferQueue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
-				break;
-			default:
-				Error("Invalid Command Pool Type!");
+		case CmdType::Render:
+			mGraphicQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+			break;
+		case CmdType::Compute:
+			mComputeQue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+			break;
+		case CmdType::Transfer:
+			mTransferQueue->Submit(cmds, SignalSemaphores, WaitSemaphores, Fence);
+			break;
+		default:
+			Error("Invalid Command Pool Type!");
 			break;
 		}
 	}
@@ -249,7 +249,7 @@ namespace FISIR{
 		return mData->mDescriptorHeapProperties;
 	}
 
-	void VulkanDevice::QueryDescriptorSizes(){
+	void VulkanDevice::QueryDescriptorSizes() {
 		VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProps{};
 		heapProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
 
@@ -289,44 +289,70 @@ namespace FISIR{
 		return false;
 	}
 
-	bool VulkanDevice::InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache) {
+	// 运行时新建视口的交换链（Init 之后才 RHICreateViewport 的，例如 ImGui 拖出去的独立窗口）。
+	//
+	// Init 阶段的做法是给每个视口分配**独占的呈现队列族**，好让各视口的呈现互不阻塞 —— 但那些
+	// 队列必须在 vkCreateDevice 时就写进 VkDeviceQueueCreateInfo，**事后无法再加队列**。所以运行时
+	// 视口只能走另一条路：**复用设备创建时已经建好的队列族**（图形 → 计算 → 传输），在其中挑一个
+	// 对该 surface 支持呈现的。代价是它和图形/计算队列共享同一个队列（呈现会与渲染串行），
+	// 功能上完全可用；这也正是"从已有的渲染队列创建 ViewPort Swapchain"。
+	int32_t VulkanDevice::FindPresentQueueFamilyForSurface(VkSurfaceKHR_T* surface) {
+		if (surface == VK_NULL_HANDLE) return -1;
+
+		const int32_t candidates[3] = { mData->GQueFamilyIndex, mData->CQueFamilyIndex, mData->TQueFamilyIndex };
+		for (int32_t family : candidates) {
+			if (family < 0) continue;
+			VkBool32 supportPresent = VK_FALSE;
+			vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, (uint32_t)family, surface, &supportPresent);
+			if (!supportPresent) continue;
+			Info("[Vulkan] runtime viewport: creating swapchain on reused queue family {} (no new queues after Init)", family);
+			return family;
+		}
+
+		// 只试 G/C/T：只有这三个队列族能保证设备创建时就建好了队列。
+		// 去试别的族会因为 vkGetDeviceQueue 拿不到队列而更糟，所以这里直接失败更清楚。
+		Error("[Vulkan] runtime viewport: no graphics/compute/transfer family can present to this surface");
+		return -1;
+	}
+
+	bool VulkanDevice::InitDevice() {
 		// VK_KHR_swapchain_maintenance1 depends on VK_KHR_surface_maintenance1 — probe both.
 		const bool swapchainMaintenance1ExtensionSupported =
 			isDeviceExtensionSupported(mData->mPhysicalDevice, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME) &&
 			isDeviceExtensionSupported(mData->mPhysicalDevice, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
 
-		std::vector<const char*> extensions {
+		std::vector<const char*> extensions{
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		};
 
 		// 64 位原子（RWByteAddressBuffer.InterlockedMin64 等编译出的 OpAtomicUMin(64)）所需的
 		// shaderBufferInt64Atomics。注意必须用专用的 ShaderAtomicInt64 结构，而不是 Vulkan12Features：
 		// 后者与本链里已有的 TimelineSemaphoreFeatures / BufferDeviceAddressFeatures 互斥（见 Vulkan 规范）。
-		VkPhysicalDeviceShaderAtomicInt64Features atomicInt64Features {
+		VkPhysicalDeviceShaderAtomicInt64Features atomicInt64Features{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES,
 		};
 
-		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeature {
+		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeature{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
 			.pNext = &atomicInt64Features,
 		};
 
-		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainMaintenance1Features {
+		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainMaintenance1Features{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
 			.pNext = &timelineFeature
 		};
 
-		VkPhysicalDeviceBufferDeviceAddressFeatures supportedFeatures {
+		VkPhysicalDeviceBufferDeviceAddressFeatures supportedFeatures{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
 			.pNext = &swapchainMaintenance1Features,
 		};
 
-		VkPhysicalDeviceDescriptorHeapFeaturesEXT DescriptorHeapFeatures {
+		VkPhysicalDeviceDescriptorHeapFeaturesEXT DescriptorHeapFeatures{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
 			.pNext = &supportedFeatures
 		};
 
-		VkPhysicalDeviceFeatures2 deviceFeatures2 {
+		VkPhysicalDeviceFeatures2 deviceFeatures2{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
 			.pNext = &DescriptorHeapFeatures,
 		};
@@ -350,7 +376,8 @@ namespace FISIR{
 			extensions.push_back(VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
 			extensions.push_back(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
 			swapchainMaintenance1Features.swapchainMaintenance1 = VK_TRUE;
-		} else {
+		}
+		else {
 			Warn("VK_KHR_swapchain_maintenance1 not supported - present fence unavailable");
 		}
 
@@ -388,11 +415,17 @@ namespace FISIR{
 		// 两者均为 Vulkan 1.0 核心特性，桌面 GPU 普遍支持。
 		enableFeatures2.features.multiDrawIndirect = deviceFeatures2.features.multiDrawIndirect ? VK_TRUE : VK_FALSE;
 		enableFeatures2.features.vertexPipelineStoresAndAtomics = deviceFeatures2.features.vertexPipelineStoresAndAtomics ? VK_TRUE : VK_FALSE;
+		// 硬光栅 PS 直接往 FrameBuffer（存储缓冲）写像素 → 片元阶段也需要存储缓冲/图像写 +
+		// 原子（DXC 不会给 RWByteAddressBuffer 加 NonWritable，不禁用该特性会直接校验报错）。
+		enableFeatures2.features.fragmentStoresAndAtomics = deviceFeatures2.features.fragmentStoresAndAtomics ? VK_TRUE : VK_FALSE;
 		if (!deviceFeatures2.features.multiDrawIndirect) {
 			Warn("Device Does Not Support multiDrawIndirect");
 		}
 		if (!deviceFeatures2.features.vertexPipelineStoresAndAtomics) {
 			Warn("Device Does Not Support vertexPipelineStoresAndAtomics");
+		}
+		if (!deviceFeatures2.features.fragmentStoresAndAtomics) {
+			Warn("Device Does Not Support fragmentStoresAndAtomics");
 		}
 		// atomicInt64Features 已通过 timelineFeature.pNext 进入查询链与使能链，
 		// shaderBufferInt64Atomics 字段由 vkGetPhysicalDeviceFeatures2 填充为设备支持值。
@@ -408,13 +441,15 @@ namespace FISIR{
 
 
 		deviceCreateInfo.enabledExtensionCount = uint32_t(extensions.size()),
-		deviceCreateInfo.ppEnabledExtensionNames = extensions.data(),
+			deviceCreateInfo.ppEnabledExtensionNames = extensions.data(),
 
-		mData->GQueFamilyIndex = -1;
+			mData->GQueFamilyIndex = -1;
 		mData->CQueFamilyIndex = -1;
 		mData->TQueFamilyIndex = -1;
 		uint32_t NumProrities = 0;
 		std::vector<VkDeviceQueueCreateInfo> QueInfos;
+		// 与 QueInfos 一一对应：pQueuePriorities 必须指向**稳定**的内存，不能指向会被搬移的临时 vector
+		std::vector<std::vector<float>> QueuePriorityStorage;
 		for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) {
 			const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
 			bool IsVaild = false;
@@ -445,69 +480,74 @@ namespace FISIR{
 			NumProrities += Prpos.queueCount;
 		}
 
-		std::unordered_set<uint32_t> PresentQueIndex;
-		for (auto viewport : viewports) {
-			bool Done = 0;
-			for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) 
-				if (FamilyIndex != mData->GQueFamilyIndex && FamilyIndex != mData->CQueFamilyIndex && FamilyIndex != mData->TQueFamilyIndex && !PresentQueIndex.contains(FamilyIndex)){
-					VkBool32 supportPresent = 0;
-					vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, FamilyIndex, viewport->getVkSurface(), &supportPresent);
-					if (supportPresent) {
-						PresentQueIndex.insert(FamilyIndex);
-						ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, FamilyIndex);
-						const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
-						VkDeviceQueueCreateInfo Que = {
-							.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-							.queueFamilyIndex = FamilyIndex,
-							.queueCount = Prpos.queueCount
-						};
-						QueInfos.push_back(Que);
-						NumProrities += Prpos.queueCount;
-						break;
-					}
+		// ── 队列：设备创建时一次性要足，并按用途分三档优先级 ────────────────────
+		//
+		// 为什么这么做：视口/交换链改成**初始化之后**才创建（运行期随时会多出窗口），而 Vulkan 的
+		// 队列必须在 vkCreateDevice 时写进 VkDeviceQueueCreateInfo、事后加不了。所以这里把队列
+		// 一次要足（≥ kMinTotalQueues），运行期新建视口直接从这个池子里取一条，不必再"预先建窗口
+		// + 预先建队列"。优先级三档（数值越低越优先让位）：
+		//   · kPriorityRender   —— 图形/计算/传输的**主队列**（真正跑渲染/资源/计算的那些）：最低
+		//   · kPriorityViewport —— 预留/已被视口占用的队列：次低
+		//   · kPrioritySpare    —— 还没被用上的空闲队列：最高
+		// 这样调度器会优先让"空闲的备用队列"抢占，而正在干活的渲染队列排最后，互不干扰。
+		constexpr uint32_t kMinTotalQueues = 8;      // 至少要这么多条
+		constexpr uint32_t kReservedViewportQueues = 3;      // 其中按"次低"档预留给视口的条数
+		constexpr float    kPriorityRender = 0.0f;   // 渲染/资源/计算：最低
+		constexpr float    kPriorityViewport = 0.33f;  // 视口占用：次低
+		constexpr float    kPrioritySpare = 1.0f;   // 空闲备用：最高
 
-					else if(!PresentQueIndex.empty()){
-						for (auto& i : PresentQueIndex) {
-							vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, i, viewport->getVkSurface(), &supportPresent);
-							if (supportPresent) {
-								PresentQueIndex.insert(i);
-								ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, i);
-								break;
-							}
-						}
-					}
-				
-					if (!supportPresent) {
-						
-						if (mData->GQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->GQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
-						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->GQueFamilyIndex);break;}
+		// 1) 先把 G/C/T 三个族的队列全部要出来（每族第 0 条就是我们的主队列）
+		uint32_t totalQueues = 0;
+		for (auto& info : QueInfos) totalQueues += info.queueCount;
 
-						if (mData->CQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->CQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
-						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->CQueFamilyIndex);break;}
-
-
-						if (mData->TQueFamilyIndex != -1)vkGetPhysicalDeviceSurfaceSupportKHR(mData->mPhysicalDevice, mData->TQueFamilyIndex, viewport->getVkSurface(), &supportPresent);
-						if (supportPresent) {ViewPortSwapChainCache[viewport] = new VulkanSwapChain(viewport, mData->TQueFamilyIndex);break;}
-
-					}
-
-					Error("Can Not Find  a Present Que For Viewport: 0x{:x}", (size_t)viewport);
-				}
+		// 2) 还不够 kMinTotalQueues 就把别的族也拉进来（优先支持呈现的族 —— 运行期视口要用它 present）
+		for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size() && totalQueues < kMinTotalQueues; FamilyIndex++) {
+			if (FamilyIndex == mData->GQueFamilyIndex || FamilyIndex == mData->CQueFamilyIndex ||
+				FamilyIndex == mData->TQueFamilyIndex) continue;
+			const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
+			if (Prpos.queueCount == 0) continue;
+			VkDeviceQueueCreateInfo Que = {
+				.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+				.queueFamilyIndex = FamilyIndex,
+				.queueCount = Prpos.queueCount
+			};
+			QueInfos.push_back(Que);
+			totalQueues += Prpos.queueCount;
+			Info("[Vulkan] queue pool top-up: family {} contributes {} queues (total {})", FamilyIndex, Prpos.queueCount, totalQueues);
 		}
-
+		if (totalQueues < kMinTotalQueues)
+			Warn("[Vulkan] hardware offers only {} queues (target >= {}); runtime viewport count is limited", totalQueues, kMinTotalQueues);
 
 		if (mData->CQueFamilyIndex == -1) {
 			Error("Error Device The Graphic Que haven't found");
 			return false;
 		}
-		std::vector<float> QueuePriorities(NumProrities);
-		float* CurrentQuePriority = QueuePriorities.data();
-		
-		
-		for (auto& info : QueInfos) {
-			info.pQueuePriorities = CurrentQuePriority;
-			const auto& Props = mData->mQueueFamilyProperties[info.queueFamilyIndex];
-			for (uint32_t i = 0; i < Props.queueCount; i++) *CurrentQuePriority++ = 1.0f;
+
+		// 3) 逐条填优先级。注意 pQueuePriorities 必须指向**稳定**的数组：先把每个族自己的
+		//    vector 放进 QueuePriorityStorage（它不会再被搬移），再把指针挂上去。
+		QueuePriorityStorage.resize(QueInfos.size());
+		NumProrities = 0;
+		for (size_t i = 0; i < QueInfos.size(); ++i) {
+			auto& prio = QueuePriorityStorage[i];
+			prio.assign(QueInfos[i].queueCount, kPrioritySpare);
+			if (QueInfos[i].queueFamilyIndex == mData->GQueFamilyIndex ||
+				QueInfos[i].queueFamilyIndex == mData->CQueFamilyIndex ||
+				QueInfos[i].queueFamilyIndex == mData->TQueFamilyIndex)
+				prio[0] = kPriorityRender;             // 主队列：最低
+			QueInfos[i].pQueuePriorities = prio.data();
+			NumProrities += QueInfos[i].queueCount;
+		}
+		// 再把前 kReservedViewportQueues 条"非主"队列标成次低（＝预留给视口的那几条）
+		{
+			uint32_t reserved = 0;
+			for (size_t i = 0; i < QueInfos.size() && reserved < kReservedViewportQueues; ++i)
+				for (uint32_t q = 0; q < QueInfos[i].queueCount && reserved < kReservedViewportQueues; ++q)
+					if (QueuePriorityStorage[i][q] == kPrioritySpare) {
+						QueuePriorityStorage[i][q] = kPriorityViewport;
+						++reserved;
+					}
+			Info("[Vulkan] queue pool: {} queues across {} families; {} reserved for viewports (mid priority), render/resource/compute lowest, spares highest",
+				NumProrities, QueInfos.size(), reserved);
 		}
 		deviceCreateInfo.queueCreateInfoCount = (uint32_t)QueInfos.size();
 		deviceCreateInfo.pQueueCreateInfos = QueInfos.data();
@@ -520,7 +560,7 @@ namespace FISIR{
 		auto res = vkCreateDevice(mData->mPhysicalDevice, &deviceCreateInfo, nullptr, &(mData->mLogicalDevice));
 		if (res != VK_SUCCESS) {
 			Error("Device Create failed! : {}", (uint32_t)res);
-			switch(res) {
+			switch (res) {
 			case VK_ERROR_OUT_OF_HOST_MEMORY:
 				Error("Device  Out of host memory!");
 				break;
@@ -530,7 +570,7 @@ namespace FISIR{
 			case VK_ERROR_INITIALIZATION_FAILED:
 				Error("Device Initialization failed!");
 				break;
-			
+
 			}
 			return false;
 		}
@@ -556,12 +596,12 @@ namespace FISIR{
 	VulkanDevice::VulkanDevice(VkPhysicalDevice device) {
 		mData = new __VkDeviceData();
 		mData->mPhysicalDevice = device;
-		
+
 	}
 
 
 	VkDevice VulkanDevice::getLogicalDevice() {
-	//Export Func
+		//Export Func
 		return mData->mLogicalDevice;
 	}
 
@@ -569,8 +609,8 @@ namespace FISIR{
 		return mData->mPhysicalDevice;
 	}
 
-	uint32_t VulkanDevice::getMaxDescriptorSetSamplers() const { 
-		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSamplers; 
+	uint32_t VulkanDevice::getMaxDescriptorSetSamplers() const {
+		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSamplers;
 	}
 
 	uint32_t VulkanDevice::getMaxDescriptorSetStorageImages() const {
@@ -578,11 +618,17 @@ namespace FISIR{
 	}
 
 	uint32_t VulkanDevice::getMaxDescriptorSetCombinedImageSamplers() const {
-		return  mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSampledImages; 
+		return  mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetSampledImages;
 	}
 
 	uint32_t VulkanDevice::getMaxDescriptorSetUniformBuffers() const {
-		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetUniformBuffers; 	
+		return mData->mPhysicalDeviceProperties.properties.limits.maxDescriptorSetUniformBuffers;
+	}
+
+	float VulkanDevice::getTimestampPeriod() const {
+		if (!(mData->mPhysicalDeviceProperties.properties.limits.timestampComputeAndGraphics))
+			return 0.0f;   // 设备不支持图形队列时间戳
+		return mData->mPhysicalDeviceProperties.properties.limits.timestampPeriod;
 	}
 
 

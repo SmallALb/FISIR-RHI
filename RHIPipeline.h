@@ -14,7 +14,11 @@ namespace FISIR {
 	enum RHIBaseDataTYPE : uint8_t {
 		_FLoat = 1, _Fvec2 = 2, _Fvec3 = 3, _Fvec4 = 4,
 		_Int = 5, _Ivec2 = 6, _Ivec3 = 7, _Ivec4 = 8,
-		_Image2D = 9, _Sampler2D = 10, _SamplerCube = 11
+		_Image2D = 9, _Sampler2D = 10, _SamplerCube = 11,
+		// 4×8 位归一化无符号（VK_FORMAT_R8G8B8A8_UNORM ←→ HLSL float4，分量 ∈ [0,1]）。
+		// 给「顶点色」这类 4 字节打包颜色用：用 _Ivec4/_Fvec4 会把步长从 4 撑到 16 字节。
+		// 每个枚举值只占 4 bit（见 RHIVertexInputInfo 的打包），12 仍在余量内。
+		_UByte4Norm = 12
 	};//need 4bits
 
 
@@ -154,20 +158,66 @@ namespace FISIR {
 		bool StencilTestEnable {0};
 	};
 
+	// 混合因子 / 混合运算。仅当 ColorBlendState::ColorBlenEnable 为 true 时才进管线；
+	// 关闭时因子被 Vulkan 忽略，故默认值是「替换」还是「加法」都不影响既有管线。
+	enum class BlendFactor : uint8_t {
+		Zero, One,
+		SrcColor, OneMinusSrcColor,
+		DstColor, OneMinusDstColor,
+		SrcAlpha, OneMinusSrcAlpha,
+		DstAlpha, OneMinusDstAlpha
+	};
+
+	enum class BlendOp : uint8_t { Add, Subtract, ReverseSubtract, Min, Max };
+
 	struct ColorBlendState {
 		bool ColorBlenEnable {0};
 		ColorBit UsingColorBit;
+		// 默认 = 直写（One / Zero），等价于「不混合」的语义。
+		// 预乘 alpha 的经典组合（ImGui 用）是 SrcColorBlend=One、DstColorBlend=OneMinusSrcAlpha。
+		BlendFactor SrcColorBlend { BlendFactor::One };
+		BlendFactor DstColorBlend { BlendFactor::Zero };
+		BlendOp     ColorBlendOp  { BlendOp::Add };
+		BlendFactor SrcAlphaBlend { BlendFactor::One };
+		BlendFactor DstAlphaBlend { BlendFactor::Zero };
+		BlendOp     AlphaBlendOp  { BlendOp::Add };
+	};
+
+	// PushConstant 范围：管线声明自己要用的常量空间（对应 VkPushConstantRange）。
+	// size == 0 表示这条管线不使用 push constant。规范保证至少 128 字节可用。
+	struct RHIPushConstantRange {
+		RHIUsingStageFlags usingStage { NoneStage };
+		uint32_t           offset { 0 };
+		uint32_t           size { 0 };
+
+		bool operator == (const RHIPushConstantRange& o) const {
+			return usingStage == o.usingStage && offset == o.offset && size == o.size;
+		}
+		bool operator != (const RHIPushConstantRange& o) const { return !(*this == o); }
 	};
 
 	struct PieplineLayoutHash {
-		PieplineLayoutHash(const RHIPipelineDescribeInfo& dinfo) :
-			desinfo(dinfo)
+		PieplineLayoutHash(const RHIPipelineDescribeInfo& dinfo, const RHIPushConstantRange& range, uint32_t pushConstantStage)
+			: desinfo(dinfo), pushRange(range.offset), pushSize(range.size), pushStage(pushConstantStage)
 		{
 		}
-		const RHIPipelineDescribeInfo& desinfo;
+		// ★ 必须是**值**，不能是引用。
+		// 这个类型被当作**全局静态** unordered_map（VulkanPipelineLayoutCache.h 的 PipelineLayoutMap）的键，
+		// 键会随表长期存活；而构造它的 dinfo 几乎总是调用方的**栈上局部**
+		// （例如 VulkanSwapChain::createPipelineandRenderPass() 里的 pipelineState.describeInfo）。
+		// 用引用成员 ⇒ 建表那次调用一返回，键里就只剩悬垂引用；下一次插入/查找/rehash 做键比较时
+		// 会去读早已被复用的栈内存 —— Release（/O2 立刻复用该栈区）表现为一拖出新建窗口就 AV，
+		// Debug 表现为键比较结果随机（可能命中错的 VkPipelineLayout ⇒ 管线与布局不匹配 ⇒ 设备丢失）。
+		RHIPipelineDescribeInfo desinfo;
+		// push constant 范围也是管线布局的一部分（VkPushConstantRange 要进 vkCreatePipelineLayout），
+		// 所以必须进布局的缓存键：两条只有 push constant 不同的管线不能共用同一个 layout。
+		uint32_t pushRange;
+		uint32_t pushSize;
+		uint32_t pushStage;
 
 		bool operator == (const PieplineLayoutHash& other) const {
-			return desinfo == other.desinfo;
+			return desinfo == other.desinfo && pushRange == other.pushRange &&
+			       pushSize == other.pushSize && pushStage == other.pushStage;
 		}
 
 		bool operator != (const PieplineLayoutHash& other) const {
@@ -186,6 +236,8 @@ namespace FISIR {
 		RHIShader* Shaders[ShaderTYPCOUNT] {nullptr};
 		RHIRenderPass* renderpass;
 		bool isComputePipeline{0};
+		// 放在最后：新增字段不影响既有的指定初始化列表（它们按声明顺序只写到前面几项）
+		RHIPushConstantRange pushConstantRange;
 
 		size_t getHash() const {
 			uint32_t h = 0;
@@ -221,10 +273,20 @@ namespace FISIR {
 			// color blend
 			h = HashCombine(h, (uint32_t)colorblendState.ColorBlenEnable);
 			h = HashCombine(h, (uint32_t)colorblendState.UsingColorBit);
+			h = HashCombine(h, (uint32_t)colorblendState.SrcColorBlend);
+			h = HashCombine(h, (uint32_t)colorblendState.DstColorBlend);
+			h = HashCombine(h, (uint32_t)colorblendState.ColorBlendOp);
+			h = HashCombine(h, (uint32_t)colorblendState.SrcAlphaBlend);
+			h = HashCombine(h, (uint32_t)colorblendState.DstAlphaBlend);
+			h = HashCombine(h, (uint32_t)colorblendState.AlphaBlendOp);
 			// shaders and renderpass
 			for (int i = 0; i < ShaderTYPCOUNT; ++i) h = HashCombine(h, HashPointer(Shaders[i]));
 			h = HashCombine(h, HashPointer(renderpass));
 			h = HashCombine(h, (uint32_t)isComputePipeline);
+			// push constant 范围（进管线布局，必须参与缓存键）
+			h = HashCombine(h, (uint32_t)pushConstantRange.usingStage);
+			h = HashCombine(h, pushConstantRange.offset);
+			h = HashCombine(h, pushConstantRange.size);
 			return (size_t)h;
 		}
 
@@ -253,9 +315,16 @@ namespace FISIR {
 			if (depthStencilState.StencilTestEnable != other.depthStencilState.StencilTestEnable) return false;
 			if (colorblendState.ColorBlenEnable != other.colorblendState.ColorBlenEnable) return false;
 			if (colorblendState.UsingColorBit != other.colorblendState.UsingColorBit) return false;
+			if (colorblendState.SrcColorBlend != other.colorblendState.SrcColorBlend) return false;
+			if (colorblendState.DstColorBlend != other.colorblendState.DstColorBlend) return false;
+			if (colorblendState.ColorBlendOp != other.colorblendState.ColorBlendOp) return false;
+			if (colorblendState.SrcAlphaBlend != other.colorblendState.SrcAlphaBlend) return false;
+			if (colorblendState.DstAlphaBlend != other.colorblendState.DstAlphaBlend) return false;
+			if (colorblendState.AlphaBlendOp != other.colorblendState.AlphaBlendOp) return false;
 			for (int i = 0; i < ShaderTYPCOUNT; ++i) if (Shaders[i] != other.Shaders[i]) return false;
 			if (renderpass != other.renderpass) return false;
 			if (isComputePipeline != other.isComputePipeline) return false;
+			if (!(pushConstantRange == other.pushConstantRange)) return false;
 			return true;
 		}
 
@@ -268,6 +337,9 @@ namespace FISIR {
 		virtual ~RHIPipeline() {}
 
 		virtual Pipeline_t getPipelineHandle() = 0;
+
+		// 供后端在调用 vkCmdPushConstants 时取管线布局（前端只当不透明句柄传递）
+		virtual void* getPipelineLayoutHandle() = 0;
 
 		virtual bool isComputePipeline() const = 0;
 

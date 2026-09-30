@@ -55,6 +55,7 @@ namespace FISIR{
 		switch (typ) {
 		case RHIDescriptorTyp::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
 		case RHIDescriptorTyp::Image: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		case RHIDescriptorTyp::RWImage: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		case RHIDescriptorTyp::SamplerImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		case RHIDescriptorTyp::UniformBuffer: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		case RHIDescriptorTyp::RBuffer:
@@ -90,6 +91,9 @@ namespace FISIR{
 		case _Fvec4:
 		case _Ivec4:
 			return 4 * 4;
+
+		case _UByte4Norm:
+			return 4;
 		default:
 			return 0;
 		}
@@ -117,8 +121,38 @@ namespace FISIR{
 			case _Ivec4:
 				return VK_FORMAT_R32G32B32A32_SINT;
 
+			case _UByte4Norm:
+				return VK_FORMAT_R8G8B8A8_UNORM;
+
 			default:
 				return VK_FORMAT_R32_SFLOAT;
+		}
+	}
+
+	static VkBlendFactor getBlendFactor(BlendFactor factor) {
+		switch (factor) {
+		case BlendFactor::Zero:             return VK_BLEND_FACTOR_ZERO;
+		case BlendFactor::One:              return VK_BLEND_FACTOR_ONE;
+		case BlendFactor::SrcColor:         return VK_BLEND_FACTOR_SRC_COLOR;
+		case BlendFactor::OneMinusSrcColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+		case BlendFactor::DstColor:         return VK_BLEND_FACTOR_DST_COLOR;
+		case BlendFactor::OneMinusDstColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+		case BlendFactor::SrcAlpha:         return VK_BLEND_FACTOR_SRC_ALPHA;
+		case BlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		case BlendFactor::DstAlpha:         return VK_BLEND_FACTOR_DST_ALPHA;
+		case BlendFactor::OneMinusDstAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+		default:                            return VK_BLEND_FACTOR_ONE;
+		}
+	}
+
+	static VkBlendOp getBlendOp(BlendOp op) {
+		switch (op) {
+		case BlendOp::Add:             return VK_BLEND_OP_ADD;
+		case BlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
+		case BlendOp::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+		case BlendOp::Min:             return VK_BLEND_OP_MIN;
+		case BlendOp::Max:             return VK_BLEND_OP_MAX;
+		default:                       return VK_BLEND_OP_ADD;
 		}
 	}
 
@@ -213,7 +247,8 @@ namespace FISIR{
 					resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
 					break;
 				}
-				case RHIDescriptorTyp::Image: {
+				case RHIDescriptorTyp::Image:
+				case RHIDescriptorTyp::RWImage: {
 					alignment = sizes.imageAlignment;
 					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
 					break;
@@ -250,7 +285,8 @@ namespace FISIR{
 			}
 
 			uint32_t arrayStride = (binding.descriptorTyp == RHIDescriptorTyp::SamplerImage ||
-				binding.descriptorTyp == RHIDescriptorTyp::Image)
+				binding.descriptorTyp == RHIDescriptorTyp::Image ||
+				binding.descriptorTyp == RHIDescriptorTyp::RWImage)
 				? alignment
 				: descSize;
 
@@ -302,7 +338,7 @@ namespace FISIR{
 		mappingInfo = std::move(BuildDescriptorMappings(mDevice, State.describeInfo, mData->bindingRemap));
 		
 		//DesLayout and PipelineLayout
-		mData->Descriptorlayout = DescriptorPool->createDescriptorSetLayout(State.describeInfo, mData->PipelineLayout, mData->bindingRemap);
+		mData->Descriptorlayout = DescriptorPool->createDescriptorSetLayout(State.describeInfo, State.pushConstantRange, mData->PipelineLayout, mData->bindingRemap);
 
 		VkShaderDescriptorSetAndBindingMappingInfoEXT shaderMappingInfo = {
 			.sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
@@ -441,6 +477,12 @@ namespace FISIR{
 			//PipelineColorBlend
 			VkPipelineColorBlendAttachmentState pipelineColorBlendAttachmentState = {
 			  .blendEnable = State.colorblendState.ColorBlenEnable,
+			  .srcColorBlendFactor = getBlendFactor(State.colorblendState.SrcColorBlend),
+			  .dstColorBlendFactor = getBlendFactor(State.colorblendState.DstColorBlend),
+			  .colorBlendOp = getBlendOp(State.colorblendState.ColorBlendOp),
+			  .srcAlphaBlendFactor = getBlendFactor(State.colorblendState.SrcAlphaBlend),
+			  .dstAlphaBlendFactor = getBlendFactor(State.colorblendState.DstAlphaBlend),
+			  .alphaBlendOp = getBlendOp(State.colorblendState.AlphaBlendOp),
 			  .colorWriteMask = (VkColorComponentFlags)State.colorblendState.UsingColorBit,
 			};
 
@@ -496,6 +538,10 @@ namespace FISIR{
 
 	Pipeline_t VulkanPipeline::getPipelineHandle() {
 		return mData->mPipeline;
+	}
+
+	void* VulkanPipeline::getPipelineLayoutHandle() {
+		return mData->PipelineLayout;
 	}
 
 	bool VulkanPipeline::isComputePipeline() const {

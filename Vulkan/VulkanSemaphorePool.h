@@ -27,6 +27,10 @@ namespace FISIR{
 
 		virtual FenceType getSemaphoreType() const override;
 
+		virtual void setExternalSignal(bool ext) override;
+		virtual bool isExternalSignal() const override;
+
+
 #ifdef _DEBUG
 		const char* getName() const { return mName; }
 
@@ -40,11 +44,14 @@ namespace FISIR{
 		std::atomic_uint64_t nextSignalValue {1};
 		std::atomic_uint64_t currentValue{0};
 		std::atomic<uint64_t> nextWaitValue{ 1 };
+
 	private:
 		VulkanDevice* mDevice;
 		VkSemaphore_T* mSemaphore;
 		FenceType mSemaphoreType;
 		RHIUsingStageFlags mWaittingBit { ALLStage };
+		bool mExternalSignal{ false };
+
 #ifdef _DEBUG
 	const char* mName;
 #endif // _DEBUG

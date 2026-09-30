@@ -2,6 +2,7 @@
 #include "../RHIResource.h"
 #include <vector>
 #include <array>
+#include <utility>
 #include <unordered_map>
 #include <atomic>
 #include "../LockFreeQue.h"
@@ -156,6 +157,17 @@ namespace FISIR{
 		std::atomic<VulkanFence*> fence { nullptr };
 		std::vector<RHISemaphore*> waits;
 		std::vector<RHISemaphore*> signals;
+
+		// 本段命令里登记的呈现请求（Present 指令）。录制线程只登记；真正的 vkQueuePresentKHR
+		// 由 RHI 线程在本页 vkQueueSubmit 之后执行（见 VulkanRHI 的 presents 落地）。
+		// 生命周期随 ExecuteResultData 一起回收 —— 同一张图绝不能 present 两次。
+		std::vector<std::pair<class RHISwapChain*, uint32_t>> presents;
+
+		// 渲染通道续接段的预置继承信息（由 RHI 线程在拆分大批次时填写）。
+		// 当本段不以 BeginRenderPass 开头、却属于某个渲染通道时，工作线程据此
+		// 用 VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT 录制二级命令缓冲。
+		VulkanFrameBuffer* inheritFrameBuffer{ nullptr };
+		uint32_t inheritSubpass{ 0 };
 
 		ExecuteResultData& operator=(ExecuteResultData&& other) noexcept {
 			frameBuffer = other.frameBuffer;

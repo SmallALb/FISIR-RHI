@@ -140,6 +140,15 @@ namespace FISIR {
 		return mSemaphoreType;
 	}
 
+	void VulkanSemaphore::setExternalSignal(bool ext) {
+		mExternalSignal = ext;
+	}
+
+	bool VulkanSemaphore::isExternalSignal() const
+	{
+		return mExternalSignal;
+	}
+
 	void VulkanSemaphore::reName(const char* name) {
 #ifdef _DEBUG
 		mName = name;

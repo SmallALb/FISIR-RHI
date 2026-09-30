@@ -43,14 +43,23 @@ find_package(Slang REQUIRED)
 # ══════════════════════════════════════════════════════════════
 add_subdirectory(Log)
 
+# 第三方 vendored 库（meshoptimizer / imgui）**一律不建库目标**：它们各自的 CMakeLists.txt
+# 只往父作用域导出「源码列表 + include 路径」，由用到它们的 exe 直接编译（见各自的文件头注释）。
+add_subdirectory(vendor/meshoptimizer)
+
 if(BUILD_VULKAN_RHI)
     add_subdirectory(Vulkan)
 endif()
 
 if(BUILD_EXAMPLES)
+    add_subdirectory(vendor/imgui)
+    # ImGui 的 FISIR RHI 后端（渲染 + Win32 输入）：同样不建库，示例把它编进自己的 exe。
+    set(RHIIMGUI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/ImGui_Impl_FISIR.cpp)
+
     add_subdirectory(Example/TextureCube)
     add_subdirectory(Example/Nanite)
     add_subdirectory(Example/BunnyPBR)
+    add_subdirectory(Example/RemoteCube)   # headless 渲染 + 内置 HTTP/MJPEG 推流（手机浏览器观看）
 endif()
 
 # VS startup project (Windows only)

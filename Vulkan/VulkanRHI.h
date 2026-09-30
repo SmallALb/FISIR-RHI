@@ -4,6 +4,7 @@
 #include "VulkanViewport.h"
 
 #include "../DLLheader.h"
+#include <array>
 #include <mutex>
 #include "VulkanCommandPool.h"
 #include "VulkanFencePool.h"
@@ -11,7 +12,8 @@
 #include "VulkanDescriptorPool.h"
 #include <unordered_set>
 #include <thread>
-namespace FISIR {  
+struct VkQueryPool_T;
+namespace FISIR {
   class VulkanPipeline;
   class VulkanDevice;
   class VulkanCommandPool;
@@ -32,7 +34,9 @@ namespace FISIR {
 
 		virtual RHIBuffer* RHICreateBuffer(const BufferInfo& bufferInfo) override;
 
-		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type, void* WindowHandle) override;
+		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type,
+											   DisplayDeviceType deviceType, void* deviceHandle,
+											   uint32_t swapChainSlotCount) override;
 
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) override;
 
@@ -67,7 +71,18 @@ namespace FISIR {
 		virtual void RHIDestroyResourcePack(RHIResourcePackResult& pack) override;
 		
 		virtual void RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) override;
+
+		virtual double getLastGPUTimeMs() const override;
+
+		// ── 交换链注册表（取图 / 呈现全归 RHI 线程）──────────────────
+		// 注册：RHIGetSwapChain（视口创建时，主线程）；注销：~VulkanSwapChain。
+		// RHI 线程每轮循环开头对每个已登记交换链调 tryAcquire()，因此
+		// vkAcquireNextImageKHR / vkQueuePresentKHR / 交换链重建 全程只由该线程执行。
+		static constexpr size_t MaxSwapChainCount = 64;
+		static void RegisterSwapChain(VulkanSwapChain* swapchain);
+		static void UnregisterSwapChain(VulkanSwapChain* swapchain);
 	private:
+		
 
 		void VulkanRHILoop();
 
@@ -83,6 +98,13 @@ namespace FISIR {
 		std::atomic<uint64_t> mRecordSequence {0};
 		RingCommandPool CmdMemoryPool[3];
 		CommandExecuteThreadPool* ThreadPool;
+
+		// GPU 时间戳查询：在每帧一级命令缓冲的首尾写时间戳，资源线程在围栏置位后读回，
+		// 换算成 GPU 帧耗时，供上层估算 GPU 占用率。
+		VkQueryPool_T* mTimestampQueryPool{ nullptr };
+		float mTimestampPeriod{ 0.0f };
+		std::atomic<uint64_t> mLastGpuTimeNs{ 0 };
+		std::atomic<uint32_t> mTimestampRing{ 0 };
   };
 
 

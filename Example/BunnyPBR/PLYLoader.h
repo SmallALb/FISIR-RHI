@@ -1,18 +1,26 @@
 #pragma once
-// PLYLoader.h —— 斯坦福兔子模型加载
+// PLYLoader.h —— 斯坦福兔子模型加载（ASCII / binary_little_endian）
 //
 // 职责：
-//   1. 解析 ASCII / binary_little_endian 两种 PLY（斯坦福兔子的标准分发格式）
-//   2. 生成平滑法线（面积加权平均，因为 bunny.ply 只有 x,y,z 无法线）
+//   1. 解析 PLY 头部属性表（element / property / property list），据此定位 vertex 的
+//      x/y/z 与 face 的顶点索引列表。顶点上的多余字段（confidence / intensity /
+//      nx,ny,nz / s,t …）按声明的步长自动跳过——这正是高采样原始扫描件
+//      bun_zipper.ply（35947 顶点，带 confidence+intensity）能被正确读入的前提：
+//      旧实现对二进制顶点写死「3 个 float」，遇到多余字段会整体错位。
+//   2. 生成平滑法线（面积加权平均，因为斯坦福兔子只有 x,y,z 无法线）
 //   3. 中心化 + 均匀缩放（缩放到目标尺寸，法线保持单位长度）
 //   4. 计算 OBB（当前用 AABB 近似，轴对齐；PCA 精确 OBB 留作后续）
-//   5. 兜底：找不到 .ply 时生成程序化球体网格，保证样例开箱即跑
+//   5. 兜底：找不到文件 / 解析失败时生成程序化球体网格，保证样例开箱即跑
 //
 // 顶点布局固定为 { float3 position; float3 normal; }，与 RHI 的
 // RHIVertexInputInfo{ _Fvec3, _Fvec3 } 一一对应。
+//
+// 二进制分支按 x86 小端直接读取（PLY 的 binary_little_endian）；binary_big_endian
+// 未支持，会明确告警后走兜底球体，而不是静默解析出错误几何。
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <string>
@@ -92,6 +100,101 @@ static void GenerateFallbackSphere(std::vector<MeshVertex>& verts, std::vector<u
     }
 }
 
+// ═══════════════════════════ PLY 头部属性表 ═══════════════════════════
+// 只保留解析所必需的信息：元素名/数量、每个属性的类型与在二进制记录内的偏移。
+enum class PlyType { None, I8, U8, I16, U16, I32, U32, F32, F64 };
+
+static int PlyTypeSize(PlyType t) {
+    switch (t) {
+    case PlyType::I8:  case PlyType::U8:  return 1;
+    case PlyType::I16: case PlyType::U16: return 2;
+    case PlyType::I32: case PlyType::U32: case PlyType::F32: return 4;
+    case PlyType::F64: return 8;
+    default: return 0;
+    }
+}
+
+struct PlyProperty {
+    char    name[32] = { 0 };
+    PlyType type = PlyType::None;       // 标量类型；isList 时为列表元素类型
+    bool    isList = false;
+    PlyType countType = PlyType::None;  // isList 时：列表长度字段类型
+    int     offset = 0;                 // 二进制记录内偏移（仅标量属性有效）
+};
+
+struct PlyElement {
+    char    name[32] = { 0 };
+    size_t  count = 0;
+    std::vector<PlyProperty> props;
+    int     stride = 0;                 // 二进制记录步长
+};
+
+// 取第 n 个空白分隔 token（0 基）；越界返回 nullptr。返回的是行内指针，不做拷贝。
+static const char* PlyNthToken(const char* line, int n) {
+    const char* p = line;
+    for (int i = 0; i <= n; ++i) {
+        p += strspn(p, " \t\r\n");
+        if (*p == '\0') return nullptr;
+        if (i == n) return p;
+        p += strcspn(p, " \t\r\n");
+    }
+    return nullptr;
+}
+
+// token 是否等于 word（token 以空白或 '\0' 结束；容忍前导空白）
+static bool PlyTokEq(const char* tok, const char* word) {
+    if (!tok) return false;
+    tok += strspn(tok, " \t\r\n");
+    size_t n = strlen(word);
+    if (strncmp(tok, word, n) != 0) return false;
+    char c = tok[n];
+    return c == '\0' || c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static PlyType PlyParseType(const char* tok) {
+    if (PlyTokEq(tok, "char")   || PlyTokEq(tok, "int8"))    return PlyType::I8;
+    if (PlyTokEq(tok, "uchar")  || PlyTokEq(tok, "uint8"))   return PlyType::U8;
+    if (PlyTokEq(tok, "short")  || PlyTokEq(tok, "int16"))   return PlyType::I16;
+    if (PlyTokEq(tok, "ushort") || PlyTokEq(tok, "uint16"))  return PlyType::U16;
+    if (PlyTokEq(tok, "int")    || PlyTokEq(tok, "int32"))   return PlyType::I32;
+    if (PlyTokEq(tok, "uint")   || PlyTokEq(tok, "uint32"))  return PlyType::U32;
+    if (PlyTokEq(tok, "float")  || PlyTokEq(tok, "float32")) return PlyType::F32;
+    if (PlyTokEq(tok, "double") || PlyTokEq(tok, "float64")) return PlyType::F64;
+    return PlyType::None;
+}
+
+static void PlyCopyToken(char* dst, size_t cap, const char* tok) {
+    if (cap == 0) return;
+    size_t i = 0;
+    if (tok) {
+        for (; i + 1 < cap && tok[i] && tok[i] != ' ' && tok[i] != '\t' && tok[i] != '\r' && tok[i] != '\n'; ++i) {
+            dst[i] = tok[i];
+        }
+    }
+    dst[i] = '\0';
+}
+
+// 按小端读出标量（x86 主机；PLY binary_little_endian）
+static double PlyReadNumeric(const unsigned char* p, PlyType t) {
+    switch (t) {
+    case PlyType::I8:  { int8_t   v; memcpy(&v, p, 1); return (double)v; }
+    case PlyType::U8:  { uint8_t  v; memcpy(&v, p, 1); return (double)v; }
+    case PlyType::I16: { int16_t  v; memcpy(&v, p, 2); return (double)v; }
+    case PlyType::U16: { uint16_t v; memcpy(&v, p, 2); return (double)v; }
+    case PlyType::I32: { int32_t  v; memcpy(&v, p, 4); return (double)v; }
+    case PlyType::U32: { uint32_t v; memcpy(&v, p, 4); return (double)v; }
+    case PlyType::F32: { float    v; memcpy(&v, p, 4); return (double)v; }
+    case PlyType::F64: { double   v; memcpy(&v, p, 8); return v; }
+    default: return 0.0;
+    }
+}
+
+// 行未读完时丢弃剩余部分（超长行保护，保证记录边界不串行）
+static void PlySkipRestOfLine(FILE* f) {
+    int c;
+    while ((c = fgetc(f)) != EOF && c != '\n') {}
+}
+
 // ── PLY 解析入口：成功返回 true，否则填充兜底球体并返回 false ──
 // 返回的 MeshData 已中心化 + 缩放到 targetSize，法线已生成。
 static MeshData LoadMesh(const char* path, float targetSize = 0.8f) {
@@ -106,69 +209,167 @@ static MeshData LoadMesh(const char* path, float targetSize = 0.8f) {
     }
 
     if (f) {
-        // ── 头部解析 ──
-        char line[256];
-        bool ascii = false;
-        int vertCount = 0, faceCount = 0;
-        if (!fgets(line, sizeof(line), f) || strncmp(line, "ply", 3) != 0) {
-            fclose(f); f = nullptr;
-        } else {
+        char line[512];
+        bool ascii = false, bigEndian = false;
+        bool headerOk = false;
+        std::vector<PlyElement> elems;
+
+        if (fgets(line, sizeof(line), f) && strncmp(line, "ply", 3) == 0) {
+            PlyElement* cur = nullptr;
             while (fgets(line, sizeof(line), f)) {
-                if (strncmp(line, "format", 6) == 0) {
+                if (!strchr(line, '\n')) PlySkipRestOfLine(f);   // 头部行都很短，防御性处理
+                if (PlyTokEq(line, "format")) {
                     ascii = (strstr(line, "ascii") != nullptr);
-                } else if (strncmp(line, "element vertex", 14) == 0) {
-                    vertCount = atoi(line + 15);
-                } else if (strncmp(line, "element face", 12) == 0) {
-                    faceCount = atoi(line + 13);
-                } else if (strncmp(line, "end_header", 10) == 0) {
+                    bigEndian = (strstr(line, "big_endian") != nullptr);
+                } else if (PlyTokEq(line, "element")) {
+                    const char* name = PlyNthToken(line, 1);
+                    const char* cnt = PlyNthToken(line, 2);
+                    if (!name || !cnt) { headerOk = false; break; }
+                    elems.emplace_back();
+                    cur = &elems.back();
+                    PlyCopyToken(cur->name, sizeof(cur->name), name);
+                    cur->count = (size_t)strtoull(cnt, nullptr, 10);
+                } else if (PlyTokEq(line, "property")) {
+                    if (!cur) { headerOk = false; break; }
+                    const char* t1 = PlyNthToken(line, 1);
+                    PlyProperty prop;
+                    if (PlyTokEq(t1, "list")) {
+                        const char* ct = PlyNthToken(line, 2);
+                        const char* it = PlyNthToken(line, 3);
+                        const char* nm = PlyNthToken(line, 4);
+                        if (!ct || !it || !nm) { headerOk = false; break; }
+                        prop.isList = true;
+                        prop.countType = PlyParseType(ct);
+                        prop.type = PlyParseType(it);
+                        PlyCopyToken(prop.name, sizeof(prop.name), nm);
+                    } else {
+                        const char* nm = PlyNthToken(line, 2);
+                        if (!t1 || !nm) { headerOk = false; break; }
+                        prop.type = PlyParseType(t1);
+                        PlyCopyToken(prop.name, sizeof(prop.name), nm);
+                    }
+                    if (prop.type == PlyType::None || (prop.isList && prop.countType == PlyType::None)) {
+                        Warn("PLY '{}': unknown property type, giving up", path);
+                        headerOk = false;
+                        break;
+                    }
+                    cur->props.push_back(prop);
+                } else if (PlyTokEq(line, "end_header")) {
+                    headerOk = true;
                     break;
                 }
+                // comment / obj_info 等一律忽略
             }
         }
 
-        if (f && vertCount > 0 && faceCount > 0) {
-            positions.reserve((size_t)vertCount * 3);
-            faces.reserve((size_t)faceCount * 3);
+        // 计算二进制步长（list 属性按约定位于元素末尾，不参与后续标量偏移）
+        for (auto& e : elems) {
+            int off = 0;
+            for (auto& p : e.props) {
+                p.offset = off;
+                if (!p.isList) off += PlyTypeSize(p.type);
+            }
+            e.stride = off;
+        }
+
+        const PlyElement* vertElem = nullptr;
+        const PlyElement* faceElem = nullptr;
+        for (auto& e : elems) {
+            if (!vertElem && strcmp(e.name, "vertex") == 0) vertElem = &e;
+            if (!faceElem && strcmp(e.name, "face") == 0) faceElem = &e;
+        }
+
+        int px = -1, py = -1, pz = -1;
+        if (vertElem) {
+            for (size_t i = 0; i < vertElem->props.size(); ++i) {
+                const char* n = vertElem->props[i].name;
+                if (px < 0 && strcmp(n, "x") == 0) px = (int)i;
+                else if (py < 0 && strcmp(n, "y") == 0) py = (int)i;
+                else if (pz < 0 && strcmp(n, "z") == 0) pz = (int)i;
+            }
+        }
+        int faceListIdx = -1;
+        if (faceElem) {
+            for (size_t i = 0; i < faceElem->props.size(); ++i) {
+                if (!faceElem->props[i].isList) continue;
+                if (faceListIdx < 0) faceListIdx = (int)i;
+                if (strcmp(faceElem->props[i].name, "vertex_indices") == 0 ||
+                    strcmp(faceElem->props[i].name, "vertex_index") == 0) { faceListIdx = (int)i; break; }
+            }
+        }
+
+        const bool formatOk = headerOk && !bigEndian &&
+                              vertElem && faceElem && vertElem->count > 0 && faceElem->count > 0 &&
+                              px >= 0 && py >= 0 && pz >= 0 && faceListIdx >= 0;
+        if (!formatOk) {
+            if (headerOk && bigEndian) Warn("PLY '{}': binary_big_endian is not supported", path);
+        }
+
+        if (formatOk) {
+            const PlyElement& V = *vertElem;
+            const PlyElement& F = *faceElem;
+            const PlyProperty& faceList = F.props[faceListIdx];
+            positions.reserve(V.count * 3);
+            faces.reserve(F.count * 3);
 
             if (ascii) {
-                for (int i = 0; i < vertCount; ++i) {
-                    float x, y, z;
-                    if (fscanf_s(f, "%f %f %f", &x, &y, &z) != 3) break;
-                    // 跳过本行剩余字段（有的 PLY 带法线/纹理）
+                // 顶点：整行取第 px/py/pz 个 token（属性顺序任意，多余字段天然跳过）
+                for (size_t i = 0; i < V.count; ++i) {
                     if (!fgets(line, sizeof(line), f)) break;
-                    positions.push_back(x); positions.push_back(y); positions.push_back(z);
-                }
-                for (int i = 0; i < faceCount; ++i) {
-                    int n;
-                    if (fscanf_s(f, "%d", &n) != 1) break;
-                    if (n >= 3) {
-                        int a, b, c;
-                        fscanf_s(f, "%d %d %d", &a, &b, &c);
-                        faces.push_back((uint32_t)a);
-                        faces.push_back((uint32_t)b);
-                        faces.push_back((uint32_t)c);
-                        for (int k = 3; k < n; ++k) { int dummy; fscanf_s(f, "%d", &dummy); }
+                    const char* tx = PlyNthToken(line, px);
+                    const char* ty = PlyNthToken(line, py);
+                    const char* tz = PlyNthToken(line, pz);
+                    if (tx && ty && tz) {
+                        positions.push_back(strtof(tx, nullptr));
+                        positions.push_back(strtof(ty, nullptr));
+                        positions.push_back(strtof(tz, nullptr));
                     }
+                    if (!strchr(line, '\n')) PlySkipRestOfLine(f);
+                }
+                // 面：第一个 token 是顶点数，随后 3 个是三角形索引（n > 3 的多边形取前 3）
+                for (size_t i = 0; i < F.count; ++i) {
                     if (!fgets(line, sizeof(line), f)) break;
+                    const char* t0 = PlyNthToken(line, 0);
+                    if (t0) {
+                        long n = strtol(t0, nullptr, 10);
+                        if (n >= 3) {
+                            const char* ta = PlyNthToken(line, 1);
+                            const char* tb = PlyNthToken(line, 2);
+                            const char* tc = PlyNthToken(line, 3);
+                            if (ta && tb && tc) {
+                                faces.push_back((uint32_t)strtoul(ta, nullptr, 10));
+                                faces.push_back((uint32_t)strtoul(tb, nullptr, 10));
+                                faces.push_back((uint32_t)strtoul(tc, nullptr, 10));
+                            }
+                        }
+                    }
+                    if (!strchr(line, '\n')) PlySkipRestOfLine(f);
                 }
             } else {
-                // binary_little_endian：顶点 = 3 个 float，面 = uchar n + n 个 int
-                for (int i = 0; i < vertCount; ++i) {
-                    float xyz[3];
-                    if (fread(xyz, sizeof(float), 3, f) != 3) break;
-                    positions.push_back(xyz[0]); positions.push_back(xyz[1]); positions.push_back(xyz[2]);
+                // 顶点：整条记录读入，按属性偏移取 x/y/z，其余字段随步长跳过
+                std::vector<unsigned char> rec((size_t)(V.stride > 0 ? V.stride : 1));
+                const int off[3] = { V.props[px].offset, V.props[py].offset, V.props[pz].offset };
+                const PlyType typ[3] = { V.props[px].type, V.props[py].type, V.props[pz].type };
+                for (size_t i = 0; i < V.count; ++i) {
+                    if (fread(rec.data(), 1, (size_t)V.stride, f) != (size_t)V.stride) break;
+                    for (int k = 0; k < 3; ++k) positions.push_back((float)PlyReadNumeric(rec.data() + off[k], typ[k]));
                 }
-                for (int i = 0; i < faceCount; ++i) {
-                    unsigned char n = 0;
-                    if (fread(&n, 1, 1, f) != 1) break;
-                    int idx[3] = { 0, 0, 0 };
+                // 面：<countType> n 后接 n 个 <indexType> 索引
+                // buf 按最长标量（8 字节）预留：count 1 个 + 索引 3 个
+                const size_t cntSize = (size_t)PlyTypeSize(faceList.countType);
+                const size_t idxSize = (size_t)PlyTypeSize(faceList.type);
+                unsigned char cntBuf[8];
+                unsigned char idxBuf[3 * 8];
+                for (size_t i = 0; i < F.count; ++i) {
+                    if (fread(cntBuf, 1, cntSize, f) != cntSize) break;
+                    long long n = (long long)PlyReadNumeric(cntBuf, faceList.countType);
+                    if (n < 0) break;
                     if (n >= 3) {
-                        fread(idx, sizeof(int), 3, f);
-                        faces.push_back((uint32_t)idx[0]);
-                        faces.push_back((uint32_t)idx[1]);
-                        faces.push_back((uint32_t)idx[2]);
-                        if (n > 3) { int skip[16]; fread(skip, sizeof(int), n - 3, f); }
+                        if (fread(idxBuf, 1, idxSize * 3, f) != idxSize * 3) break;
+                        for (int k = 0; k < 3; ++k)
+                            faces.push_back((uint32_t)PlyReadNumeric(idxBuf + idxSize * (size_t)k, faceList.type));
                     }
+                    if (n > 3) fseek(f, (long)((n - 3) * (long long)idxSize), SEEK_CUR);
                 }
             }
 
@@ -228,16 +429,19 @@ static MeshData LoadMesh(const char* path, float targetSize = 0.8f) {
             }
             out.boundingRadius = maxHalf;
 
-            out.vertices = std::move(verts);
-            out.indices  = std::move(faces);
-            out.loaded   = true;
+            // 顶点/面都在，却一个三角形都没凑出来（索引越界等）也算失败
+            if (!verts.empty() && !faces.empty()) {
+                out.vertices = std::move(verts);
+                out.indices  = std::move(faces);
+                out.loaded   = true;
+            }
         }
         fclose(f);
     }
 
     // ── 兜底：加载失败或文件不存在时用球体 ──
     if (!out.loaded) {
-        Warn("PLY '{}' 未找到或解析失败，改用程序化球体兜底（请放入 bunny.ply 覆盖）", path);
+        Warn("PLY '{}' not found or failed to parse; using the procedural sphere fallback", path);
         GenerateFallbackSphere(out.vertices, out.indices);
         NormalizeMesh(out.vertices, targetSize);
         out.obbHalfExtents[0] = out.obbHalfExtents[1] = out.obbHalfExtents[2] = targetSize * 0.5f;

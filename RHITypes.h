@@ -82,7 +82,23 @@ namespace FISIR {
     
     enum class CullMode : uint8_t { None, FRONT, BACK };
     
-    enum class RHIDescriptorTyp : uint8_t { Sampler, Image, SamplerImage, UniformBuffer, RBuffer, RWBuffer};
+    // 描述符类型（与 HLSL 侧的类型一一对应，决定 pipeline layout 里的 VkDescriptorType）：
+    //   Sampler      <- SamplerState
+    //   Image        <- 只读存储图像（Texture2D 形式的 storage image）
+    //   SamplerImage <- Texture2D + SamplerState（采样图像，SPIR-V 里是 SAMPLED_IMAGE + 独立 SAMPLER）
+    //   UniformBuffer<- cbuffer
+    //   RBuffer      <- 只读缓冲
+    //   RWBuffer     <- RWStructuredBuffer / RWByteAddressBuffer
+    //   RWImage      <- RWTexture2D（读写的存储图像；与 Image 同为 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE）
+    //
+    // 用 Image / RWImage 时纹理侧的配套要求（写描述符时取的是**纹理自己的** flags，不是这里的枚举）：
+    //   · 创建纹理要带 TextureUseForStorage，否则 VulkanTexture::getVkDescriptorType() 会返回
+    //     SAMPLED_IMAGE，与 pipeline layout 声明的 STORAGE_IMAGE 不匹配 → 校验报错；
+    //   · 绑定期望图像处于 TextureLayout::Storage（= VK_IMAGE_LAYOUT_GENERAL）布局，
+    //     需要时用命令列表的 TransitionTextures 转过去。
+    // 注意：枚举值会被 RHIPipelineDescribeInfo 的哈希用到，新增成员一律追加在末尾，不要插在中间。
+    enum class RHIDescriptorTyp : uint8_t { Sampler, Image, SamplerImage, UniformBuffer, RBuffer, RWBuffer, RWImage};
+
     
     enum RHIUsingStage {
         NoneStage = 0x0,
@@ -200,6 +216,11 @@ namespace FISIR {
         uint16_t            mipLevels{ 1 };
         uint16_t            arrayLayers{ 1 };
         uint32_t            sampleCount{ 1 };
+        // 跨队列族共享：true 时以 VK_SHARING_MODE_CONCURRENT 创建（列出 graphics/compute/transfer
+        // 全部队列族），允许异队列族直接读写而无需显式所有权转移（release/acquire），
+        // 语义与 BufferInfo::concurrentSharing 一致。默认 false 保持既有 EXCLUSIVE 行为。
+        // 典型用例：硬光栅在 graphics 族写深度附件，Hi-Z（compute 族）下一帧要采样它。
+        bool                concurrentSharing{ false };
     };
 
 

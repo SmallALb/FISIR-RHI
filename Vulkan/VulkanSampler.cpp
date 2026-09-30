@@ -33,7 +33,9 @@ namespace FISIR{
 			.compareEnable = info.compareEnable,
 			.compareOp = getVkOperation(info.compareOP),
 			.minLod = info.minLop,
-			.maxLod = info.minLop,
+			// 曾被误写成 info.minLop：默认 SamplerInfo 的 minLop == maxLop == 1.0 时
+			// 看不出差别，但 mipLevels > 1 的纹理（如预滤波环境图）会被钳在 1.0 以内。
+			.maxLod = info.maxLop,
 			.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
 			.unnormalizedCoordinates = info.unNormalized,
 		};

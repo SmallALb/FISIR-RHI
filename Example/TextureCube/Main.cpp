@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <algorithm>
+#include <numeric>
 #include <atomic>
 #include <windows.h>
 #include <thread>
@@ -102,6 +103,9 @@ int main(int argc, char* argv[]) {
     bool getFrames = false;
     uint64_t getFrameBegin = 0;
     uint64_t getFrameEnd = 0;
+    // 呈现设备：--display=win32|hidden|headless（见 RHIDisplay.h）；-ExitAfter N：跑 N 帧后干净退出
+    std::string displayName = "win32";
+    uint64_t exitAfterFrames = 0;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-Test" || arg == "-test" || arg == "/Test") {
@@ -118,10 +122,42 @@ int main(int argc, char* argv[]) {
             getFrames = true;
             getFrameBegin = std::stoull(argv[++i]);
             getFrameEnd = std::stoull(argv[++i]);
+        } else if ((arg == "-ExitAfter" || arg == "-exitafter") && i + 1 < argc) {
+            // 跑够 N 帧就干净退出。无窗口模式（hidden/headless）没法靠点叉关掉，必须给个出口；
+            // 也给自动化脚本用。
+            exitAfterFrames = std::stoull(argv[++i]);
+        } else if (arg == "-Hidden" || arg == "-hidden") {
+            displayName = "hidden";
+        } else if (arg.rfind("--display=", 0) == 0 || arg.rfind("-display=", 0) == 0) {
+            displayName = arg.substr(arg.find('=') + 1);
+        } else if ((arg == "--display" || arg == "-display") && i + 1 < argc) {
+            displayName = argv[++i];
         }
     }
     if (drawCallCounts.empty()) drawCallCounts.push_back(1);
     if (instanceCounts.empty()) instanceCounts.push_back(1);
+
+    // ── 呈现设备选择（抽象见 RHIDisplay.h）──────────────────────────────
+    //   win32        ：普通 Win32 窗口（默认）
+    //   hidden       ：同样的 Win32Window 设备，但窗口不 Show（验证"没有可见窗口也能跑完整交换链+呈现"）
+    //   headless     ：DisplayDeviceType::Headless —— 不建窗口、不建 surface、不建交换链，
+    //                  只渲染到离屏 colorTexture，靠 -GetFrames 的读回证明"确实画出来了"
+    //   displayplane ：直连显示器（DisplayPlaneHandle）。Windows 上拿不到（没有 display、也缺
+    //                  VK_KHR_display_swapchain），这里用它演示"后端未实现的设备类型会被明确拒绝，
+    //                  并自动退化成离屏渲染"，而不是崩在空 surface 上。
+    FISIR::DisplayDeviceType displayType = FISIR::DisplayDeviceType::DisplayPlane;
+    bool hiddenWindow = false;
+    if (displayName == "headless") {
+        displayType = FISIR::DisplayDeviceType::Headless;
+    } else if (displayName == "hidden") {
+        hiddenWindow = true;
+    } else if (displayName == "displayplane" || displayName == "display") {
+        displayType = FISIR::DisplayDeviceType::DisplayPlane;
+    } else if (!displayName.empty() && displayName != "win32" && displayName != "win32window") {
+        Error("未知的 --display={}（可用：win32 | hidden | headless | displayplane）", displayName);
+        return 1;
+    }
+    Info("==== display device: {} ====", FISIR::DisplayDeviceTypeName(displayType));
 
     if (runPerfTest) {
         Info("=======");
@@ -136,28 +172,43 @@ int main(int argc, char* argv[]) {
     FISIR::RHICreator::setRenderInterfaceApi(FISIR::RHIAPI::Vulkan);
     FISIR::DynamicRHI* rhi = FISIR::RHICreator::getCurrentRenderInterface();
 
-    // 2. 创建窗口
+    // 2. 按设备类型准备句柄：只有 Win32Window（含 hidden）需要窗口；headless / displayplane 不碰窗口系统。
     HINSTANCE hInstance = GetModuleHandle(NULL);
-    const char CLASS_NAME[] = "CubeDemo";
-    WNDCLASSA wc = { 0 };
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = CLASS_NAME;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    RegisterClassA(&wc);
+    HWND hwnd = nullptr;
+    FISIR::Win32DisplayHandle win32Data{ nullptr, nullptr };
+    FISIR::DisplayPlaneHandle planeData{ 0, 0, 0 };   // 直连显示器：display / plane / mode 下标
+    void* deviceHandle = nullptr;
+    if (displayType == FISIR::DisplayDeviceType::Win32Window) {
+        const char CLASS_NAME[] = "CubeDemo";
+        WNDCLASSA wc = { 0 };
+        wc.lpfnWndProc = WindowProc;
+        wc.hInstance = hInstance;
+        wc.lpszClassName = CLASS_NAME;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        RegisterClassA(&wc);
 
-    HWND hwnd = CreateWindowExA(
-        0, CLASS_NAME, "Textured Cube (Single Pass)",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        800, 600,
-        NULL, NULL, hInstance, NULL
-    );
-    ShowWindow(hwnd, SW_SHOW);
+        hwnd = CreateWindowExA(
+            0, CLASS_NAME, "Textured Cube (Single Pass)",
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT, CW_USEDEFAULT,
+            800, 600,
+            NULL, NULL, hInstance, NULL
+        );
+        if (!hwnd) { Error("CreateWindowExA failed ({})", GetLastError()); return 1; }
+        if (!hiddenWindow) ShowWindow(hwnd, SW_SHOW);
+        win32Data = { hInstance, hwnd };
+        deviceHandle = &win32Data;
+        Info("Win32Window: hwnd=0x{:x} 可见={}", (size_t)hwnd, !hiddenWindow);
+    } else if (displayType == FISIR::DisplayDeviceType::DisplayPlane) {
+        deviceHandle = &planeData;
+        Info("DisplayPlane: 句柄 = {{ displayIndex={}, planeIndex={}, modeIndex={} }}"
+             "（本机拿不到 display，预期被后端拒绝）", planeData.displayIndex, planeData.planeIndex, planeData.modeIndex);
+    } else {
+        Info("Headless: 不创建任何窗口");
+    }
 
-    struct Win32Data { HINSTANCE hinstance; HWND hwnd; } win32Data{ hInstance, hwnd };
-    auto viewport = rhi->RHICreateViewport(800, 600, FISIR::TextureCOLORType::RGBA_8, (void*)&win32Data);
+    auto viewport = rhi->RHICreateViewport(800, 600, FISIR::TextureCOLORType::RGBA_8, displayType, deviceHandle, 3);
     rhi->Init();
 
     // ---------- 3. 顶点着色器 ----------
@@ -416,12 +467,39 @@ int main(int argc, char* argv[]) {
     auto indexBuffer = rhi->RHICreateBuffer(indexBufferInfo);
 
     // ---------- 11. 交换链 ----------
+    // Headless（以及后端未实现的呈现设备）没有 surface ⇒ 这里拿到 nullptr，本示例退化成
+    // "只渲染到离屏 colorTexture"，present 与交换链相关的等待全部跳过。
     auto swapchain = rhi->RHIGetSwapChain(viewport);
-    auto swapchainPipeline = swapchain->getSwapChainRenderPipeline();
+    const bool hasSwapChain = (swapchain != nullptr);
+    FISIR::RHIPipeline* swapchainPipeline = hasSwapChain ? swapchain->getSwapChainRenderPipeline() : nullptr;
     FISIR::SamplerInfo swapSamplerInfo;
     auto swapSampler = rhi->RHICreateSampler(swapSamplerInfo);
-    // 呈现资源包改由 swapchain 管理：登记离屏纹理（纹理模式，BufferEnable=0，PS 采样纹理）。
-    swapchain->enableTextureInput(colorTexture, swapSampler);
+    if (hasSwapChain) {
+        // 呈现资源包改由 swapchain 管理：登记离屏纹理（纹理模式，BufferEnable=0，PS 采样纹理）。
+        swapchain->enableTextureInput(colorTexture, swapSampler);
+    } else {
+        Info("无交换链：跳过 present，离屏结果由 -GetFrames 读回");
+    }
+    // 无窗口/无交换链时没有"点叉关闭"这条出口，必须给个帧数上限，否则脚本会挂住。
+    if (!hasSwapChain || hiddenWindow) {
+        if (!exitAfterFrames && !runPerfTest) {
+            Error("{} 模式没有可关闭的窗口，请用 -ExitAfter N（或 -Test -Frames N）指定跑多少帧后退出",
+                  FISIR::DisplayDeviceTypeName(displayType));
+            return 1;
+        }
+        // 没人看得见画面：默认截最后一帧当证据（可用 -GetFrames 覆盖）。
+        if (!getFrames && exitAfterFrames > 0) {
+            getFrames = true;
+            getFrameBegin = getFrameEnd = exitAfterFrames;
+            Info("自动启用截图：读回第 {} 帧的离屏结果", exitAfterFrames);
+        }
+    }
+    // 无交换链（headless）时自建的槽围栏：每个缓冲槽一个、跨帧复用；收尾时等 GPU 完成再销毁。
+    FISIR::RHIFence* frameFences[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    bool frameFenceUsed[5] = { false, false, false, false, false };
+    // 收尾时要等的「最后几帧围栏」：交换链路径登记 info.finishFence（归交换链所有，只等不销毁），
+    // headless 路径登记自建的 frameFences。销毁资源前必须等它们真的跑完。
+    FISIR::RHIFence* shutdownFences[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 
     // ---------- 11.5 截图读回 ----------
     FISIR::BufferInfo readbackInfo{
@@ -436,12 +514,16 @@ int main(int argc, char* argv[]) {
         FISIR::RHIFence* fence;
         FISIR::RHIBuffer* buffer;
         uint64_t frameIndex;
+        bool ownsFence;   // false = 围栏是交换链/headless 的槽围栏，不能在这里销毁
     };
     FISIR::LockFreeQue<ScreenshotTask, 256> screenshotTasks;
     std::atomic<bool> screenshotStop{false};
     const uint64_t screenshotTotal = (getFrames && getFrameEnd >= getFrameBegin)
         ? (getFrameEnd - getFrameBegin + 1) : 0;
     std::atomic<uint64_t> screenshotDone{0};
+    // 已投递给 worker 的截图任务数。收尾时要等它全部落盘 —— 截图的 GPU 等待与写文件都在 worker
+    // 线程上，若主线程直接销毁 colorTexture/framebuffer，就会和在飞的拷贝打架（实测 0xC0000409）。
+    std::atomic<uint64_t> screenshotPushed{0};
     // 每帧量化后的索引像素，按帧序（frameIndex - getFrameBegin 作下标）。预先定长，
     // 各线程只写各自下标，互不冲突，也无需按完成顺序排序。
 
@@ -470,8 +552,8 @@ int main(int argc, char* argv[]) {
                     // 量化并按帧序存入对应槽位
                     std::vector<uint8_t> indices(1024 * 1024);
 
-                    // 回收本帧的 fence/buffer
-                    rhi->RHIDestroyFence(task.fence);
+                    // 回收本帧的 fence/buffer（围栏若归交换链所有则只还 buffer）
+                    if (task.ownsFence) rhi->RHIDestroyFence(task.fence);
                     rhi->RHIDestroyBuffer(task.buffer);
 
                     // 全部帧处理完 → 由最后完成的线程串 GIF → 通知所有线程退出
@@ -529,6 +611,10 @@ int main(int argc, char* argv[]) {
                              2.0f * halfW / (float)gridCols,
                              2.0f * halfH / (float)gridRows);
 
+        // ── 相位计时（微秒累计）──
+        double accAcquire = 0, accRecord = 0, accWaitSubmit = 0, accPresent = 0, accOther = 0;
+        uint64_t accFrames = 0;
+
         while (true) {
             auto now = std::chrono::steady_clock::now();
 
@@ -544,17 +630,26 @@ int main(int argc, char* argv[]) {
 
             //Info("MTag0");
 
-            uint32_t infoid = swapchain->acquireGetImageInfoID();
-            if (infoid == FISIR::RHISwapChain::FAILEID) continue;
-            static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&uniforms, sizeof(FrameUniforms));
-            if (infoid == FISIR::RHISwapChain::FAILEID) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                Error("Get Failed!");
-                continue;
+            auto tAcq0 = std::chrono::steady_clock::now();
+            uint32_t infoid = 0;
+            FISIR::SwapChainGetImageInfo info{};
+            if (hasSwapChain) {
+                infoid = swapchain->acquireGetImageInfoID();
+                if (infoid == FISIR::RHISwapChain::FAILEID) continue;
+                info = swapchain->getSwapChainGetImageInfo(infoid);
+            } else {
+                // 无交换链：自己按 5 个缓冲槽轮转。
+                // 注意：这里**没有 present 做节流**，CPU 会远远跑在 GPU 前面 —— 复用某一槽之前
+                // 必须确认 GPU 已经用完它，否则会改写 GPU 还没读的 uniform，画面（以及截图）不可复现。
+                infoid = static_cast<uint32_t>(frameCount % 5);
+                FISIR::RHIFence* slotFence = frameFences[infoid];
+                if (slotFence && slotFence->isSubmited()) slotFence->wait();
             }
+            auto tAcq1 = std::chrono::steady_clock::now();
+            static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&uniforms, sizeof(FrameUniforms));
 
             ++frameCount;
-            if (frameCount % 100 == 0) {
+            if (hwnd && frameCount % 100 == 0) {
                 float elapsed = std::chrono::duration<float>(now - fpsStart).count();
                 float fps = 100.0f / elapsed;
                 fpsStart = now;
@@ -565,6 +660,7 @@ int main(int argc, char* argv[]) {
             }
 
 
+            auto tRec0 = std::chrono::steady_clock::now();
             // 渲染到离屏 Framebuffer
             FISIR::RHIRenderCommandList cmdList(rhi);
 
@@ -577,57 +673,76 @@ int main(int argc, char* argv[]) {
             cmdList.SetScissor(1024, 1024);
             for (uint32_t d = 0; d < dcCount; ++d) cmdList.DrawIndex(0, 36, d * insCount, insCount);
             cmdList.EndRenderPass();
-            // 呈现到交换链
-            auto info = swapchain->getSwapChainGetImageInfo(infoid);
-            auto frameBuf = swapchain->getSwapChainFrameBuffer(info.imageIndex);
-
-            if (frameBuf) {
-                cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
-                cmdList.SetPipelineState(swapchainPipeline);
-                cmdList.SetResourcePack(swapchain->getSwapchainResourcePack());
-                cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
-                cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
-                cmdList.DrawPrimitive(0, 3, 1);
-                cmdList.EndRenderPass();
+            // 呈现到交换链（无交换链时整个 present pass 跳过 —— 离屏 colorTexture 就是最终产物）
+            if (hasSwapChain) {
+                auto frameBuf = swapchain->getSwapChainFrameBuffer(info.imageIndex);
+                if (frameBuf) {
+                    cmdList.BeginRenderPass(frameBuf, 0, clearPresent);
+                    cmdList.SetPipelineState(swapchainPipeline);
+                    cmdList.SetResourcePack(swapchain->getSwapchainResourcePack());
+                    cmdList.SetViewPort(0, 0, viewport->getViewportWidth(), viewport->getViewportHeight(), 1.0f, 0.0f);
+                    cmdList.SetScissor(viewport->getViewportWidth(), viewport->getViewportHeight());
+                    cmdList.DrawPrimitive(0, 3, 1);
+                    cmdList.EndRenderPass();
+                }
             }
-            // 截图帧：读回在同一条渲染队列内完成（SRO → TransferSrc → SRO），无需跨队列所有权转移。
+            // 截图帧：读回**写在本帧同一条命令缓冲里**（SRO → TransferSrc → 拷贝 → SRO），
+            // 顺序由「同一页、按录制序提交」天然保证：拷贝必然落在本帧渲染之后、下一帧渲染之前。
+            // 原先是另开一条列表异步提交，会和下一帧对同一张离屏纹理的渲染重叠 —— 偶发捕获到
+            // 相位不同的帧（实测同一设备两次运行位图不同，跨设备比对因此不可信）。
             const bool isScreenshotFrame = getFrames && frameCount >= getFrameBegin && frameCount <= getFrameEnd;
             FISIR::RHIBuffer* readback = nullptr;
             if (isScreenshotFrame) {
                 readback = rhi->RHICreateBuffer(readbackInfo);
-            }
-
-            // 渲染提交：wait = swapchain 可用，signal = 呈现信号量。
-            std::vector<FISIR::RHISemaphore*> renderWaits{ info.avaliable };
-            std::vector<FISIR::RHISemaphore*> renderSignals{ info.renderFinish };
-            cmdList.End(info.finishFence, renderWaits, renderSignals);
-            info.finishFence->waitFenceSubmited();
-
-            swapchain->present(infoid);
-
-            // 截图：在渲染队列内把离屏 colorTexture 拷贝到 readback 缓冲。与上一帧渲染同队列，
-            // 提交顺序天然保证拷贝发生在离屏渲染完成之后；主线程只提交命令，等待 + 写文件放到后台线程。
-            if (isScreenshotFrame) {
-                FISIR::RHIRenderCommandList screenshotCmdList(rhi);
                 FISIR::RHITexture* texArray[] = { colorTexture };
-                // 转出：ShaderReadOnly → TransferSrc（同队列）
-                screenshotCmdList.TransitionTextures(texArray, 1,
+                cmdList.TransitionTextures(texArray, 1,
                     FISIR::ResourceAccess::ShaderReadOnly, FISIR::ResourceAccess::TransferSrc,
                     FISIR::TextureLayout::ShaderReadOnlyOptimal, FISIR::TextureLayout::TransferSrcOptimal,
                     FISIR::RHIUsingStage::FragmentShaderStage, FISIR::RHIUsingStage::PipelineTransferStage);
-                screenshotCmdList.CopyImageToBuffer(colorTexture, readback, 0, 0, 1, { 0,0,0 }, 0, { 1024, 1024, 1 });
-                // 转回：TransferSrc → ShaderReadOnly（还原布局，与 renderpass finalLayout 一致）
-                screenshotCmdList.TransitionTextures(texArray, 1,
+                cmdList.CopyImageToBuffer(colorTexture, readback, 0, 0, 1, { 0,0,0 }, 0, { 1024, 1024, 1 });
+                // 转回 SRO：后面的 present pass 还要采样这张纹理，且要与 renderpass 的 finalLayout 一致。
+                cmdList.TransitionTextures(texArray, 1,
                     FISIR::ResourceAccess::TransferSrc, FISIR::ResourceAccess::ShaderReadOnly,
                     FISIR::TextureLayout::TransferSrcOptimal, FISIR::TextureLayout::ShaderReadOnlyOptimal,
                     FISIR::RHIUsingStage::PipelineTransferStage, FISIR::RHIUsingStage::FragmentShaderStage);
+            }
 
-                FISIR::RHIFence* screenshotFence = rhi->RHICreateFence(false, "ScreenshotFence");
-                screenshotCmdList.End(screenshotFence, {}, {});
-                //screenshotFence->waitFenceSubmited();
+            if (hasSwapChain) {
+                // 渲染提交：wait = swapchain 可用，signal = 呈现信号量。
+                std::vector<FISIR::RHISemaphore*> renderWaits{ info.avaliable };
+                std::vector<FISIR::RHISemaphore*> renderSignals{ info.renderFinish };
+                // 呈现录成指令（写在 End 之前），由 RHI 线程在本页提交之后执行 vkQueuePresentKHR。
+                cmdList.Present(swapchain, infoid);
+                cmdList.End(info.finishFence, renderWaits, renderSignals);
+                shutdownFences[infoid] = info.finishFence;
+            } else {
+                // 无交换链：用自建围栏提交（只当节流与截图等待用），每个缓冲槽一个、跨帧复用
+                //（与交换链的槽围栏同一套用法，避免每帧新建/销毁围栏）。
+                if (!frameFences[infoid]) frameFences[infoid] = rhi->RHICreateFence(false, "HeadlessFrameFence");
+                frameFenceUsed[infoid] = true;
+                // **提交前必须 reset()**：交换链路径是 tryAcquire 里的 slot.finishFence->reset() 干的活。
+                // 少了它，围栏对象里那个「已置位」缓存不会清，后面所有 wait() 都立刻返回
+                //（VulkanFence::wait 先看缓存），截图 worker 就会读到还没拷贝完的缓冲 ——
+                // 现象是 headless 每次运行的位图都不一样（实测）。
+                frameFences[infoid]->reset();
+                cmdList.End(frameFences[infoid], {}, {});
+                shutdownFences[infoid] = frameFences[infoid];
+            }
+            auto tRec1 = std::chrono::steady_clock::now();
+            if (hasSwapChain) info.finishFence->waitFenceSubmited();
+            else             frameFences[infoid]->waitFenceSubmited();
+            auto tWt1 = std::chrono::steady_clock::now();
 
-                // 提交任务给 worker 线程：GPU 完成等待与写文件在后台，主线程不阻塞。
-                while(!screenshotTasks.push({ screenshotFence, readback, frameCount }));
+            // present 已指令化、由 RHI 线程执行，主线程这里不再有 CPU 呈现开销
+            // （accPresent 恒为 ~0）；tPr1 保留，作为「其它」时间段的起点。
+            auto tPr1 = tWt1;
+
+            // 截图任务在**本帧提交之后**交给 worker：它只等本帧那条围栏（不再自建 ScreenshotFence，
+            // 所以 ownsFence=false），GPU 完成等待与写文件仍然后台做，主线程不阻塞。
+            if (isScreenshotFrame) {
+                FISIR::RHIFence* frameFence = hasSwapChain ? info.finishFence : frameFences[infoid];
+                screenshotPushed.fetch_add(1);
+                while(!screenshotTasks.push({ frameFence, readback, frameCount, /*ownsFence=*/false }));
             }
 
             angle += 0.02f;
@@ -636,9 +751,23 @@ int main(int argc, char* argv[]) {
             if (runPerfTest) {
                 auto frameEnd = std::chrono::steady_clock::now();
                 frameTimes.push_back(std::chrono::duration<double, std::milli>(frameEnd - now).count());
+                auto us = [](auto a, auto b){ return std::chrono::duration<double, std::micro>(b - a).count(); };
+                accAcquire   += us(tAcq0, tAcq1);
+                accRecord    += us(tRec0, tRec1);
+                accWaitSubmit+= us(tRec1, tWt1);
+                accPresent   += us(tWt1, tPr1);
+                accOther     += us(now, tAcq0) + us(tAcq1, tRec0) + us(tPr1, frameEnd);
+                accFrames++;
                 if (frameTimes.size() >= testFrameCount) break;
             }
+
+            // 无窗口模式（hidden / headless）没有"点叉关窗口"这个出口：跑够 -ExitAfter 帧就收尾。
+            if (exitAfterFrames && frameCount >= exitAfterFrames) {
+                Info("ExitAfter {} 帧到达，正常收尾", exitAfterFrames);
+                break;
+            }
         }
+        if (exitAfterFrames && frameCount >= exitAfterFrames) break;
 
         // ---------- 14. 性能报告导出（按 DrawCall 分组）----------
         if (runPerfTest) {
@@ -667,11 +796,40 @@ int main(int argc, char* argv[]) {
             std::string csvPath = "PerfFrameTimes_DC" + std::to_string(dcCount) + "_INS" + std::to_string(insCount) + ".csv";
             FISIR::writePerformanceReport(cfg, measured, mdPath, csvPath);
             Info("Performance report exported: {} / {}", mdPath, csvPath);
+
+            if (accFrames) {
+                Info("PHASE[us] acquire={:.1f} record={:.1f} waitSubmit={:.1f} present={:.1f} other={:.1f}",
+                    accAcquire / accFrames, accRecord / accFrames,
+                    accWaitSubmit / accFrames, accPresent / accFrames, accOther / accFrames);
+            }
+            // GPU 时间戳（最近一帧）与估算占用率 = GPU 帧耗时 / CPU 平均帧耗时。
+            double gpuMs = rhi->getLastGPUTimeMs();
+            double avgFrameMs = measured.empty() ? 0.0 :
+                std::accumulate(measured.begin(), measured.end(), 0.0) / static_cast<double>(measured.size());
+            if (gpuMs > 0.0 && avgFrameMs > 0.0)
+                Info("GPU[ms] last={:.3f}  occupancy~={:.1f}%", gpuMs, 100.0 * gpuMs / avgFrameMs);
         }
     }
 
 cleanup:
     // ---------- 14. 清理 ----------
+    // 先等在飞的截图任务收尾：worker 线程要等 GPU 拷贝完成才写文件，而拷贝读的正是下面要销毁的
+    // colorTexture。少了这一步，"-ExitAfter 紧跟在截图帧之后"就会撞上在飞的拷贝（实测 0xC0000409）。
+    if (getFrames) {
+        for (int waited = 0; waited < 500 && screenshotDone.load() < screenshotPushed.load(); ++waited)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (screenshotDone.load() < screenshotPushed.load())
+            Warn("退出时仍有 {}/{} 张截图未落盘（等待超时 5s），继续清理",
+                 screenshotPushed.load() - screenshotDone.load(), screenshotPushed.load());
+    }
+    // 关键顺序：**先让在飞的那几帧 GPU 落地，再销毁任何资源**。
+    // RHI 是按页异步翻译/提交的：命令缓冲里绑着的 framebuffer/纹理/缓冲如果先被销毁，
+    // 校验层会直接报 "objects bound to the command buffer were invalidated"，
+    // 之后就是访问违例（Debug 实测 0xC0000005；Release 侥幸没崩，但同样是竞态）。
+    for (int i = 0; i < 5; ++i) {
+        FISIR::RHIFence* f = shutdownFences[i];
+        if (f && f->isSubmited()) f->wait();          // 等这一次提交真的跑完（不是只等提交出去）
+    }
     // 由 RHI 创建的所有资源对象都应经由 RHI 接口销毁，
     // 确保 new/delete 在同一个模块（RHIVK.dll）内完成，
     // 避免跨模块 new/delete 不匹配导致的堆损坏。
@@ -693,6 +851,10 @@ cleanup:
     if (depthTexture) rhi->RHIDestroyTexture(depthTexture);
     if (uploadBuffer) rhi->RHIDestroyBuffer(uploadBuffer);
     if (inputTexture) rhi->RHIDestroyTexture(inputTexture);
+    // headless 自建的槽围栏（上面的 wait 已经让 GPU 落定，这里可以安全还给池子）
+    for (int i = 0; i < 5; ++i) {
+        if (frameFences[i] && frameFenceUsed[i]) rhi->RHIDestroyFence(frameFences[i]);
+    }
     screenshotStop.store(true);
     for (auto& t : screenshotWorkers) if (t.joinable()) t.join();
     Info("Destroy RHI Done!");

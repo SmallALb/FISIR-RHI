@@ -22,6 +22,9 @@ namespace FISIR{
 
 		virtual Pipeline_t getPipelineHandle() override;
 
+		// 管线布局句柄：vkCmdPushConstants 需要它（前端只当不透明指针传递）
+		virtual void* getPipelineLayoutHandle() override;
+
 
 		virtual bool isComputePipeline() const override;
 

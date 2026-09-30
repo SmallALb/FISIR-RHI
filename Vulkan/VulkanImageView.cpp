@@ -8,7 +8,7 @@
 #include "VulkanTexture.h"
 
 namespace FISIR {
-	static VkImageViewType getVulkanViewTypeFromTextureType(TextureType typ) {
+	uint32_t getVulkanViewTypeFromTextureType(TextureType typ) {
 		switch (typ) {
 		case TextureType::TEXTURE1D:
 			return VK_IMAGE_VIEW_TYPE_1D;
@@ -22,8 +22,12 @@ namespace FISIR {
 		return VK_IMAGE_VIEW_TYPE_1D;
 	}
 
-	static VkImageAspectFlags getVulkanAspectFlagsForUsing(TextureUseForFlags usefor) {
+	static VkImageAspectFlags getVulkanAspectFlagsForUsingImpl(TextureUseForFlags usefor) {
 		return usefor & TextureUseForDepthStencilAttachment ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	}
+
+	uint32_t getVulkanAspectFlagsForUsing(TextureUseForFlags usefor) {
+		return (uint32_t)getVulkanAspectFlagsForUsingImpl(usefor);
 	}
 
 	struct __VkImageViewData {
@@ -44,10 +48,10 @@ namespace FISIR {
 		VkImageViewCreateInfo info{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = static_cast<VkImage>(texture->getResourceAPIHandle()),
-		.viewType = getVulkanViewTypeFromTextureType(texture->getTextureType()),
+		.viewType = (VkImageViewType)getVulkanViewTypeFromTextureType(texture->getTextureType()),
 		.format = (VkFormat)(static_cast<VulkanTexture*>(texture))->getVkColorType(),
 		.subresourceRange = {
-			.aspectMask = getVulkanAspectFlagsForUsing(texture->getTextureUseFor()),
+			.aspectMask = (VkImageAspectFlags)getVulkanAspectFlagsForUsing(texture->getTextureUseFor()),
 			.baseMipLevel = 0,
 			.levelCount = texture->getMipLevelCount(),
 			.baseArrayLayer = 0,

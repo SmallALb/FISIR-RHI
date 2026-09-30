@@ -151,7 +151,7 @@ namespace FISIR {
 
 				std::array<char, 5*1024> buffer;
 				snprintf(buffer.data(), buffer.size(),
-					"\033[0mFISIRLOG[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s%s\033[0m]: %s",
+					"\033[0m[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s%s\033[0m]: %s",
 					local_tm.tm_year + 1900,
 					local_tm.tm_mon + 1,
 					local_tm.tm_mday,

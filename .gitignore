@@ -26,3 +26,25 @@ vendor/slang-source/
 .crossnote
 
 .vscode
+
+# ── 本地 AI 代理工具链（DSH 链接与插件缓存，不入库） ──────────
+.dsh-link/
+.dsh-plugins/
+
+# ── 本地编译中间产物 ──────────────────────────────────────────
+Debug/
+Release/
+RelWithDebInfo/
+x64/
+*.pdb
+*.ilk
+*.ipch
+*.ipdb
+*.obj
+*.log
+
+# ── 本地模型源文件（下载/离线转换用的原始网格，不入库） ────────
+Example/Nanite/Res/*.obj
+Example/Nanite/Res/*.ply
+Example/BunnyPBR/Res/*.obj
+Example/BunnyPBR/Res/bunny_hi.ply

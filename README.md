@@ -96,7 +96,7 @@ TextureCube.exe -Test -DC 10 -DC 100 -DC 1000 -Frames 2000 -Warmup 60
 
 
 ##### BunnyPBR —— 多实例 PBR + 碰撞仿真基准
-**负载**：斯坦福兔子 `bunny.ply` 实例化渲染 ×N（GGX dielectric PBR + 方向光 + 点光），每帧一次 compute 刚体碰撞仿真（积分 + OBB-OBB SAT 冲量 + 撞墙 + 自旋）。离屏 1280×720，每帧 2 渲染通道（离屏 PBR + 呈现）+ 1 compute dispatch。
+**负载**：斯坦福兔子实例化渲染 ×N（GGX dielectric PBR + 方向光 + 点光），每帧一次 compute 刚体碰撞仿真（积分 + OBB-OBB SAT 冲量 + 撞墙 + 自旋）。离屏 1280×720，每帧 2 渲染通道（离屏 PBR + 呈现）+ 1 compute dispatch。默认模型为高采样原始扫描件 `bunny_hi.ply`（35947 顶点 / 69451 三角面），可用 `-Model` 或删除该文件回退到降采样 `bunny.ply`。交换链默认 3 槽（帧在飞数）、MAILBOX 呈现，可用 `-Slots` / `-VSync` 调整。
 </div>
 
 ###### 使用方式
@@ -112,8 +112,16 @@ BunnyPBR.exe -Test -C 10 -C 100 -C 500 -C 1000 -C 2000 -Frames 5000 -Warmup 100
 | `-C X` | 兔子数量（实例数），可多次指定（每个 `-C` 生成一组测试） | 10 |
 | `-Frames N` | 每组测试帧数 | 5000 |
 | `-Warmup N` | 剔除的预热帧数 | 60 |
+| `-Model P` | 显式指定 PLY 模型路径 | 候选表回退 |
+| `-Slots N` | 交换链槽位数（帧在飞数）；交换链会夹取到「≤ 图像数」 | 3 |
+| `-VSync` | 开启垂直同步（`swapchain->sync(true)`：FIFO 呈现模式 + 重建交换链） | 关 |
 
 每组导出 `PerfReport_C<X>.md` 与 `PerfFrameTimes_C<X>.csv`。
+
+###### 交换链槽位与垂直同步（RHI 新接口）
+
+- `RHICreateViewport(w, h, fmt, hwnd, slotCount)`：槽位数由用户指定，运行期用 `swapchain->getSlotCount()` 取实际生效值（被夹取到 `[1, 图像数]`，超过图像数会重现信号量复用竞态并告警）。
+- `swapchain->sync(true)` / `sync(false)`：切换垂直同步（FIFO ↔ MAILBOX/IMMEDIATE）。呈现模式在 `vkCreateSwapchainKHR` 时固定，故 `sync()` 登记目标模式并请求重建，实际重建在下一次 `acquireGetImageInfoID()`（先 `vkDeviceWaitIdle`）——可在帧间安全调用；`isSyncEnabled()` 返回请求状态，实际模式见日志 `SwapChain: N images, M slots, present mode = ...`。
 
 ###### 结果（每组 4900 有效帧，每兔 16301 三角面）
 
@@ -127,8 +135,10 @@ BunnyPBR.exe -Test -C 10 -C 100 -C 500 -C 1000 -C 2000 -Frames 5000 -Warmup 100
 
 ###### 模型数据
 
-- `Res/bunny.ply`：Stanford 兔子的降采样版本（8171 顶点 / 16301 三角面，原始 bun_zipper 为 35947 顶点），ASCII PLY；加载时中心化 + 均匀缩放 + 面积加权法线生成。
-- 缺失 `.ply` 时自动退化为程序化球体网格，保证开箱即跑。
+- `Res/bunny_hi.ply`：**高采样原始扫描件**（Stanford 归档 `bun_zipper.ply`，35947 顶点 / 69451 三角面，ASCII PLY，含 confidence/intensity 冗余字段）——默认首选。
+- `Res/bunny.ply`：降采样版本（8171 顶点 / 16301 三角面），`bunny_hi.ply` 缺失时回退；上表基准数据即以此模型测得。
+- 加载：中心化 + 均匀缩放 + 面积加权法线生成；PLY 头部属性表驱动，顶点多余字段与 n > 3 的多边形面自动跳过（ASCII / binary_little_endian）。
+- 可用 `-Model <path.ply>` 显式指定；两级 PLY 都缺失时退化为程序化球体网格，保证开箱即跑。
 
 ###### 性能特征
 

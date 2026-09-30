@@ -77,8 +77,11 @@
     //创建Gpu缓存
 		virtual RHIBuffer* RHICreateBuffer(const BufferInfo& bufferInfo) = 0;
 
-    //创建链接窗口的RHIViewPort
-		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type, void* WindowHandle) = 0;
+    //创建呈现目标（RHIViewPort）：deviceType 决定 deviceHandle 指向哪种句柄布局，见 RHIDisplay.h
+    //  Win32Window → Win32DisplayHandle{ hinstance, hwnd }；Headless → nullptr（无 surface/交换链）
+		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type,
+		                                       DisplayDeviceType deviceType, void* deviceHandle,
+		                                       uint32_t swapChainSlotCount = DEFAULT_SWAPCHAIN_SLOT_COUNT) = 0;
 
     //创建管线
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) = 0;

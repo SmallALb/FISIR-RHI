@@ -53,7 +53,13 @@ namespace FISIR {
 
 		~VulkanDevice();
 
-		bool Init(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache);
+		bool Init();
+
+		// 运行期（Init 之后）新建视口用：在该 surface 支持呈现、且**设备创建时就已建好队列**的
+		// 队列族里挑一个（图形 → 计算 → 传输）。Init 那套"每视口一个独占呈现队列"必须在
+		// vkCreateDevice 时定下来，事后加不了队列，所以运行时只能复用既有队列。
+		// 返回 -1 = 三个队列族都不支持该 surface 呈现。
+		int32_t FindPresentQueueFamilyForSurface(VkSurfaceKHR_T* surface);
 
 		void Destory();
 
@@ -76,6 +82,10 @@ namespace FISIR {
 		uint32_t getMaxDescriptorSetCombinedImageSamplers() const;
 
 		uint32_t getMaxDescriptorSetUniformBuffers() const;
+
+		// GPU 时间戳查询的时钟周期（纳秒/刻度），用于把 vkCmdWriteTimestamp 读回的
+		// 刻度差换算为真实耗时。设备不支持时间戳时返回 0。
+		float getTimestampPeriod() const;
 
 		void setResourceAccess(RHIResource* resource, ResourceAccess access);
 		
@@ -104,7 +114,7 @@ namespace FISIR {
 	private:
 		void QueryDescriptorSizes();
 
-		bool InitDevice(const std::vector<VulkanViewport*>& viewports, std::unordered_map<RHIViewport*, VulkanSwapChain*>& ViewPortSwapChainCache);
+		bool InitDevice();
 	private:
 		__VkDeviceData* mData;
 		VulkanMemoryAllocator* mAllocator;

@@ -56,7 +56,7 @@ namespace FISIR{
 
 		void setSubmited();
 
-		bool isSignaled() ;
+		bool isSignaled() override;
 		
 
 #ifdef _DEBUG

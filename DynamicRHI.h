@@ -6,6 +6,8 @@
 
 #include "RHITypes.h"
 #include "RHICommands.h"
+#include "RHISwapChain.h"
+#include "RHIDisplay.h"
 namespace FISIR {	
 	class RHITexture;
 	class RHIBuffer;
@@ -33,7 +35,14 @@ namespace FISIR {
 
 		virtual RHIBuffer* RHICreateBuffer(const BufferInfo& bufferInfo) = 0;
 
-		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type, void* WindowHandle) = 0;
+		// 建一个呈现目标。deviceType 决定 deviceHandle 指向哪种句柄布局（见 RHIDisplay.h）：
+		//   · Win32Window → Win32DisplayHandle{ hinstance, hwnd }（就是示例里原来的 win32Data 布局）
+		//   · Headless    → deviceHandle = nullptr：不建 surface/交换链，RHIGetSwapChain() 返回 nullptr，
+		//                   调用方自行渲染到离屏目标（服务器/CI 渲染）
+		//   · 其余类型见 RHIDisplay.h；后端未实现的会 Error 并返回一个没有 surface 的视口
+		virtual RHIViewport* RHICreateViewport(uint32_t iniWidth, uint32_t initHeight, TextureCOLORType type,
+											   DisplayDeviceType deviceType, void* deviceHandle,
+											   uint32_t swapChainSlotCount = DEFAULT_SWAPCHAIN_SLOT_COUNT) = 0;
 
 		virtual RHIPipeline* RHICreatePipeline(const RHIPipelineState& PipelineState) = 0;
 
@@ -71,6 +80,9 @@ namespace FISIR {
 		virtual void RHIDestroyResourcePack(RHIResourcePackResult& pack) = 0;
 
 		virtual void RHIDestroyFrameBuffer(RHIFrameBuffer* frameBuffer) = 0;
+
+		// 最近一帧 GPU 执行耗时（毫秒）。基于 GPU 时间戳查询；后端不支持时返回 0。
+		virtual double getLastGPUTimeMs() const { return 0.0; }
 
 	};
 

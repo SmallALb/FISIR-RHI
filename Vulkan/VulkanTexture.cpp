@@ -152,6 +152,27 @@ namespace FISIR {
 		mData->sampleCount = info.sampleCount;
 		mData->useFor = info.useFor;
 		auto Allocator = mDevice->getAllocator();
+
+		// 跨队列族共享纹理：与 VulkanBuffer 的同名逻辑一致 —— 列出（去重后的）全部队列族索引，
+		// 以 CONCURRENT 创建，从而允许异队列族直接读写而无需显式所有权转移。
+		// 仅当调用方显式开启时才使用，默认仍为 EXCLUSIVE（保持既有行为）。
+		uint32_t concurrentFamilies[3] = { 0, 0, 0 };
+		uint32_t concurrentFamilyCount = 0;
+		if (info.concurrentSharing) {
+			const uint32_t families[3] = {
+				mDevice->getGraphicQueue()->getFamilyIndex(),
+				mDevice->getComputeQueue()->getFamilyIndex(),
+				mDevice->getTransferQueue()->getFamilyIndex()
+			};
+			for (uint32_t i = 0; i < 3; ++i) {
+				bool dup = false;
+				for (uint32_t j = 0; j < concurrentFamilyCount; ++j) {
+					if (concurrentFamilies[j] == families[i]) { dup = true; break; }
+				}
+				if (!dup) concurrentFamilies[concurrentFamilyCount++] = families[i];
+			}
+		}
+
 		VkImageCreateInfo imageInfo = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.flags = info.type == TextureType::TEXTUREARRAY ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : (VkImageCreateFlags)0,
@@ -165,7 +186,9 @@ namespace FISIR {
 			.usage = usage != 0  
 						? usage 
 						: getVulkanImageUsage(info.useFor),
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.sharingMode = info.concurrentSharing ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+			.queueFamilyIndexCount = info.concurrentSharing ? concurrentFamilyCount : 0,
+			.pQueueFamilyIndices = info.concurrentSharing ? concurrentFamilies : nullptr,
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		 };
 		 vkCreateImage(mDevice->getLogicalDevice(), &imageInfo, nullptr, &mData->image);
@@ -231,7 +254,8 @@ namespace FISIR {
 
 	void VulkanTexture::transitionLayout(TextureLayout newLayout) {
 		mData->currentLayout = getVulkanImageLayout(newLayout);
-		Warn("The Image Ox{:x} Layout Become : {}", (size_t)(this), getTextureLayoutName(newLayout));
+		// 布局跟踪是正常路径（每帧每个纹理都会走到），只在 Debug 构建里留痕，Release 不打 —— 否则刷屏。
+		Debug("Texture 0x{:x} layout -> {}", (size_t)(this), getTextureLayoutName(newLayout));
 
 	}
 

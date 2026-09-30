@@ -229,13 +229,13 @@ namespace FISIR{
 
 
 		if (Que.pop(index)) {
-			//vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
+			vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
 			return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
 		}
 
 		std::lock_guard<std::mutex> lock(mCommandBufferMutex);
 		if (Que.pop(index)) {
-			//vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
+			vkResetCommandBuffer(Pool[index / Count][index % Count], 0);
 			return CBInfo(Pool[index / Count][index % Count], cbType, mPoolType, this, index);
 		}
 		
@@ -395,9 +395,11 @@ namespace FISIR{
 	}
 
 	void CommandExecuteThreadPool::pushCommandBatch(RingCommandPool::Page::BatchInfo batch, ExecuteResultData* result, std::atomic_uint32_t* finishCount) {
-		if ((size_t)batch.page == 0xDDDDDDDDDDDDDDDD) {
-			//WTF R U GET ?????
+		if (batch.page == nullptr || batch.ReadBegin >= batch.ReadEnd) {
+			Error("pushCommandBatch invalid batch: page={}, [{},{})",
+				(void*)batch.page, batch.ReadBegin, batch.ReadEnd);
 			__debugbreak();
+			return;   // 或断言
 		}
 		NeedExecutePages.push({ batch, result, finishCount });
 	}
@@ -418,14 +420,23 @@ namespace FISIR{
 			auto& [batchInfo, result, finishCount] = exeTask;
 
 			RHICommandT currentCmd = batchInfo.getCommandType();
-			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals] = *result;
+			// 绑定名顺序必须与 ExecuteResultData 的成员声明顺序严格一致。
+			auto& [framebuffer, clearval, renderPassEndTag, commandsEndTag, subpassIndex, cmdInfo, fence, waits, signals, presents, inheritFrameBuffer, inheritSubpass] = *result;
 			auto cmdPool = usingManager->getCommandPool(batchInfo.page->Pool->cmdType);
 			cmdInfo = cmdPool->createCommandBuffer(CommandBufferType::_Secondary_);
 
 			VkCommandBufferInheritanceInfo inheritanceInfo{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
 			};
-			if (currentCmd == RHICommandT::BeginRenderPass) {
+			bool isRenderPassContinuation = false;
+			RHIPipeline* currentPipeline = nullptr;   // 当前绑定的管线（PushConstant 取它的布局）
+			if (inheritFrameBuffer) {
+				// 拆分后的续接段：继承信息由 RHI 线程预置，本段不以 BeginRenderPass 开头。
+				inheritanceInfo.renderPass = static_cast<VkRenderPass>(inheritFrameBuffer->getFrameRenderPass()->getRenderPassHandle());
+				inheritanceInfo.framebuffer = static_cast<VkFramebuffer>(inheritFrameBuffer->getResourceAPIHandle());
+				inheritanceInfo.subpass = inheritSubpass;
+				isRenderPassContinuation = true;
+			} else if (currentCmd == RHICommandT::BeginRenderPass) {
 				BeginRenderPass_CmdInfo info{};
 				if (batchInfo.getBatchData(info)) {
 					framebuffer = static_cast<VulkanFrameBuffer*>(info.frame);
@@ -435,6 +446,7 @@ namespace FISIR{
 						inheritanceInfo.subpass = info.subpassIndex;
 						subpassIndex = info.subpassIndex;
 						clearval = info.clearValue;
+						isRenderPassContinuation = true;
 					} else {
 						Error("Thread {}: Invalid frameBuffer ptr=0x{:x} (currentCmd={}, ReadBegin={}, ReadEnd={}, page=0x{:x})",
 							ThreadID, (size_t)framebuffer, (int)currentCmd, batchInfo.ReadBegin, batchInfo.ReadEnd, (size_t)batchInfo.page);
@@ -449,7 +461,7 @@ namespace FISIR{
 
 			VkCommandBufferBeginInfo BeginInfo{
 				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | (currentCmd == RHICommandT::BeginRenderPass ? VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT : (VkCommandBufferUsageFlags)0),
+				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | (isRenderPassContinuation ? VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT : (VkCommandBufferUsageFlags)0),
 				.pInheritanceInfo = &inheritanceInfo
 			};
 			vkBeginCommandBuffer(cmdInfo.buffer, &BeginInfo);
@@ -497,6 +509,14 @@ namespace FISIR{
 							? VK_PIPELINE_BIND_POINT_COMPUTE
 							: VK_PIPELINE_BIND_POINT_GRAPHICS;
 						vkCmdBindPipeline(cmdInfo.buffer, bindPoint, static_cast<VkPipeline>(info.pipeline->getPipelineHandle()));
+						currentPipeline = info.pipeline;   // PushConstant 要用它的管线布局
+						break;
+					}
+					case RHICommandT::PushConstant: {
+						PushConstant_CmdInfo info;
+						batchInfo.getBatchData(info);
+						CmdPushConstant(mDevice, cmdInfo.buffer, currentPipeline,
+							info.offset, info.size, info.data, info.usingStage);
 						break;
 					}
 					case RHICommandT::BindVertexBuffer: {
@@ -526,7 +546,7 @@ namespace FISIR{
 						BindScissor_CmdInfo info;
 						batchInfo.getBatchData(info);
 						VkRect2D scissor{
-							{0, 0}, {info.width, info.height}
+							{info.x, info.y}, {info.width, info.height}
 						};
 						vkCmdSetScissor(cmdInfo.buffer, 0, 1, &scissor);
 						break;
@@ -592,8 +612,18 @@ namespace FISIR{
 								.srcQueueFamilyIndex = srcFamily,
 								.dstQueueFamilyIndex = dstFamily,
 								.image = static_cast<VkImage>(info.texture[i]->getResourceAPIHandle()),
+								// 子资源范围必须覆盖**整张纹理**：原先写死
+								// {COLOR, 0, 1, 0, 1} —— 对 1 mip / 1 层的 2D 纹理恰好等价，
+								// 但立方体贴图（arrayLayers == 6）只会转第 0 层，
+								// 其余层仍是 Undefined，随后 vkCmdCopyBufferToImage /
+								// 采样都会撞上「descriptor/命令要求的 layout 与实际不符」。
+								// 顺带把 aspect 也按用途推导，深度附件纹理不再被当成 COLOR。
 								.subresourceRange = {
-									VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
+									getVulkanAspectFlagsForUsing(info.texture[i]->getTextureUseFor()),
+									0,
+									info.texture[i]->getMipLevelCount(),
+									0,
+									info.texture[i]->getLayerCount(),
 								}
 							};
 							cmdInfo.QuoteResources[info.texture[i]] = { info.beginAccessWhenDone, info.newLayout };
@@ -674,12 +704,15 @@ namespace FISIR{
 						batchInfo.getBatchData(info);
 						VkBuffer srcBuffer = static_cast<VkBuffer>(info.src->getResourceAPIHandle());
 						VkImage dstImage = static_cast<VkImage>(info.dst->getResourceAPIHandle());
-						uint32_t rowLength = info.dstSize.width;
-						uint32_t alignedRowLength = ((rowLength + 3) & ~3);
+						// CopyToTexture 的源缓冲按定义是紧密排布（接口里没有源行距参数），
+						// 所以 VkBufferImageCopy 的 bufferRowLength / bufferImageHeight 必须给 0
+						// （0 = 按 imageExtent 紧密读取）。原先把宽度向上取整到 4 的倍数，只有当宽度
+						// 本来就是 4 的倍数时才恰好等价；否则 GPU 会按更大的行距跨行读源缓冲 —— 越界
+						// 读 + 图像错行。（ImGui 的字体图集宽度不保证是 4 的倍数，正好会踩中。）
 						VkBufferImageCopy region{
 							.bufferOffset = info.srcOffset,
-							.bufferRowLength = alignedRowLength,
-							.bufferImageHeight = info.dstSize.height,
+							.bufferRowLength = 0,
+							.bufferImageHeight = 0,
 							.imageSubresource = {
 								.aspectMask = getVulkanAspectFlagsForUsing(info.dst->getTextureUseFor()),
 								.mipLevel = info.mipLevel,
@@ -721,8 +754,15 @@ namespace FISIR{
 						vkCmdDispatch(cmdInfo.buffer, info.groupCountX, info.groupCountY, info.groupCountZ);
 						break;
 					}
+					case RHICommandT::Present: {
+						Present_CmdInfo info;
+						batchInfo.getBatchData(info);
+						if (info.swapchain) result->presents.emplace_back(info.swapchain, info.frameID);
+						break;
+					}
 					case RHICommandT::End: {
 						End_CmdInfo info;
+
 						batchInfo.getBatchData(info);
 						fence.store(static_cast<VulkanFence*>(info.fence), std::memory_order_release);
 						if (info.waits != nullptr) {

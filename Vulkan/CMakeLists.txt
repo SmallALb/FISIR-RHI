@@ -34,6 +34,20 @@ set_target_properties(RHIVK PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/RHI/Vulkan
 )
 
+# 上面的对齐只对单配置生成器（Ninja/Makefile）成立：多配置生成器（VS）会再给
+# RUNTIME_OUTPUT_DIRECTORY 追加配置子目录，于是 DLL 落到 bin/RHI/Vulkan/<Config>/，
+# 而 exe 在 bin/<Config>/ 下、按 "RHI/Vulkan/RHIVK.dll" 找 —— 找不到就会静默加载
+# 到上一次手工拷贝的旧 DLL（结构体一旦变过就是未定义行为/崩溃）。这里补一条拷贝，
+# 把它放到 exe 真正会去读的位置。单配置生成器下 CMAKE_CONFIGURATION_TYPES 为空，跳过。
+if(CMAKE_CONFIGURATION_TYPES)
+    add_custom_command(TARGET RHIVK POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:RHIVK>"
+            "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/RHI/Vulkan/RHIVK.dll"
+        COMMENT "Copying RHIVK.dll -> exe 目录 (bin/$<CONFIG>/RHI/Vulkan)"
+    )
+endif()
+
 # ── Platform definitions ─────────────────────────────────────
 if(WIN32)
     target_compile_definitions(RHIVK PRIVATE

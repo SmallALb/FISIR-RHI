@@ -4,13 +4,21 @@
 
 add_executable(Nanite
     Main.cpp
- "ClusterSelection.h" "ClisterSelection.cpp")
+    NaniteUI.cpp
+    ClisterSelection.cpp
+    # 第三方 vendored 源码直接编进本 exe（不建库）：变量由 vendor/*/CMakeLists.txt 导出
+    ${IMGUI_SOURCES}          # vendor/imgui
+    ${MESHOPTIMIZER_SOURCES}  # vendor/meshoptimizer（NaniteBuilder.h 的聚簇/简化）
+    ${RHIIMGUI_SOURCES}       # 仓库根的 ImGui_Impl_FISIR.cpp（ImGui 的 FISIR RHI 后端）
+ "ClusterSelection.h" "NaniteUI.h")
 
 target_include_directories(Nanite
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..   # RHI root (RHI/*.h)
         ${CMAKE_CURRENT_SOURCE_DIR}         # local: NaniteMesh.h / ClusterSelection.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../glm  # shared glm (Example/glm)
+        ${IMGUI_INCLUDE_DIR}                # vendor/imgui
+        ${MESHOPTIMIZER_INCLUDE_DIRS}       # vendor/meshoptimizer 的 src / demo
         ${Vulkan_INCLUDE_DIRS}
         ${Vulkan_INCLUDE_DIRS}/dxc
 )

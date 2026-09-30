@@ -1,6 +1,9 @@
 #include "VulkanSwapChian.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -89,14 +92,53 @@ namespace FISIR {
 
     struct __VkSwapChainData {
         VkSwapchainKHR swapchain {VK_NULL_HANDLE};
-        VkImage swapChainImageHandles[MAX_SWAPCHAIN_FRAME] {VK_NULL_HANDLE};
+        std::vector<VkImage> swapChainImageHandles;   // 大小 = 交换链实际图像数
     };
 
+    // 呈现模式选择：sync 请求 FIFO（垂直同步）；否则优先无同步的 MAILBOX，其次 IMMEDIATE，
+    // 两者都不支持时退回 FIFO（规范保证 FIFO 一定可用）。
+    static VkPresentModeKHR ChoosePresentMode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, bool sync) {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, nullptr);
+        std::vector<VkPresentModeKHR> modes(count);
+        if (count) vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, modes.data());
+        auto has = [&modes](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
 
-    VulkanSwapChain::VulkanSwapChain(VulkanViewport* viewport,  uint32_t QueFamilyIndex) {
+        if (sync) return VK_PRESENT_MODE_FIFO_KHR;
+        if (has(VK_PRESENT_MODE_MAILBOX_KHR))   return VK_PRESENT_MODE_MAILBOX_KHR;
+        if (has(VK_PRESENT_MODE_IMMEDIATE_KHR)) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    static const char* PresentModeName(VkPresentModeKHR mode) {
+        switch (mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "IMMEDIATE";
+        case VK_PRESENT_MODE_MAILBOX_KHR:      return "MAILBOX";
+        case VK_PRESENT_MODE_FIFO_KHR:         return "FIFO(vsync)";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+        default:                               return "UNKNOWN";
+        }
+    }
+
+
+    VulkanSwapChain::VulkanSwapChain(VulkanViewport* viewport,  uint32_t QueFamilyIndex, uint32_t slotCount) {
         mData = new __VkSwapChainData();
         Surfaceviewport = viewport;
         mPresentQueFamilyIndex = QueFamilyIndex;
+        // 请求值先记下；有效槽位数（夹取到 ≤ 图像数）在 createSwapChian() 里算出。
+        RequestedSlotCount = slotCount ? slotCount : DEFAULT_SWAPCHAIN_SLOT_COUNT;
+        SlotCount = RequestedSlotCount;
+        SwapChainFrameInfos.resize(SlotCount);
+    }
+
+    void VulkanSwapChain::sync(bool enable) {
+        if (SyncEnabled.load(std::memory_order_acquire) == enable) return;
+        SyncEnabled.store(enable, std::memory_order_release);
+        // 呈现模式在 vkCreateSwapchainKHR 时固定、无法原地修改：这里只登记目标模式并请求重建，
+        // 真正的重建发生在下一次 acquireGetImageInfoID()（重建前 vkDeviceWaitIdle）。
+        needReBuildSwapChain.store(1, std::memory_order_release);
+        Info("SwapChain sync({})：Present Mode {}",
+            enable, enable ? "FIFO" : "MAILBOX/IMMEDIATE");
     }
 
     bool VulkanSwapChain::init(VulkanDevice* device, DynamicRHI* rhi) {
@@ -213,68 +255,139 @@ namespace FISIR {
     }
 
     VulkanSwapChain::~VulkanSwapChain() {
+        // 先注销：RHI 线程每轮会轮询注册表，绝不能让它再碰正在析构的交换链。
+        VulkanRHI::UnregisterSwapChain(this);
         if (PresentResourcePack.ResourcePack || PresentResourcePack.SamplerPack) {
             if (usingRHI) usingRHI->RHIDestroyResourcePack(PresentResourcePack);
         }
         if (FallbackTexture) usingRHI->RHIDestroyTexture(FallbackTexture);
         if (FallbackSampler) usingRHI->RHIDestroySampler(FallbackSampler);
         if (FallbackBuffer)  usingRHI->RHIDestroyBuffer(FallbackBuffer);
-        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++)  {
-            delete SwapChainTextures[i];
-            delete SwapChainFrameBuffers[i];
-        }
+        for (auto* tex : SwapChainTextures)    delete tex;
+        for (auto* fb  : SwapChainFrameBuffers) delete fb;
         if (mData->swapchain) vkDestroySwapchainKHR(mDevice->getLogicalDevice(), mData->swapchain, nullptr);
         delete BufferToOutPutData;
         delete PresentQueue;
+        delete mData;
     }
 
-
     uint32_t VulkanSwapChain::acquireGetImageInfoID() {
+        // 上一次请求已经完成（上一次兜底跳过时结果留到了现在）：先把结果取走。
+        // 少了这一步，mAcquire 会永远停在 2 —— 交换链即彻底卡死。
+        if (mAcquire.load(std::memory_order_acquire) == 2) {
+            mAcquire.store(0, std::memory_order_release);
+            return mAcquiredFrameID;
+        }
+        if (mAcquire.exchange(1, std::memory_order_acq_rel) != 0)
+            return RHISwapChain::FAILEID;   // 上一次请求还没被 RHI 处理完
 
+        // 兜底时刻交给 RHI 侧判（原子等待没有超时版本）：到点仍未取到图，RHI 直接回 FAILEID。
+        const uint64_t nowNs = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        mAcquireDeadlineNs.store(nowNs + kAcquireGiveUpNs, std::memory_order_relaxed);
+
+        // 原子等待：无锁、不烧 CPU，值离开 1 即醒（RHI 的 publishAcquire 里 notify_one）。
+        mAcquire.wait(1, std::memory_order_acquire);
+
+        if (mAcquire.load(std::memory_order_acquire) != 2) return RHISwapChain::FAILEID;
+        mAcquire.store(0, std::memory_order_release);
+        return mAcquiredFrameID;
+    }
+
+    // RHI 线程专用：置取图结果并唤醒主线程。
+    void VulkanSwapChain::publishAcquire(uint32_t frameID) {
+        mAcquiredFrameID = frameID;
+        mAcquire.store(2, std::memory_order_release);
+        mAcquire.notify_one();
+    }
+
+    // ── 取图：RHI 线程每轮轮询（非阻塞，绝不长时间等待）──────────────────
+    void VulkanSwapChain::tryAcquire() {
+        if (mAcquire.load(std::memory_order_acquire) != 1) return;   // 没有待处理的请求
+
+        // 兜底：请求已经被轮询到超过兜底时刻仍未取到图（图一直没空出来、最小化窗口、
+        // 驱动持续 VK_TIMEOUT……）。回一个 FAILEID 让主线程继续跑，而不是一直睡在原子等待上。
+        const uint64_t nowNs = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (nowNs >= mAcquireDeadlineNs.load(std::memory_order_relaxed)) {
+            static std::atomic<int> sGiveUps{ 0 };
+            if (sGiveUps.fetch_add(1, std::memory_order_relaxed) < 3)
+                Debug("tryAcquire: image not available within give-up window, returning FAILEID for this frame");
+            publishAcquire(RHISwapChain::FAILEID);
+            return;
+        }
+
+        if (SlotCount == 0) SlotCount = 1;      // 防御：有效槽位数恒 ≥ 1
+        CurrentFrameID %= SlotCount;
+
+        // 交换链不存在 / 被请求重建（sync()）或上次报 OUT_OF_DATE：重建只能发生在本线程
+        //（vkDeviceWaitIdle + vkDestroy/CreateSwapchainKHR 必须与队列操作同线程）。
+        // 重建失败就留着请求，下一轮再试。
         if (!mData->swapchain || needReBuildSwapChain.load(std::memory_order_acquire)) {
-            if (!recreateSwapChain()) return RHISwapChain::FAILEID;
+            const bool rebuilt = recreateSwapChain();
+            if (!rebuilt) return;
+            CurrentFrameID = 0;
         }
 
-        CurrentFrameID %= SWAPCHAIN_SLOT_COUNT;
+        auto& slot = SwapChainFrameInfos[CurrentFrameID];   // 重建会整表换新，引用必须在其后取
 
-        auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[CurrentFrameID];
-        if (index != UINT32_MAX) {
-            finishFence->wait();
+        // 槽复用前必须确认该槽上一轮的提交**已经发出**：围栏由本线程的 doSubmit 置
+        // setSubmited，若那一页还在队列里没提交，vkWaitForFences 会永远等下去
+        //（而唯一能提交它的也是本线程）—— 本轮先不取，下一轮再来。
+        if (slot.imageIndex != UINT32_MAX && !slot.finishFence->isSubmited()) {
+            // 上一轮取图后上层没有渲染/提交（例如拿到图就 return 了）：该槽的 acquire
+            // 信号量还有未消费的 signal，既不能重新 signal、也不能等一个永不置位的围栏。
+            // 把同一张图再交给上层一次，让这一轮正常渲染+提交，槽位自愈。
+            publishAcquire(CurrentFrameID);
+            return;
         }
 
-        auto res = vkAcquireNextImageKHR(
+        if (slot.imageIndex != UINT32_MAX && !slot.finishFence->isSignaled()) return;
+
+        uint32_t imageIndex = slot.imageIndex;
+        const VkResult res = vkAcquireNextImageKHR(
             mDevice->getLogicalDevice(),
             mData->swapchain,
-            UINT64_MAX,
-            static_cast<VkSemaphore>(avaliable->getSemaphoreHandle()),
+            0,                                        // 非阻塞：图还没空出来就下轮再来
+            static_cast<VkSemaphore>(slot.avaliable->getSemaphoreHandle()),
             VK_NULL_HANDLE,
-            &index
+            &imageIndex
         );
+        if (res == VK_TIMEOUT || res == VK_NOT_READY) return;   // 保持请求，下一轮继续轮询
+
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
             Error("SwapChain Out Of Data!");
-            needReBuildSwapChain.store(1,std::memory_order_release);
-            return RHISwapChain::FAILEID;
+            needReBuildSwapChain.store(1, std::memory_order_release);
+            publishAcquire(RHISwapChain::FAILEID);      // 释放主线程（本帧跳过）
+            return;
         }
-
-        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        if (res != VK_SUCCESS) {
             //Error("Acquire next image failed: {}", (uint32_t)res);
-            return RHISwapChain::FAILEID;
+            publishAcquire(RHISwapChain::FAILEID);
+            return;
         }
 
         // VK_KHR_swapchain_maintenance1: ensure the image has left the
         // display engine before we start rendering to it again.
-        if (mDevice->isSwapchainMaintenance1Supported() && PresentFence[index]) {
-            PresentFence[index]->wait();
+        if (mDevice->isSwapchainMaintenance1Supported() && PresentFence[imageIndex]) {
+            PresentFence[imageIndex]->wait();
         }
 
-        finishFence->reset();
-        return CurrentFrameID++;
+        slot.imageIndex  = imageIndex;
+        slot.finishFence->reset();
+        const uint32_t frameID = CurrentFrameID;
+        CurrentFrameID   = (CurrentFrameID + 1) % SlotCount;
+        publishAcquire(frameID);                        // 释放主线程
     }
 
-    void VulkanSwapChain::present(uint32_t infoid) {
-        if (infoid >= SWAPCHAIN_SLOT_COUNT) return;
+    void VulkanSwapChain::presentNow(uint32_t infoid) {
+        if (infoid >= SlotCount) return;
 
         auto& slot = SwapChainFrameInfos[infoid];
+        if (slot.imageIndex >= ImageRenderFinish.size()) {
+            Error("SwapChain presentNow: imageIndex {} out of range (image count {})", slot.imageIndex, ImageRenderFinish.size());
+            return;
+        }
 
         if (!PresentQueue || !mData->swapchain) {
             Error("PresentQueue is empty or swapchainHandle not exits!");
@@ -309,7 +422,7 @@ namespace FISIR {
     }
 
     RHITexture* VulkanSwapChain::getSwapChainFrameTexture(uint32_t imageindex) const {
-        if (imageindex < MaxSwapChianFramCount) return SwapChainTextures[imageindex];
+        if (imageindex < SwapChainTextures.size()) return SwapChainTextures[imageindex];
         else return nullptr;
     }
 
@@ -318,17 +431,17 @@ namespace FISIR {
     }
 
     SwapChainGetImageInfo VulkanSwapChain::getSwapChainGetImageInfo(uint32_t id) {
-        if (id >= SWAPCHAIN_SLOT_COUNT) return {};
+        if (id >= SlotCount) return {};
         auto& slot = SwapChainFrameInfos[id];
         SwapChainGetImageInfo info = slot;
         // Override renderFinish with the per-image present semaphore so
-        // present() waits on the correct semaphore per swapchain image.
-        info.renderFinish = ImageRenderFinish[slot.imageIndex];
+        // presentNow() waits on the correct semaphore per swapchain image.
+        if (slot.imageIndex < ImageRenderFinish.size()) info.renderFinish = ImageRenderFinish[slot.imageIndex];
         return info;
     }
 
     RHIFrameBuffer* VulkanSwapChain::getSwapChainFrameBuffer(uint32_t imageindex) {
-        if (imageindex < MaxSwapChianFramCount) return SwapChainFrameBuffers[imageindex];
+        if (imageindex < SwapChainFrameBuffers.size()) return SwapChainFrameBuffers[imageindex];
         return nullptr;
     }
 
@@ -377,12 +490,20 @@ namespace FISIR {
         bool isCxclusive = (QuefamilyIndex[0] == QuefamilyIndex[1]);
         Debug("Cxclusive Mode : {}",(isCxclusive ? "Yes" : "No"));
 
+        // 图像数：请求 minImageCount+1（避免贴驱动下界），并受 caps 上限约束。
+        // 每图像资源按「实际图像数」分配（见下），因此这里不再假设固定 3 张。
+        uint32_t desiredImageCount = vkSurfaceCapabilitiesKHR.minImageCount + 1;
+        if (vkSurfaceCapabilitiesKHR.maxImageCount > 0 && desiredImageCount > vkSurfaceCapabilitiesKHR.maxImageCount)
+            desiredImageCount = vkSurfaceCapabilitiesKHR.maxImageCount;
+
+        // 呈现模式：sync(true) → FIFO，否则优先 MAILBOX / IMMEDIATE。
+        const VkPresentModeKHR presentMode = ChoosePresentMode(mDevice->getPhysicalDevice(), Surface, SyncEnabled.load(std::memory_order_acquire));
+
         auto oldSwapChain = mData->swapchain;
-        uint32_t LstMaxCount = MaxSwapChianFramCount;
         VkSwapchainCreateInfoKHR swapChainInfo{
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = Surface,
-            .minImageCount = vkSurfaceCapabilitiesKHR.minImageCount + 1,
+            .minImageCount = desiredImageCount,
             .imageFormat = choiceFormat.format,
             .imageColorSpace = choiceFormat.colorSpace,
             .imageExtent = {actualExtent.width, actualExtent.height},
@@ -393,7 +514,7 @@ namespace FISIR {
             .pQueueFamilyIndices = QuefamilyIndex,
             .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .presentMode = VK_PRESENT_MODE_MAILBOX_KHR,
+            .presentMode = presentMode,
             .oldSwapchain = oldSwapChain,
         };
 
@@ -402,30 +523,54 @@ namespace FISIR {
             return false;
         }
 
-        vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, nullptr);
-        vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &MaxSwapChianFramCount, mData->swapChainImageHandles);
-        Debug("Max Image Cout Can Swapchian Use {}", MaxSwapChianFramCount);
+        uint32_t imageCount = 0;
+        vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &imageCount, nullptr);
+        MaxSwapChianFramCount = imageCount;
+        mData->swapChainImageHandles.assign(imageCount, VK_NULL_HANDLE);
+        vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &imageCount, mData->swapChainImageHandles.data());
+        Debug("SwapChain images: {}", imageCount);
 
-        for (uint32_t i = 0; i < LstMaxCount; i++) {
-            delete SwapChainFrameBuffers[i];
-            SwapChainFrameBuffers[i] = nullptr;
-            delete SwapChainTextures[i];
-            SwapChainTextures[i] = nullptr;
+        // 槽位数：夹取到 [1, 图像数]。槽复用周期必须不短于图像复用周期，否则同一
+        // 每图像 present 信号量会在上一帧 present 尚未消费时被再次 signal（信号量复用竞态）。
+        const uint32_t requested = RequestedSlotCount ? RequestedSlotCount : DEFAULT_SWAPCHAIN_SLOT_COUNT;
+        SlotCount = std::clamp(requested, 1u, imageCount ? imageCount : 1u);
+        if (SlotCount != requested) {
+            Warn("SwapChain requested {} slots, clamped to {} (slots must not exceed image count {})", requested, SlotCount, imageCount);
         }
+
+        // 释放上一轮每图像资源（图像数可能变化），再按新图像数重建容器。
+        for (auto*& fb : SwapChainFrameBuffers)  { delete fb;  fb = nullptr; }
+        for (auto*& tex : SwapChainTextures)     { delete tex; tex = nullptr; }
+        SwapChainFrameBuffers.assign(imageCount, nullptr);
+        SwapChainTextures.assign(imageCount, nullptr);
+        // 信号量/围栏尽量复用已有对象（图像数不变时不会增长）。
+        ImageRenderFinish.resize(imageCount, nullptr);
+        PresentFence.resize(imageCount, nullptr);
+
         if (oldSwapChain) {
             vkDestroySwapchainKHR(mDevice->getLogicalDevice(), oldSwapChain, nullptr);
         }
 
-        for (uint32_t i = 0; i < SWAPCHAIN_SLOT_COUNT; i++) {
+        SwapChainFrameInfos.resize(SlotCount);
+        for (uint32_t i = 0; i < SlotCount; i++) {
             auto& [avaliable, renderFinish, finishFence, index] = SwapChainFrameInfos[i];
-            if (!avaliable)   avaliable   = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
+            if (!avaliable) {
+                avaliable   = usingRHI->RHICreateSemaphore("SwapAvailableSemphore");
+                // acquire 信号量由 vkAcquireNextImageKHR（驱动）signal，非任何命令缓冲。
+                // 标记为外部信号，提交循环把等待它视为已满足，不作为跨 CB 依赖。
+                avaliable->setExternalSignal(true);
+            }
             if (!renderFinish) renderFinish = usingRHI->RHICreateSemaphore("SlotFinishSemphore");
             if (!finishFence) finishFence = usingRHI->RHICreateFence(false, "FinishFence");
             index = UINT32_MAX;
         }
 
+        Info("SwapChain: {} images, {} slots, present mode = {}", imageCount, SlotCount, PresentModeName(presentMode));
+
+
+
         // Per-image semaphores & present fences
-        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
+        for (uint32_t i = 0; i < imageCount; i++) {
             if (!ImageRenderFinish[i])
                 ImageRenderFinish[i] = usingRHI->RHICreateSemaphore("ImageFinishSemphore");
             // VK_KHR_swapchain_maintenance1: signaled when image leaves display engine.
@@ -434,7 +579,7 @@ namespace FISIR {
                 PresentFence[i] = usingRHI->RHICreateFence(true, "PresentFence");
         }
 
-        for (uint32_t i = 0; i < MaxSwapChianFramCount; i++) {
+        for (uint32_t i = 0; i < imageCount; i++) {
             SwapChainTextures[i] = new VulkanTexture(mDevice,
                 mData->swapChainImageHandles[i],
                 Surfaceviewport->getVulkanColorFormat(),

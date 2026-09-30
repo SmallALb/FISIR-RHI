@@ -86,21 +86,42 @@ namespace FISIR {
 			GpuBlock* block = getSuitable(f, s);
 			if (!block) return nullptr;
 
-			size_t alignedOffset = align_up(block->Info.offset, align);
-			size_t offsetDiff = alignedOffset - block->Info.offset;
+			// ① 桶是**区间**映射，不是精确尺寸映射。大块路径下同一个 (f,s) 覆盖 2048 字节的区间
+			// （例如 f=9 时 s = (Size>>11)&31，覆盖 [65536,131072) 分 32 桶、每桶 2048），
+			// 所以同桶里拿到的块**可能比请求小**。原实现把这个判断藏在 SplitBlock 里、
+			// 并且忽略它的返回值 ⇒ 把「不够大」的块当分配成功返回；调用方随后按**请求大小**
+			// vkBindBufferMemory/vkBindImageMemory ⇒ 该资源的内存区间越过后面的块，
+			// 与紧邻的活资源重叠 ⇒ 两个活资源落在同一段地址（描述符堆 VUID-11236/11228 的源头）。
+			const size_t oldOffset     = block->Info.offset;
+			const size_t alignedOffset = align_up(oldOffset, align);
+			const size_t offsetDiff    = alignedOffset - oldOffset;
+			const size_t newSize       = block->Info.Size - offsetDiff;
+			if (newSize < alignedSize) return nullptr;
+
+			// ② Remove_List 是**按 block->Info.Size 反推 (f,s)** 来定位链表的。原实现先按对齐
+			// 改掉 Info.Size/offset 再摘链 ⇒ 摘的是**另一条**链表：真实桶的表头/位图仍指向这个块，
+			// 该块随即被标记为已分配却依旧可达 ⇒ 下次 getSuitable 会把它再发一次（同址双分配）。
+			// 必须**先摘、后改**。
+			Remove_List(block);
 
 			if (offsetDiff > 0) {
-				size_t newSize = block->Info.Size - offsetDiff;
-				if (newSize < alignedSize) {
-					return nullptr;
-				}
-				block->Info.offset = alignedOffset;
-				block->Info.Size = newSize;
+				// 对齐产生的前导空洞 [oldOffset, alignedOffset) 必须登记成空闲块。
+				// 原实现直接把它丢掉 ⇒ offset_blocks 不再完整覆盖本池（合并失灵、内存永久泄漏），
+				// 而且块的真实 offset 变了却没人搬 offset_blocks 的键。
+				GpuBlock* front = new GpuBlock(Pool, offsetDiff, oldOffset, block->lstBlockSize);
+				front->isFreeBlock    = 1;
+				front->PoolID         = PoolID;
+				front->Info.MemoryType = MemTypeID;
+				offset_blocks[oldOffset]     = front;    // 复用原键
+				offset_blocks[alignedOffset] = block;    // ★ 键跟着块的真实 offset 搬
+				Push_List(front);
+				block->lstBlockSize = offsetDiff;
 			}
+			block->Info.offset = alignedOffset;
+			block->Info.Size   = newSize;
 
 			block->PoolID = PoolID;
 			block->isFreeBlock = 0;
-			Remove_List(block);
 			SplitBlock(block, alignedSize);
 			block->Info.MemoryType = MemTypeID;
 			totalSize -= alignedSize;
@@ -109,6 +130,17 @@ namespace FISIR {
 		}
 
 		void FreeBlock(GpuBlock* block) {
+			if (!block) return;
+			// ③ 原来**没有**重入防线：isFreeBlock 被写但从不被读。
+			// 同一个块被 free 两次时，第二次会（a）再累加一次 totalSize/扣一次 UsingSize，
+			// （b）对**已不在链表中**的块调用 MergeBack/Front 里的 Remove_List —— 那会用陈旧的
+			// nxt/lst 把无关的空闲块从链表上摘掉，（c）把同一个块 Push_List 两次形成自环，
+			// 之后 getSuitable 永远返回它 ⇒ 同址无限双分配。
+			if (block->isFreeBlock) {
+				Error("AllocationPool::FreeBlock: block at offset 0x{:x} (size {}) is already free -- double free",
+					block->Info.offset, block->Info.Size, PoolID);
+				return;
+			}
 			if (block->PoolID != PoolID) {
 				Error("Block ID Not Equal the Pool ID");
 				return;
@@ -198,6 +230,15 @@ namespace FISIR {
 			size_t remineSize = block->Info.Size - Size;
 			size_t remineOffset = block->Info.offset + Size;
 			block->Info.Size = Size;
+			// ⑥ remineSize == 0（空闲块大小恰好等于请求）时**不能**造一个 0 字节的块：
+			// offset_blocks 以 offset 为键，而 remineOffset 正是**后继块**的起始 offset，
+			// 这个 0 字节块会把后继块的表项**覆盖掉**（原实现用 operator[] 直接赋值）⇒
+			// 那个块从此在表里查不到，后继的合并/对齐查找全部失灵，最终表现为同址双分配。
+			if (remineSize == 0) return nullptr;
+			if (offset_blocks.contains(remineOffset)) {
+				Error("offset 0x{:x} already has a block (corrupted free-block tiling)", remineOffset);
+				return nullptr;
+			}
 			offset_blocks[remineOffset] = new GpuBlock(Pool, remineSize, remineOffset, Size);
 			Push_List(offset_blocks[remineOffset]);
 			return offset_blocks[remineOffset];
@@ -207,7 +248,8 @@ namespace FISIR {
 			size_t BackOffset = block->Info.Size + block->Info.offset;
 			if (!offset_blocks.contains(BackOffset)) return false;
 			if (!offset_blocks[BackOffset]->isFreeBlock) return false;
-			Remove_List(block);
+			// ④ 只能摘**要被合并掉的邻居**。原实现对正在释放、尚未入链的 block 也调了
+			// Remove_List —— 它的 nxt/lst 还是上一轮分配前的陈旧链接，会把别的空闲块摘下来。
 			Remove_List(offset_blocks[BackOffset]);
 			auto mb = offset_blocks[BackOffset];
 			offset_blocks.erase(BackOffset);
@@ -221,12 +263,20 @@ namespace FISIR {
 			size_t FrontOffset = block->Info.offset - block->lstBlockSize;
 			if (!offset_blocks.contains(FrontOffset)) return false;
 			if (!offset_blocks[FrontOffset]->isFreeBlock) return false;
-			Remove_List(block);
 			Remove_List(offset_blocks[FrontOffset]);
 			auto mb = offset_blocks[FrontOffset];
 			offset_blocks.erase(FrontOffset);
+			const size_t oldOffset = block->Info.offset;
 			block->Info.offset = mb->Info.offset;
 			block->Info.Size += mb->Info.Size;
+			block->lstBlockSize = mb->lstBlockSize;   // 合并后「前邻尺寸」必须跟着搬到更前面的那块
+			// ⑤ offset_blocks **以 offset 为键**，块前并之后真实 offset 变了，键必须跟着搬。
+			// 原实现漏了这一步 ⇒ 表的键与块的真实 offset 脱钩：后面对这段区间做
+			// contains()/[] 查询或合并会命中**错的块**，于是同一段内存被发给两个活分配。
+			if (oldOffset != block->Info.offset) {
+				offset_blocks.erase(oldOffset);
+				offset_blocks[block->Info.offset] = block;
+			}
 			delete mb;
 			return true;
 		}
