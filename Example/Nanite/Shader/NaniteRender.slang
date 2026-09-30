@@ -1,18 +1,18 @@
 #define NANITE_CLUSTER_OFFSET_MASK 0xFFu
 
-RWByteAddressBuffer 		clusterSelectionBuffer : register(u0);
-RWByteAddressBuffer     clusterPagesBuffer : register(u1);
+[[vk::binding(0, 0)]] RWByteAddressBuffer 		clusterSelectionBuffer  : register(u0);
+[[vk::binding(1, 0)]] RWByteAddressBuffer     clusterPagesBuffer  : register(u1);
 struct ClusterData {
   uint indexCount;
 	uint baseVertex;
 	uint baseIndex;
 	uint padding;
 };
-RWStructuredBuffer<ClusterData> clusterDataBuffer : register(u2);
-RWStructuredBuffer<uint> EnableClusterListSw : register(u3);   // 软光栅列表（[1] = 三角形数）
-// u4（FrameBuffer）不再由本文件使用：改由 FrameBufferWrite.hlsl 统一写入。
+[[vk::binding(2, 0)]] RWStructuredBuffer<ClusterData> clusterDataBuffer  : register(u2);
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> EnableClusterListSw  : register(u3);   // 软光栅列表（[1] = 三角形数）
+// u4（FrameBuffer）不再由本文件使用：改由 FrameBufferWrite.slang 统一写入。
 // 管线布局里仍保留 0..8 全部绑定，与共用的资源包一一对应才能 bind。
-cbuffer RenderParams : register(b5) {
+[[vk::binding(5, 0)]] cbuffer RenderParams  : register(b5) {
     float4x4 VPMatrix;
     float2 screenSize;
     float ClearDepth;
@@ -20,14 +20,14 @@ cbuffer RenderParams : register(b5) {
     uint     ColorBlock;   // 本文件不用；保留声明以与 C++ RenderParams 布局一致
     float FarPlane;
 };
-RWStructuredBuffer<uint> EnableClusterListHw : register(u6);   // 硬光栅专用选择列表
+[[vk::binding(6, 0)]] RWStructuredBuffer<uint> EnableClusterListHw  : register(u6);   // 硬光栅专用选择列表
 // 软光栅的三角形工作列表（Selection 展开）：每三角形 3 个 uint
 //   [0] clusterID   [1] 簇数据区字节偏移 cb   [2] 簇内三角形序号
-RWStructuredBuffer<uint> SwTriList : register(u7);
-// VisBuffer（可见性缓冲）：每像素 3 个 uint = (深度位模式, cb, 簇内三角形序号)。
-// 软光栅与硬光栅都只写这里、由 InterlockedMin 决出最近的片元；颜色不在这里决定，
-// 而是由 FrameBufferWrite.hlsl 的解析管线按 cb/triIndex 统一着色。
-RWByteAddressBuffer VisBuffer : register(u8);
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> SwTriList  : register(u7);
+// VisBuffer（可见性缓冲）：每像素 8 字节 = 一个 64 位打包字。
+// 软光栅与硬光栅都只写这里、由 **64 位** InterlockedMin 决出最近的片元；颜色不在这里决定，
+// 而是由 FrameBufferWrite.slang 的解析管线按载荷里的 clusterID/triIndex 统一着色。
+[[vk::binding(8, 0)]] RWStructuredBuffer<uint64_t> VisBuffer  : register(u8);
 
 // .nanitemesh 顶点：每个顶点为 float3 位置（12 字节），存于簇数据区 cb+28。
 // 索引为簇内局部序号（0..posCount-1），直接索引簇内位置，无需 baseVertex/baseIndex
@@ -36,9 +36,15 @@ float3 LoadVertexPosition(uint cb, uint vertexIndex) {
     return asfloat(clusterPagesBuffer.Load3(cb + 28 + vertexIndex * 12));
 }
 
-// ── VisBuffer 像素格式（本文件、ClearScreen.hlsl、FrameBufferWrite.hlsl 三处必须一致）──
-// 每像素 12 字节：+0 深度（float 位模式）、+4 簇数据区字节偏移 cb、+8 簇内三角形序号。
-// 着色所需的全部信息就是这 3 个 uint —— 解析管线据此重建颜色，不需要其它状态。
+// ── VisBuffer 像素格式（本文件、ClearScreen.slang、FrameBufferWrite.slang 三处必须一致）──
+// 每个像素一个 64 位整数（RWStructuredBuffer<uint64_t>，步长 8 字节）：
+//   高 32 位 = 深度（float 位模式；深度 ∈ [0,1] 时正浮点的位模式与数值同序，所以整数比较就是深度比较）
+//   低 32 位 = 载荷 (clusterID << 8) | (簇内三角形序号 & 0xFF)
+// 为什么打包成一个字：32 位时代只能「先原子 min 深度、赢了再普通写 cb / 三角形序号」，
+// 两次写之间有竞争 —— 可能出现「深度是 A 的、载荷却是 B 的」错配片元；打包成 64 位后
+// 一次 OpAtomicUMin 同时决出「谁赢」和「赢的是谁」，这类竞争从根上消失。
+// 载荷里放的是 clusterID（页号 << 8 | 簇内偏移，24 位）而不是 cb：它和 8 位三角形序号
+// 正好塞满 32 位；解析管线用页表把 clusterID 还原成 cb（多两次读，换来无竞争的原子）。
 
 float3 CalculateBarycentric(float2 p, float2 v0, float2 v1, float2 v2) {
     float2 v0v1 = v1 - v0;
@@ -68,20 +74,19 @@ float InterpolateDepth(float3 bary, float4 v0, float4 v1, float4 v2) {
     return ndcZ * 0.5f + 0.5f;
 }
 
-// 写一个像素的可见性：先原子 min 深度，赢了才写 cb / 三角形序号。
-// 颜色不在这里决定（由解析管线统一着色），所以「颜色与深度属于同一片元」
-// 天然成立 —— 消掉了原来「两步写颜色/深度」之间那段颜色竞争。
-void WriteVisBufferPixel(uint2 pixel, float depth, uint cb, uint triIndex) {
-    uint offset = (pixel.y * (uint)screenSize.x + pixel.x) * 12;
-    uint oldDepth;
-    VisBuffer.InterlockedMin(offset + 0, asuint(depth), oldDepth);
-    if (asuint(depth) < oldDepth) {
-        VisBuffer.Store(offset + 4, cb);
-        VisBuffer.Store(offset + 8, triIndex);
-    }
+// 写一个像素的可见性：把 (深度, clusterID, 三角形序号) 打包成一个 64 位整数，
+// 用一次 **64 位原子 min** 同时决出最近的片元与它的载荷 —— 深度与载荷不可能来自不同片元。
+// 依赖设备的 shaderBufferInt64Atomics（VkPhysicalDeviceShaderAtomicInt64Features）；
+// Slang 会为此自动生成 OpCapability Int64Atomics 与 64 位的 OpAtomicUMin。
+void WriteVisBufferPixel(uint2 pixel, float depth, uint clusterID, uint triIndex) {
+    const uint pixelIndex = pixel.y * (uint)screenSize.x + pixel.x;
+    const uint payload = (clusterID << 8) | (triIndex & 0xFFu);
+    const uint64_t packed = ((uint64_t)asuint(depth) << 32) | (uint64_t)payload;
+    uint64_t previous = 0ull;
+    InterlockedMin(VisBuffer[pixelIndex], packed, previous);
 }
 
-void RasterizeTriangle(float4 v0, float4 v1, float4 v2, uint cb, uint triIndex) {
+void RasterizeTriangle(float4 v0, float4 v1, float4 v2, uint clusterID, uint triIndex) {
     // 裁剪：检查是否在近远平面内（GL 约定 z ∈ [-w, w]）
     if (v0.z < -v0.w || v0.z > v0.w ||
         v1.z < -v1.w || v1.z > v1.w ||
@@ -136,18 +141,19 @@ void RasterizeTriangle(float4 v0, float4 v1, float4 v2, uint cb, uint triIndex) 
             }
             
             uint pixelIndex = y * (uint)screenSize.x + x;
-            uint curDepth = VisBuffer.Load(pixelIndex * 12 + 0);
+            uint curDepth = (uint)(VisBuffer[pixelIndex] >> 32);   // 高 32 位 = 当前最近深度
             if (asuint(depth) >= curDepth) continue;   // 已经更远，无需原子
 
-            WriteVisBufferPixel(uint2(x, y), depth, cb, triIndex);
+            WriteVisBufferPixel(uint2(x, y), depth, clusterID, triIndex);
         }
     }
 }
 
 // 软光栅：光栅化一个三角形。cb（簇数据区字节偏移）由工作列表直接给出，
-// 所以这里不再重复「页表 → 簇记录」的依赖链。着色不在这里做 —— 只把
-// (深度, cb, triIndex) 写进 VisBuffer，颜色交给 FrameBufferWrite.hlsl。
-void ProcessTriangle(uint cb, uint triIndex) {
+// 所以这里不再重复「页表 → 簇记录」的依赖链；clusterID 也由工作列表带进来，
+// 用来填 VisBuffer 的载荷（解析管线要靠它还原 cb）。着色不在这里做 —— 只把
+// (深度, clusterID, triIndex) 打包写进 VisBuffer，颜色交给 FrameBufferWrite.slang。
+void ProcessTriangle(uint cb, uint clusterID, uint triIndex) {
     uint indexDataOffset = clusterPagesBuffer.Load(cb + 0);  // 索引数据相对 cb 的字节偏移
     uint indexCount = clusterPagesBuffer.Load(cb + 4);       // 索引总数（三角形列表）
 
@@ -166,18 +172,18 @@ void ProcessTriangle(uint cb, uint triIndex) {
     RasterizeTriangle(mul(float4(p0, 1.0f), VPMatrix),
                       mul(float4(p1, 1.0f), VPMatrix),
                       mul(float4(p2, 1.0f), VPMatrix),
-                      cb, triIndex);
+                      clusterID, triIndex);
 }
 
 [numthreads(64, 1, 1)]
 void mainRender(uint3 dispatchThreadID : SV_DispatchThreadID) {
     // 软光栅：**一个线程一个三角形**。工作列表由 Selection 展开（它已经逐簇在跑），
     // 派发上限 = 最大簇数 × 每簇三角形上限，线程用列表里的实际数量提前退出。
-    // 列表条目是 (clusterID, cb, triIndex)，clusterID 现在用不上了（颜色由 cb 决定）。
+    // 列表条目是 (clusterID, cb, triIndex)：cb 直接用来取顶点，clusterID 进 VisBuffer 载荷。
     const uint i = dispatchThreadID.x;
     if (i >= EnableClusterListSw[1]) return;                  // [1] = 本帧软光栅三角形数
     const uint slot = i * 3u;
-    ProcessTriangle(SwTriList[slot + 1], SwTriList[slot + 2]);
+    ProcessTriangle(SwTriList[slot + 1], SwTriList[slot + 0], SwTriList[slot + 2]);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -185,16 +191,16 @@ void mainRender(uint3 dispatchThreadID : SV_DispatchThreadID) {
 // VS 用 SV_VertexID + SV_InstanceID 从簇页缓冲直接取顶点，无需顶点/索引缓冲：
 //   - instanceID = 硬光栅列表里的簇序号（DrawIndirect 的 firstInstance）
 //   - vertexID   = 簇内三角形列表的局部顶点序号（0..indexCount-1）
-// PS 不写附件，也不着色，只把 (深度, cb, triIndex) 写进 VisBuffer —— 与软光栅
-// 写的是同一个缓冲，两者靠那里的原子深度决出可见性。最终颜色由
-// FrameBufferWrite.hlsl 的解析管线统一产生（离屏附件只是占位，管线关掉了深度测试/写）。
+// PS 不写附件，也不着色，只把 (深度, clusterID, triIndex) 打包写进 VisBuffer —— 与软光栅
+// 写的是同一个缓冲，两者靠那里的 64 位原子 min 决出可见性。最终颜色由
+// FrameBufferWrite.slang 的解析管线统一产生（离屏附件只是占位，管线关掉了深度测试/写）。
 // ═══════════════════════════════════════════════════════════════════
 
 struct NaniteVSOutput {
     float4 clipPos : SV_Position;
-    // 同一三角形的三个顶点 cb/triIndex 相同，用 nointerpolation 避免被插值
-    nointerpolation uint cb       : TEXCOORD0;
-    nointerpolation uint triIndex : TEXCOORD1;
+    // 同一三角形的三个顶点 clusterID/triIndex 相同，用 nointerpolation 避免被插值
+    nointerpolation uint clusterID : TEXCOORD0;
+    nointerpolation uint triIndex  : TEXCOORD1;
 };
 
 NaniteVSOutput mainVS(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID) {
@@ -225,7 +231,7 @@ NaniteVSOutput mainVS(uint vertexID : SV_VertexID, uint instanceID : SV_Instance
     uint idx = clusterPagesBuffer.Load(cb + indexDataOffset + vertexID * 4);
     float3 pos = LoadVertexPosition(cb, idx);
 
-    output.cb = cb;
+    output.clusterID = clusterID;
     output.triIndex = tri;
     output.clipPos = mul(float4(pos, 1.0f), VPMatrix);
     // 硬光栅 Y 翻转：GLM(RH_NO) 裁剪空间 Y 朝上，而 Vulkan 视口把 +Y 映射到帧缓冲下边缘，
@@ -237,6 +243,6 @@ NaniteVSOutput mainVS(uint vertexID : SV_VertexID, uint instanceID : SV_Instance
 
 float4 mainPS(NaniteVSOutput input) : SV_Target {
     // 只写可见性；颜色留给解析管线。附件只是占位，返回什么颜色都无所谓。
-    WriteVisBufferPixel((uint2)input.clipPos.xy, input.clipPos.z * 0.5 + 0.5, input.cb, input.triIndex);
+    WriteVisBufferPixel((uint2)input.clipPos.xy, input.clipPos.z * 0.5 + 0.5, input.clusterID, input.triIndex);
     return float4(0.0f, 0.0f, 0.0f, 1.0f);
 }

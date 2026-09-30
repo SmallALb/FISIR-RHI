@@ -202,6 +202,45 @@ if(NOT Slang_FOUND)
 endif()
 
 # ═══════════════════════════════════════════════════════════════
+# Resolve the runtime DLL directory
+# ═══════════════════════════════════════════════════════════════
+# 各示例的 POST_BUILD 步骤靠 Slang_DLL_DIR 拷贝 slang.dll / slang-compiler.dll，
+# 漏掉这里就是「编译通过、启动失败（找不到 slang.dll）」。上游 config 包只设了
+# 配置相关的 IMPORTED_LOCATION_RELEASE / IMPORTED_IMPLIB_RELEASE，裸的
+# IMPORTED_LOCATION 查询会返回 NOTFOUND，所以这里按配置逐个查，最后回退到 SDK 的 bin/。
+if(Slang_FOUND AND NOT Slang_DLL_DIR)
+    if(TARGET slang::slang)
+        foreach(_cfg RELEASE RELWITHDEBINFO MINSIZEREL DEBUG NOCONFIG)
+            foreach(_prop IMPORTED_LOCATION IMPORTED_IMPLIB)
+                get_target_property(_slang_loc slang::slang "${_prop}_${_cfg}")
+                if(_slang_loc AND NOT _slang_loc MATCHES "-NOTFOUND$")
+                    get_filename_component(Slang_DLL_DIR "${_slang_loc}" DIRECTORY)
+                    break()
+                endif()
+            endforeach()
+            if(Slang_DLL_DIR)
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(NOT Slang_DLL_DIR)
+        foreach(_dir "${SLANG_SDK_DIR}/bin" "${Slang_ROOT}/bin" "${CMAKE_CURRENT_SOURCE_DIR}/vendor/slang/bin")
+            if(EXISTS "${_dir}/slang.dll")
+                set(Slang_DLL_DIR "${_dir}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(Slang_DLL_DIR)
+        message(STATUS "Slang runtime DLL dir: ${Slang_DLL_DIR}")
+    else()
+        message(WARNING "Slang runtime DLLs not located; examples may fail to start (slang.dll missing)")
+    endif()
+endif()
+
+# ═══════════════════════════════════════════════════════════════
 # Create imported target
 # ═══════════════════════════════════════════════════════════════
 if(Slang_FOUND AND NOT TARGET Slang::Slang)

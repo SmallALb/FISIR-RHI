@@ -40,8 +40,8 @@ static FISIR::RHIBuffer* SwTriListBuffer = nullptr;             // u7：软光�
 
 static FISIR::RHIBuffer* FrameBuffer = nullptr;         // u4：逐像素 颜色|深度（8B/px）
 static FISIR::RHIBuffer* RenderParamsBuffer = nullptr;  // b5：RenderParams
-// u8：VisBuffer（每像素 3 个 uint = 深度 | 簇数据区偏移 cb | 簇内三角形序号）。
-// 软光栅与硬光栅只写这里，再由 FrameBufferWritePipeline 解析成 FrameBuffer。
+// u8：VisBuffer（每像素一个 64 位打包字 = 高 32 位深度 | 低 32 位载荷 (clusterID<<8)|triIndex）。
+// 软光栅与硬光栅只写这里（64 位原子 min 决出最近片元），再由 FrameBufferWritePipeline 解析成 FrameBuffer。
 static FISIR::RHIBuffer* VisBuffer = nullptr;
 // HZB（深度金字塔）：L0 = 上一帧深度，L1..L7 = 逐级 2×2 min。Selection 用它做遮挡剔除。
 static FISIR::RHIBuffer* HzbBuffer = nullptr;
@@ -56,7 +56,7 @@ static uint32_t g_BvhQueueCapacity = 0;                // 每份队列能放多�
 static uint32_t g_BvhFrameEpoch = 0;                   // 每帧 +1，当去重的“代”
 static std::vector<uint32_t> g_BvhRootNodes;           // DAG 的根（入度 0），下降的种子
 
-#define NANITE_QUEUE_HEADER 1u                          // 与 ClusterSelection.hlsl 同名同值
+#define NANITE_QUEUE_HEADER 1u                          // 与 ClusterSelection.slang 同名同值
 // 沿 BVH 下降的轮数上界（= BVH 最大深度）。**有界**是刻意的：不做 persistent thread + 活跃计数
 // 那套（终止条件写错就是 GPU 死循环、窗口卡死），分层 BFS 轮数封顶就不可能挂住。
 static constexpr uint32_t kNaniteBvhMaxLevels = 16;
@@ -76,8 +76,8 @@ static FISIR::RHIResourcePackResult HzbBuildResourcePack;
 static FISIR::RHIResourcePackResult BvhTraversePacks[2];   // [0]: in=q0 out=q1；[1]: in=q1 out=q0
 
 // ── 硬光栅资源（只做几何光栅化，像素由 PS 写进 FrameBuffer）──
-static FISIR::RHIShader* NaniteRenderVSShader = nullptr;   // NaniteRender.hlsl 的 mainVS
-static FISIR::RHIShader* NaniteRenderPSShader = nullptr;   // NaniteRender.hlsl 的 mainPS
+static FISIR::RHIShader* NaniteRenderVSShader = nullptr;   // NaniteRender.slang 的 mainVS
+static FISIR::RHIShader* NaniteRenderPSShader = nullptr;   // NaniteRender.slang 的 mainPS
 static FISIR::RHIBuffer* IndirectDrawBuffer = nullptr;      // u5：硬光栅每条选中簇 16B DrawIndirect
 static FISIR::RHIPipeline* NaniteGraphicsPipeline = nullptr;
 static FISIR::RHITexture* OffscreenColorTexture = nullptr;  // 离屏颜色附件（占位，不再被采样）
@@ -148,17 +148,17 @@ void SetModelPath(const char* path, float scale) {
 void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 	TryBuildFromObj();   // 必须在建缓冲与填 InputData 之前
 
-		//Complie and Create Shader（从磁盘加载 HLSL 源文件）
+		//Complie and Create Shader（从磁盘加载 Slang 源文件）
 	// 簇选择只有一个入口点 mainTraverse（沿 BVH 下降），着色器源在下面和管线一起编。
-	std::string csSource = LoadFileText("Shader/ClusterSelection.hlsl");
+	std::string csSource = LoadFileText("Shader/ClusterSelection.slang");
 
-	std::string RenderSource = LoadFileText("Shader/NaniteRender.hlsl");
+	std::string RenderSource = LoadFileText("Shader/NaniteRender.slang");
 	FISIR::ShaderComplier* renderCompiler = new FISIR::ShaderComplier();
 	renderCompiler->compileShader(RenderSource.data(), RenderSource.size(), "mainRender", "cs_6_7");
 	NaniteRenderComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainRender", renderCompiler->getShaderData(), renderCompiler->getShaderDataSize());
 	if (!NaniteRenderComputeShader) Error("[Nanite] NaniteRenderComputeShader creation FAILED!");
 
-	// 硬光栅 VS/PS：与软光栅 compute 同源（NaniteRender.hlsl 新增入口 mainVS/mainPS），
+	// 硬光栅 VS/PS：与软光栅 compute 同源（NaniteRender.slang 新增入口 mainVS/mainPS），
 	// VS 复用顶部的 clusterPagesBuffer(u1)/EnableClusterList(u3)/RenderParams(b6)。
 	FISIR::ShaderComplier* vsCompiler = new FISIR::ShaderComplier();
 	vsCompiler->compileShader(RenderSource.data(), RenderSource.size(), "mainVS", "vs_6_0");
@@ -274,9 +274,11 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	//7b. VisBuffer：软光栅（compute）与硬光栅 PS 都写、解析 pass（compute）读，
 	// 同样跨队列族共享；device-local，逐像素几百万次原子在主机内存上会走 PCIe。
+	// 每像素 8 字节 = 一个 64 位打包字（高 32 位深度、低 32 位载荷），
+	// 软/硬两条路径都用 64 位原子 min 更新它 —— 深度与载荷同属一个字，不会串。
 	FISIR::BufferInfo visBufferInfo{
 		.data_CPU = nullptr,
-		.size = (uint64_t)pixelCount * 12,   // 每像素 3 个 uint：深度 | cb | 三角形序号
+		.size = (uint64_t)pixelCount * 8,   // 每像素 1 个 uint64：深度 | 载荷
 		.bufferlayout = FISIR::RWBuffer,
 		.memoryType = FISIR::MemTypeDeviceLocal,
 		.concurrentSharing = true,
@@ -406,7 +408,7 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	// 清屏着色器：渲染前把 FrameBuffer 清为远深度 + 清屏色（GPU compute，替代 CPU std::fill）。
 	// 绑定：u0 FrameBuffer、b1 RenderParams（复用 RenderParamsBuffer，与 NaniteRender 的 ClearDepth/ClearColor 同源）。
-	std::string ClearSource = LoadFileText("Shader/ClearScreen.hlsl");
+	std::string ClearSource = LoadFileText("Shader/ClearScreen.slang");
 	FISIR::ShaderComplier* clearCompiler = new FISIR::ShaderComplier();
 	clearCompiler->compileShader(ClearSource.data(), ClearSource.size(), "mainClear", "cs_6_7");
 	ClearScreenComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainClear", clearCompiler->getShaderData(), clearCompiler->getShaderDataSize());
@@ -435,10 +437,10 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 	// 所以同一条命令列表里 7 次 dispatch 可以各推各的层号）。原先为传这个层号要 7 个入口点
 	// 配 7 条管线；现在一个入口点、一条管线。页按录制顺序提交 ⇒ 层级天然有序。
 	{
-		// 与 HZBBuild.hlsl 的 HzbPushConstants 必须逐字节一致
+		// 与 HZBBuild.slang 的 HzbPushConstants 必须逐字节一致
 		struct HzbPushConstants { uint32_t level; };
 
-		std::string hzbSource = LoadFileText("Shader/HZBBuild.hlsl");
+		std::string hzbSource = LoadFileText("Shader/HZBBuild.slang");
 		FISIR::ShaderComplier* hzbCompiler = new FISIR::ShaderComplier();
 		hzbCompiler->compileShader(hzbSource.data(), hzbSource.size(), "mainHzb", "cs_6_7");
 		HZBBuildComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainHzb",
@@ -463,9 +465,9 @@ void InitClusterSelection(FISIR::DynamicRHI* rhi) {
 
 	// ── 解析管线（compute）：把 VisBuffer 解析成 FrameBuffer ──────────────
 	// u0 VisBuffer、u1 mesh（Lambert 要取顶点）、u2 FrameBuffer、b3 RenderParams。
-	// 一个线程一个像素、不用原子：可见性已经在 VisBuffer 的原子深度里决出来了。
+	// 一个线程一个像素、不用原子：可见性已经在 VisBuffer 的 64 位原子深度里决出来了。
 	{
-		std::string writeSource = LoadFileText("Shader/FrameBufferWrite.hlsl");
+		std::string writeSource = LoadFileText("Shader/FrameBufferWrite.slang");
 		FISIR::ShaderComplier* writeCompiler = new FISIR::ShaderComplier();
 		writeCompiler->compileShader(writeSource.data(), writeSource.size(), "mainWriteFrameBuffer", "cs_6_7");
 		FrameBufferWriteComputeShader = rhi->RHICreateShader(FISIR::ShaderTYP::__COMPUTESHADER__, "mainWriteFrameBuffer",
@@ -955,7 +957,7 @@ static float HalfToFloat(uint16_t h) {
 // 扫一遍 BVH，一次拿到两样东西（下降要用）：
 //   1) 「可画组」里最小的 MinLODError —— 层次里最细一层的误差，给误差预算兜底；
 //   2) **DAG 的根节点列表** —— 入度为 0 的节点。
-// 槽布局（与 ClusterSelection.hlsl 的 GetHierarchyNodeSlice 一致）：
+// 槽布局（与 ClusterSelection.slang 的 GetHierarchyNodeSlice 一致）：
 //   节点 208 字节 = 4 槽；槽 c 的 Misc0 在节点内 64 + 16c（低 16 位 = MinLODError(half)）、
 //   Misc1 在 128 + 16c（.w = ChildStartReference，高 16 位 = 子节点号）、
 //   Misc2 在 192 + 4c（0 = 空槽、0xFFFFFFFF = 链接槽、其余 = 可画组）。

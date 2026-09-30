@@ -54,13 +54,13 @@ static const wchar_t* FullscreenVS = LR"(
 		)";
 
 static const wchar_t* FullscreenPS = LR"(
-		Texture2D<float4> g_OffscreenTexture : register(t0);
-		ByteAddressBuffer g_FrameBuffer : register(t1);
+		[[vk::binding(0, 0)]] Texture2D<float4> g_OffscreenTexture  : register(t0);
+		[[vk::binding(1, 0)]] ByteAddressBuffer g_FrameBuffer  : register(t1);
 
 
-		SamplerState g_LinearSampler : register(s2);
+		[[vk::binding(2, 0)]] SamplerState g_LinearSampler  : register(s2);
 
-		cbuffer BufferToOutPutData : register(b3) {
+		[[vk::binding(3, 0)]] cbuffer BufferToOutPutData  : register(b3) {
 			uint2 viewport;
 			uint  BufferEnable;
 		}

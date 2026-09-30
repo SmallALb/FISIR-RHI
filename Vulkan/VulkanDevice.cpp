@@ -328,8 +328,17 @@ namespace FISIR {
 		// 64 位原子（RWByteAddressBuffer.InterlockedMin64 等编译出的 OpAtomicUMin(64)）所需的
 		// shaderBufferInt64Atomics。注意必须用专用的 ShaderAtomicInt64 结构，而不是 Vulkan12Features：
 		// 后者与本链里已有的 TimelineSemaphoreFeatures / BufferDeviceAddressFeatures 互斥（见 Vulkan 规范）。
+		// Slang 编出的顶点着色器会在 SPIR-V 里声明 DrawParameters 能力集（用到 SV_VertexID /
+		// SV_InstanceID 的入口都会带上），而该能力集要求设备开启 shaderDrawParameters
+		// （Vulkan 1.1 核心特性，桌面驱动普遍支持）。与下面几个特性同法：查询结果留在同一结构里，
+		// 结构又原样进 vkCreateDevice，于是「支持即开启」。
+		VkPhysicalDeviceShaderDrawParametersFeatures drawParametersFeatures{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES,
+		};
+
 		VkPhysicalDeviceShaderAtomicInt64Features atomicInt64Features{
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES,
+			.pNext = &drawParametersFeatures,
 		};
 
 		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeature{
@@ -398,7 +407,10 @@ namespace FISIR {
 		}
 		else {
 			Warn("Device Not Support Descriptor Buffer, Fallback To Normal Descriptor Set!");
-			deviceCreateInfo.pNext = enableSwapchainMaintenance1 ? &swapchainMaintenance1Features : nullptr;
+			// 不能在这里断链成 nullptr：timelineFeature.pNext 上挂着 atomicInt64Features，
+			// 断开会让 vkCreateDevice 既拿不到 timelineSemaphore，也拿不到
+			// shaderBufferInt64Atomics（Nanite 的 64 位 VisBuffer 原子依赖后者）。
+			deviceCreateInfo.pNext = enableSwapchainMaintenance1 ? (void*)&swapchainMaintenance1Features : (void*)&timelineFeature;
 		}
 		// 开启 shaderInt64（64 位整型运算 / Int64 原子）。设备不支持时回退为关闭并告警，
 		// 避免 vkCreateDevice 因 VK_ERROR_FEATURE_NOT_PRESENT 直接失败。
@@ -428,9 +440,15 @@ namespace FISIR {
 			Warn("Device Does Not Support fragmentStoresAndAtomics");
 		}
 		// atomicInt64Features 已通过 timelineFeature.pNext 进入查询链与使能链，
-		// shaderBufferInt64Atomics 字段由 vkGetPhysicalDeviceFeatures2 填充为设备支持值。
+		// shaderBufferInt64Atomics 字段由 vkGetPhysicalDeviceFeatures2 填充为设备支持值，
+		// 同一结构随后经 enableFeatures2 → deviceCreateInfo.pNext 交给 vkCreateDevice，
+		// 于是「支持即开启」。Nanite 示例的 VisBuffer 用 64 位原子（OpAtomicUMin(64)），
+		// 设备不支持时该示例的管线会创建失败。
 		if (atomicInt64Features.shaderBufferInt64Atomics != VK_TRUE) {
-			Warn("Device Does Not Support shaderBufferInt64Atomics");
+			Warn("Device Does Not Support shaderBufferInt64Atomics (Nanite 64-bit VisBuffer atomics unavailable)");
+		}
+		if (drawParametersFeatures.shaderDrawParameters != VK_TRUE) {
+			Warn("Device Does Not Support shaderDrawParameters (Slang 顶点着色器声明的 DrawParameters 能力集不可用)");
 		}
 
 		// 把 enableFeatures2 插到 pNext 链最前端，使 shaderInt64 在 vkCreateDevice 生效。

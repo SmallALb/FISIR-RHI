@@ -14,7 +14,7 @@ struct InputData {
 	uint32_t 	TotalBVHNodes;
 	uint32_t 	TotalSlices;
 	uint32_t 	MaxClusters;
-	// 软/硬光栅分配阈值：见 ClusterSelection.hlsl 的 ShouldUseSoftwareRaster。
+	// 软/硬光栅分配阈值：见 ClusterSelection.slang 的 ShouldUseSoftwareRaster。
 	// 0 = 全给硬光栅；很大 = 全给软光栅。
 	float		SwRasterThreshold;
 	// 整个层次里最细一层的 LOD 误差（由 SetClusterSelectionBuffer 扫 BVH 算出）。
@@ -48,7 +48,7 @@ constexpr uint32_t NANITE_MAX_CLUSTER_TRIANGLES = 128;
 
 // HZB（深度金字塔）最高层级：L0 = 全分辨率（上一帧深度），L1..L7 逐级 2×2 取 min。
 // 层级尺寸按**向上取整**逐级减半；以下三处必须完全一致：
-//   ClusterSelection.h（缓冲尺寸 / 派发量）、HZBBuild.hlsl、ClusterSelection.hlsl 的 HzbDim。
+//   ClusterSelection.h（缓冲尺寸 / 派发量）、HZBBuild.slang、ClusterSelection.slang 的 HzbDim。
 constexpr uint32_t NANITE_HZB_MAX_LEVEL = 7;
 
 // HZB 金字塔的 texel 总数 = L0..maxLevel 各层 ceil(w/2^L)×ceil(h/2^L) 之和
@@ -73,14 +73,14 @@ inline uint64_t GetHzbTexelCount(uint32_t width, uint32_t height, uint32_t maxLe
 // 原点平面可见高度约 462。故 bunny 取 ~184 与 mitsuba 视觉等大，160 稍小、画面更稳。
 // 注：projScale 与 LODError 同为长度量，缩放不改变选中的 LOD 集合，只改视觉大小。
 
-// NaniteRender.hlsl / FrameBufferWrite.hlsl / ClearScreen.hlsl 的 RenderParams，
+// NaniteRender.slang / FrameBufferWrite.slang / ClearScreen.slang 的 RenderParams，
 // std140 布局：float4x4(64) + float2(8) + 4×float(16) + 2×float(8) = 96B
 struct RenderParams {
 	glm::mat4 VPMatrix;    // world -> clip（行向量约定，见 Main.cpp transpose）
 	glm::vec2 screenSize;  // {NANITE_RT_WIDTH, NANITE_RT_HEIGHT}
 	float ClearDepth;      // 1.0f（最远深度）
 	uint32_t ClearColor;      // 0.0f
-	// 着色模式（FrameBufferWrite.hlsl 的解析管线用）：0 = Lambert 面着色；1 = 色块
+	// 着色模式（FrameBufferWrite.slang 的解析管线用）：0 = Lambert 面着色；1 = 色块
 	// （每簇一个固定颜色，用来肉眼查重叠/漏选）。运行时开关，面板上有勾选框，不再用宏编译。
 	// 这个位置原本是 NearPlane —— 三个着色器都只声明、从未读取，正好拿来用。**不要挪到结构体
 	// 尾部（88 字节处）**：尾部那 8 字节落在描述符声明的范围之外，着色器读到的恒为 0（实测踩过）。

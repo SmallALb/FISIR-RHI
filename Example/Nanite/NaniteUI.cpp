@@ -147,7 +147,7 @@ namespace NaniteUI {
 				ImGui::TextDisabled("RMB drag: look   WASD: move   Shift/Space: up-down");
 			}
 
-			// ── Shading (used by the resolve pass, see FrameBufferWrite.hlsl) ──
+			// ── Shading (used by the resolve pass, see FrameBufferWrite.slang) ──
 			if (ImGui::CollapsingHeader("Shading", ImGuiTreeNodeFlags_DefaultOpen)) {
 				bool colorBlock = params.ColorBlock != 0;
 				if (ImGui::Checkbox("Cluster color blocks", &colorBlock)) {

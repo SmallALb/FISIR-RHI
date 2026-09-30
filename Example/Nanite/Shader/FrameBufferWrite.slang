@@ -1,24 +1,25 @@
 // FrameBuffer 写入（解析）管线：把 VisBuffer 解析成最终帧缓冲。
 //
 // 分工：
-//   · 光栅阶段（NaniteRender.hlsl 的软光栅 compute + 硬光栅 VS/PS）只写 **可见性** ——
-//     VisBuffer 每像素 3 个 uint = (深度位模式, 簇数据区字节偏移 cb, 簇内三角形序号)，
-//     由 InterlockedMin 决出最近的那个片元。颜色因此不可能和深度来自不同片元
-//     （原来「先原子 min 深度、再条件写颜色」的两步写存在颜色竞争）。
+//   · 光栅阶段（NaniteRender.slang 的软光栅 compute + 硬光栅 VS/PS）只写 **可见性** ——
+//     VisBuffer 每像素一个 64 位打包字（高 32 位深度、低 32 位载荷），由 **64 位** InterlockedMin
+//     一次决出最近的那个片元。深度与载荷同属一个字，所以「颜色和深度来自不同片元」不可能发生
+//     （32 位时代「先原子 min 深度、再条件写载荷/颜色」的两步写正是这种竞争）。
 //   · 着色只发生在本文件这一处：软硬两条路径不再各写一份相同的色块/Lambert 代码。
 //
 // 一个线程一个像素，**不用原子**：胜负已经在 VisBuffer 里决出来了。
-// VisBuffer 布局与 ClearScreen.hlsl / NaniteRender.hlsl 必须一致（每像素 12 字节）；
+// VisBuffer 布局与 ClearScreen.slang / NaniteRender.slang 必须一致：
+//   每像素一个 64 位整数，高 32 位 = 深度位模式，低 32 位 = 载荷 (clusterID << 8) | 簇内三角形序号。
 // 写出的 FrameBuffer 布局与呈现侧读法一致（低 32 位颜色、高 32 位深度）。
 
 // ── 着色模式来自 RenderParams.ColorBlock（运行时开关，面板上可切）────────
 //   1 = 色块：每个簇一个固定纯色（同一片区域出现两种颜色 = 两层重叠；始终是背景色 = 漏选）。
 //   0 = Lambert 面着色（灰阶明暗）。
 
-RWByteAddressBuffer     VisBuffer           : register(u0);
-RWByteAddressBuffer     clusterPagesBuffer  : register(u1);
-RWByteAddressBuffer     FrameBuffer         : register(u2);
-cbuffer RenderParams : register(b3) {
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint64_t> VisBuffer : register(u0);
+[[vk::binding(1, 0)]] RWByteAddressBuffer     clusterPagesBuffer   : register(u1);
+[[vk::binding(2, 0)]] RWByteAddressBuffer     FrameBuffer          : register(u2);
+[[vk::binding(3, 0)]] cbuffer RenderParams  : register(b3) {
     float4x4 VPMatrix;
     float2   screenSize;
     float    ClearDepth;
@@ -27,7 +28,7 @@ cbuffer RenderParams : register(b3) {
     float    FarPlane;
 };
 
-// 顶点为 float3 位置（12 字节），存于簇数据区 cb+28（与 NaniteRender.hlsl 一致）
+// 顶点为 float3 位置（12 字节），存于簇数据区 cb+28（与 NaniteRender.slang 一致）
 float3 LoadVertexPosition(uint cb, uint vertexIndex) {
     return asfloat(clusterPagesBuffer.Load3(cb + 28 + vertexIndex * 12));
 }
@@ -60,14 +61,25 @@ void mainWriteFrameBuffer(uint3 tid : SV_DispatchThreadID) {
     if (tid.x >= size.x || tid.y >= size.y) return;
 
     const uint pixelIndex = tid.y * size.x + tid.x;
-    const uint visOffset = pixelIndex * 12;
 
-    const uint depthBits = VisBuffer.Load(visOffset + 0);
+    // 一次读到整个打包字：高 32 位深度、低 32 位载荷
+    const uint64_t visibility = VisBuffer[pixelIndex];
+    const uint depthBits = (uint)(visibility >> 32);
     // 清屏值 = 1.0f（0x3F800000）。正浮点数的位模式与数值同序，所以 >= 就是「没有几何」。
     if (depthBits >= 0x3F800000u) return;   // 该像素无几何，保留 ClearScreen 写的背景色
 
-    const uint cb = VisBuffer.Load(visOffset + 4);
-    const uint triIndex = VisBuffer.Load(visOffset + 8);
+    const uint payload = (uint)visibility;
+    const uint triIndex = payload & 0xFFu;
+    const uint clusterID = payload >> 8;
+
+    // 载荷里存的是 clusterID（页号 << 8 | 簇内偏移）而不是 cb，这里按页表把它还原成
+    // 簇数据区的字节偏移 cb —— 与 NaniteRender.slang 的 mainVS 用的是同一套寻址。
+    const uint pageIndex = clusterID >> 8;
+    const uint clusterOffset = clusterID & 0xFFu;
+    const uint pageBaseAddressOffset = clusterPagesBuffer.Load(4 + pageIndex * 4);
+    const uint clusterCount = clusterPagesBuffer.Load(pageBaseAddressOffset);
+    const uint clusterDataOffset = clusterPagesBuffer.Load(pageBaseAddressOffset + 4 + 4 * clusterOffset);
+    const uint cb = pageBaseAddressOffset + 4 + clusterCount * 4 + clusterDataOffset;
 
     uint color;
     if (ColorBlock) {

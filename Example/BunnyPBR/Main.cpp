@@ -115,7 +115,7 @@ static void WriteBMP(const char* path, uint32_t width, uint32_t height, const un
     fclose(f);
 }
 
-// ── 着色器编译封装：加载 .hlsl → DXC 编译 → RHICreateShader ────────
+// ── 着色器编译封装：加载 .slang → DXC 编译 → RHICreateShader ────────
 static FISIR::RHIShader* CompileShader(FISIR::DynamicRHI* rhi, const char* file,
                                        FISIR::ShaderTYP typ, const char* entry, const char* target) {
     std::string source = LoadFileText(file);
@@ -127,7 +127,7 @@ static FISIR::RHIShader* CompileShader(FISIR::DynamicRHI* rhi, const char* file,
     return shader;
 }
 
-// ── GPU 侧兔子结构（与 BunnyPBR.hlsl / Simulation.hlsl 的 Bunny 严格对齐，96 字节）──
+// ── GPU 侧兔子结构（与 BunnyPBR.slang / Simulation.slang 的 Bunny 严格对齐，96 字节）──
 struct alignas(16) GPUBunny {
     float position[4];      // xyz + pad
     float orientation[4];   // 四元数 xyzw
@@ -139,7 +139,7 @@ struct alignas(16) GPUBunny {
 static_assert(sizeof(GPUBunny) == 96, "GPUBunny must be 96 bytes");
 
 // ── 渲染帧常量（b0，静态相机 + 静态光照 → 每帧不变）────────────────
-// 与 BunnyPBR.hlsl / Skybox.hlsl 的 cbuffer FrameUB 逐字段一致（368 字节）。
+// 与 BunnyPBR.slang / Skybox.slang 的 cbuffer FrameUB 逐字段一致（368 字节）。
 // IBL 数据（IBLParams + SH9）也放在这里：环境是场景级常量，随 count 分组一起重传即可，
 // 不值得为它单开一个 binding 与一套资源包。
 struct alignas(16) FrameUB {
@@ -222,7 +222,7 @@ static void InitBunnies(std::vector<GPUBunny>& bunnies, uint32_t count,
         // 颜色 / 粗糙度 / 金属度：约 4 成金属 —— 金属的 F0 = 反照率且漫反射为 0，
         // 没有环境光照时会全黑，正是 IBL 最有说服力的展示对象，故金属粗糙度给低值
         // 以便看到清晰的环境反射；其余为电介质，粗糙度范围更宽。
-        // 金属度写进 halfExtents.w：它是 Simulation.hlsl 完全不碰的 pad 字段，
+        // 金属度写进 halfExtents.w：它是 Simulation.slang 完全不碰的 pad 字段，
         // 复用它既不用改结构体尺寸（仍 96 字节），也不必让仿真多传一份材质数据。
         glm::vec3 c = hsvToRgb(rnd(rng), 0.7f, 0.9f);
         const bool metallic = rnd(rng) < 0.4f;
@@ -373,9 +373,9 @@ int main(int argc, char* argv[]) {
     auto indexBuffer = rhi->RHICreateBuffer(ibInfo);
 
     // ── 5. 着色器编译 ──
-    auto vs = CompileShader(rhi, "Shader/BunnyPBR.hlsl", FISIR::__VERTEXSHADER__, "mainVS", "vs_5_0");
-    auto ps = CompileShader(rhi, "Shader/BunnyPBR.hlsl", FISIR::__FRAGMENTSHADER__, "mainPS", "ps_5_0");
-    auto cs = CompileShader(rhi, "Shader/Simulation.hlsl", FISIR::__COMPUTESHADER__, "mainCS", "cs_6_0");
+    auto vs = CompileShader(rhi, "Shader/BunnyPBR.slang", FISIR::__VERTEXSHADER__, "mainVS", "vs_5_0");
+    auto ps = CompileShader(rhi, "Shader/BunnyPBR.slang", FISIR::__FRAGMENTSHADER__, "mainPS", "ps_5_0");
+    auto cs = CompileShader(rhi, "Shader/Simulation.slang", FISIR::__COMPUTESHADER__, "mainCS", "cs_6_0");
     if (!vs || !ps || !cs) { Error("shader compilation failed"); return 1; }
 
     // ── 6. 离屏渲染目标 + 渲染通道 + 帧缓冲 ──
@@ -563,8 +563,8 @@ int main(int argc, char* argv[]) {
     // ── 9. 天空盒管线 ──────────────────────────────────────────────
     // 与地物共用同一个 render pass / framebuffer（深度附件就是那个用于深度测试的附件），
     // 因此不需要第二条 render pass，也不涉及多余的 layout 转换。
-    auto skyVS = CompileShader(rhi, "Shader/Skybox.hlsl", FISIR::__VERTEXSHADER__, "mainVS", "vs_5_0");
-    auto skyPS = CompileShader(rhi, "Shader/Skybox.hlsl", FISIR::__FRAGMENTSHADER__, "mainPS", "ps_5_0");
+    auto skyVS = CompileShader(rhi, "Shader/Skybox.slang", FISIR::__VERTEXSHADER__, "mainVS", "vs_5_0");
+    auto skyPS = CompileShader(rhi, "Shader/Skybox.slang", FISIR::__FRAGMENTSHADER__, "mainPS", "ps_5_0");
     if (!skyVS || !skyPS) { Error("skybox shader compilation failed"); return 1; }
 
     FISIR::RHIPipelineDescribeInfo skyDescribe{

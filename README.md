@@ -27,7 +27,8 @@
 - Windows 10/11
 - 支持 Vulkan 1.x 的显卡与驱动
 - MSVC（C++20）、CMake 3.21+
-- [Vulkan SDK](https://vulkan.lunarg.com/)（含 DXC，`dxcompiler.dll` 需在 `PATH` 或与可执行文件同目录）
+- [Vulkan SDK](https://vulkan.lunarg.com/)（用于构建；着色器不再需要 DXC）
+- [Slang](https://github.com/shader-slang/slang) 着色器编译器 SDK：放到 `vendor/slang/`（含 `include/`、`lib/`、`bin/`），或用 `-DSLANG_SDK_DIR=<路径>` 指定；CMake 找不到时会尝试自动下载。运行期需要 `slang.dll` 与 `slang-compiler.dll` 与可执行文件同目录（POST_BUILD 会自动拷贝）
 
 #### 构建与运行
 
@@ -162,7 +163,8 @@ BunnyPBR.exe -Test -C 10 -C 100 -C 500 -C 1000 -C 2000 -Frames 5000 -Warmup 100
 
  - 现已完成 Vulkan 后端的大部分功能（含计算管线，compute dispatch 已用于 GPU 剔除），D3D12 后端还未开始设计编写
  - PSO缓存管理，以及一些资源的管理方式任然需要进一步的优化和简化
- - 对于着色器目前只支持使用DXC编译hlsl为SPIR-V，后续将会将其修改为slang着色器语言
+ - 着色器统一由 [Slang](https://github.com/shader-slang/slang) 编译（`ShaderComplier.h`，源码为 `Example/*/Shader/*.slang`）：HLSL 语法与 Slang 语言都能吃，产物直接是 SPIR-V 1.5；绑定一律在着色器里显式写 `[[vk::binding(N, 0)]]`，不再依赖 register 的隐式推断
+ - Nanite 示例的 VisBuffer 已从「32 位原子 min 深度 + 普通写载荷」改为**64 位打包原子**（一次 `OpAtomicUMin(64)` 同时决出最近片元与其载荷），需要设备支持 `shaderBufferInt64Atomics`（Vulkan 1.2 核心特性）
  - 此渲染接口目前只能在windows平台中编译运行，更多平台的兼容和测试仍在开发中
  - 目前正在使用该RHI实现Nanite的样例，因此大部分的这些问题都会在边实现边完善或实现后进行完善（个人精力有限）
 

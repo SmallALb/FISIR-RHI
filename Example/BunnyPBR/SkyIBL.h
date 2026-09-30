@@ -201,7 +201,7 @@ namespace SkyIBL {
 		return (float)bits * 2.3283064365386963e-10f;
 	}
 
-	// GGX 半程向量重要性采样：α = roughness²，与 BunnyPBR.hlsl 的 D_GGX
+	// GGX 半程向量重要性采样：α = roughness²，与 BunnyPBR.slang 的 D_GGX
 	//（a = roughness², d = NoH²(a²-1)+1）保持同一套 α 定义，否则预滤波的波瓣
 	// 会比 BRDF 实际使用的波瓣宽/窄，粗糙度看起来「对不上」。
 	inline glm::vec3 ImportanceSampleGGX(float u1, float u2, const glm::vec3& n, float alpha) {

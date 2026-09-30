@@ -1,6 +1,6 @@
 // HZB（Hierarchical Z-Buffer / 深度金字塔）构建：给 Selection 做遮挡剔除用。
 //
-// 数据来源是 **上一帧** 的深度：ClearScreen.hlsl 在清屏前把上一帧 VisBuffer 的深度逐像素
+// 数据来源是 **上一帧** 的深度：ClearScreen.slang 在清屏前把上一帧 VisBuffer 的深度逐像素
 // 抄进 HZB 的 L0（全分辨率），本 pass 再把 L0 逐级 2×2 取 min 建出 L1..L7。
 // min 规约得到的是「该矩形内最近的遮挡物深度」—— 簇的最近点都比它还远，就说明整簇被挡住。
 //
@@ -21,8 +21,8 @@ struct HzbPushConstants {
 };
 [[vk::push_constant]] ConstantBuffer<HzbPushConstants> gPush;
 
-RWByteAddressBuffer HZB : register(u0);
-cbuffer RenderParams : register(b1) {
+[[vk::binding(0, 0)]] RWByteAddressBuffer HZB  : register(u0);
+[[vk::binding(1, 0)]] cbuffer RenderParams  : register(b1) {
     float4x4 VPMatrix;
     float2   screenSize;
     float    ClearDepth;

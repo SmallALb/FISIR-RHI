@@ -43,6 +43,10 @@ x64/
 *.obj
 *.log
 
+# ── 编译期产物：SPIR-V 二进制（着色器一律运行期由 Slang 编译） ──
+*.spv
+*.spvasm
+
 # ── 本地模型源文件（下载/离线转换用的原始网格，不入库） ────────
 Example/Nanite/Res/*.obj
 Example/Nanite/Res/*.ply

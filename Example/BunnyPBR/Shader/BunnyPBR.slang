@@ -1,6 +1,6 @@
-// BunnyPBR.hlsl —— 兔子 PBR 渲染（GGX metallic-roughness + 方向光 + 点光 + IBL）
+// BunnyPBR.slang —— 兔子 PBR 渲染（GGX metallic-roughness + 方向光 + 点光 + IBL）
 //
-// 与 Simulation.hlsl 共享同一份 GPU 侧 Bunny 布局（96 字节，与 C++ GPUBunny 严格对齐）：
+// 与 Simulation.slang 共享同一份 GPU 侧 Bunny 布局（96 字节，与 C++ GPUBunny 严格对齐）：
 //   float4 position     位置 xyz + pad
 //   float4 orientation  四元数 xyzw
 //   float4 velocity     线速度 xyz + 角速度(w)
@@ -27,10 +27,10 @@ struct Bunny {
     float4 color;
 };
 
-StructuredBuffer<Bunny> Bunnies : register(t1);
+[[vk::binding(1, 0)]] StructuredBuffer<Bunny> Bunnies  : register(t1);
 
 // 与 Main.cpp 的 FrameUB 逐字段一致（368 字节）
-cbuffer FrameUB : register(b0) {
+[[vk::binding(0, 0)]] cbuffer FrameUB  : register(b0) {
     float4x4 ViewProj;
     float4x4 InvViewProj;      // 天空盒用；本着色器未用但保持布局一致
     float4   CameraPos;        // xyz + pad
@@ -42,8 +42,8 @@ cbuffer FrameUB : register(b0) {
     float4   SH[9];            // 环境辐射亮度 SH9（原始系数，余弦卷积在 SHIrradiance 里做）
 };
 
-TextureCube  PrefilteredCube : register(t2);
-SamplerState CubeSampler     : register(s0);
+[[vk::binding(2, 0)]] TextureCube  PrefilteredCube  : register(t2);
+[[vk::binding(0, 0)]] SamplerState CubeSampler      : register(s0);
 
 struct VSInput {
     float3 pos    : POSITION;
@@ -207,7 +207,7 @@ float4 mainPS(VSOutput input) : SV_TARGET {
     // 环境强度：IBLParams.x 把烘焙时的峰值归一化还原成真实辐射亮度（天空盒用同一个值）
     color += (diffuseIBL + specularIBL) * IBLParams.x;
 
-    // Reinhard 色调映射 + gamma（与 Skybox.hlsl 完全一致）
+    // Reinhard 色调映射 + gamma（与 Skybox.slang 完全一致）
     color = color / (color + 1.0);
     color = pow(color, 1.0 / 2.2);
 

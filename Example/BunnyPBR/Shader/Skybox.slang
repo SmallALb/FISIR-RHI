@@ -1,4 +1,4 @@
-// Skybox.hlsl —— 全屏三角形绘制天空盒背景
+// Skybox.slang —— 全屏三角形绘制天空盒背景
 //
 // 顶点阶段不用顶点缓冲：靠 SV_VertexID 生成一个覆盖全屏的大三角形
 // （比两个三角形的 quad 少一次三角形 setup，且没有对角线上的重复着色）。
@@ -13,7 +13,7 @@
 
 // 与 Main.cpp 的 FrameUB 逐字段一致（368 字节）；天空盒只用到 InvViewProj /
 // CameraPos / IBLParams.w，但整段声明保持一致以免偏移漂移。
-cbuffer FrameUB : register(b0) {
+[[vk::binding(0, 0)]] cbuffer FrameUB  : register(b0) {
     float4x4 ViewProj;
     float4x4 InvViewProj;
     float4   CameraPos;
@@ -25,8 +25,8 @@ cbuffer FrameUB : register(b0) {
     float4   SH[9];            // 环境辐射亮度 SH9（本着色器不用，仅为保持布局一致）
 };
 
-TextureCube  EnvCube     : register(t2);
-SamplerState CubeSampler : register(s0);
+[[vk::binding(2, 0)]] TextureCube  EnvCube      : register(t2);
+[[vk::binding(0, 0)]] SamplerState CubeSampler  : register(s0);
 
 struct VSOutput {
     float4 pos : SV_POSITION;
@@ -55,7 +55,7 @@ float4 mainPS(VSOutput input) : SV_TARGET {
     // 真实辐射亮度（HDR：太阳圆盘远大于 1），w 是背景的独立倍率。
     float3 color = EnvCube.SampleLevel(CubeSampler, dir, 0).rgb * IBLParams.x * IBLParams.w;
 
-    // 与 BunnyPBR.hlsl 完全一致的 Reinhard 色调映射 + gamma：
+    // 与 BunnyPBR.slang 完全一致的 Reinhard 色调映射 + gamma：
     // 背景与被照亮的地物必须走同一条曝光曲线，否则两者对不上。
     color = color / (color + 1.0);
     color = pow(color, 1.0 / 2.2);

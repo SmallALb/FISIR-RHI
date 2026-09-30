@@ -259,8 +259,15 @@ namespace FISIR{
 					break;
 				}
 				case RHIDescriptorTyp::RBuffer: {
+					// 「只读缓冲」在 SPIR-V 里算哪一类，取决于编译器有没有给变量加 NonWritable：
+					// DXC 一向不加（于是永远是 READ_WRITE storage buffer），Slang 会正确地给
+					// ByteAddressBuffer / StructuredBuffer 这类只读声明加 NonWritable（于是变成
+					// READ_ONLY storage buffer）。两种都必须能匹配上，否则换 Slang 后
+					// vkCreateGraphicsPipelines 会报「no mapping for [Set 0, Binding N] ... 
+					// resourceMask doesn't match」。
 					alignment = sizes.bufferAlignment;
-					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
+					resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+					               VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
 					break;
 				}
 				case RHIDescriptorTyp::RWBuffer: {

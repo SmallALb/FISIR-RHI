@@ -700,7 +700,7 @@ int main(int argc, char* argv[]) {
 
 	// ── 2. 着色器（与 TextureCube 同款：纹理立方体 + 网格实例摆放）───────────
 	const wchar_t* vsCode = LR"(
-		cbuffer MVPBuffer : register(b0) {
+		[[vk::binding(0, 0)]] cbuffer MVPBuffer  : register(b0) {
 			float4x4 ViewProj;
 			float4x4 Model;
 			float4 GridParams;   // x=cols y=rows z=spacingX w=spacingY
@@ -740,8 +740,8 @@ int main(int argc, char* argv[]) {
 	delete vsCompiler;
 
 	const wchar_t* psCode = LR"(
-		Texture2D    myTexture : register(t1);
-		SamplerState mySampler : register(s0);
+		[[vk::binding(1, 0)]] Texture2D    myTexture  : register(t1);
+		[[vk::binding(0, 0)]] SamplerState mySampler  : register(s0);
 		struct PSInput {
 			float4 pos   : SV_POSITION;
 			float3 color : COLOR;

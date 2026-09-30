@@ -17,18 +17,18 @@
 #define NANITE_CLUSTER_OFFSET_MASK   0xFFu
 
 
-RWByteAddressBuffer 		clusterSelectionBuffer : register(u0);
-RWByteAddressBuffer     clusterPagesBuffer : register(u1);
+[[vk::binding(0, 0)]] RWByteAddressBuffer 		clusterSelectionBuffer  : register(u0);
+[[vk::binding(1, 0)]] RWByteAddressBuffer     clusterPagesBuffer  : register(u1);
 struct ClusterData {
   uint indexCount;
 	uint baseVertex;
 	uint baseIndex;
 	uint padding;
 };
-RWStructuredBuffer<ClusterData> clusterDataBuffer : register(u2);
+[[vk::binding(2, 0)]] RWStructuredBuffer<ClusterData> clusterDataBuffer  : register(u2);
 // 软光栅列表：[0] = 簇数，[1] = 三角形数（同时是三角形工作列表的分配计数器），[2..] = clusterID
-RWStructuredBuffer<uint> EnableClusterListSw : register(u3);
-cbuffer InputData :register(b4){
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> EnableClusterListSw  : register(u3);
+[[vk::binding(4, 0)]] cbuffer InputData  : register(b4){
   float4 Position;    // xyz + pad（std140 下 float3 被填充到 16 字节）
 	float4 Direction;   // xyz + pad
 	float	 LodScale;
@@ -70,19 +70,19 @@ struct DrawIndirectArgs {
     uint firstVertex;
     uint firstInstance;
 };
-RWStructuredBuffer<DrawIndirectArgs> IndirectDrawBuffer : register(u5);
+[[vk::binding(5, 0)]] RWStructuredBuffer<DrawIndirectArgs> IndirectDrawBuffer  : register(u5);
 // 硬光栅专用列表（软光栅那张是 u3 的 EnableClusterListSw）
-RWStructuredBuffer<uint> EnableClusterListHw : register(u6);
+[[vk::binding(6, 0)]] RWStructuredBuffer<uint> EnableClusterListHw  : register(u6);
 // 软光栅的**三角形工作列表**：由本 pass 展开，软光栅一个线程画一个三角形。
 // 每个三角形 3 个 uint：(clusterID, 簇数据区字节偏移 cb, 簇内三角形序号)。
 // 容量 = g_ClusterCount × NANITE_MAX_CLUSTER_TRIANGLES（C++ 侧 ClusterSelection.h 同名常量，必须一致）。
-RWStructuredBuffer<uint> SwTriList : register(u7);
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> SwTriList  : register(u7);
 #define NANITE_MAX_CLUSTER_TRIANGLES 128u
 
 // ── HZB 遮挡剔除用的输入 ────────────────────────────────────────
 // b8 = RenderParams（复用渲染那块，取 VPMatrix + screenSize 做屏幕投影）；
-// u9 = HZB 深度金字塔（L0 是上一帧深度，L1..L7 由 HZBBuild.hlsl 取 min 建出）。
-cbuffer RenderParams : register(b8) {
+// u9 = HZB 深度金字塔（L0 是上一帧深度，L1..L7 由 HZBBuild.slang 取 min 建出）。
+[[vk::binding(8, 0)]] cbuffer RenderParams  : register(b8) {
 	float4x4 VPMatrix;
 	float2   screenSize;
 	float    ClearDepth;
@@ -90,7 +90,7 @@ cbuffer RenderParams : register(b8) {
 	uint     HzbColorBlockUnused;
 	float    FarPlane;
 };
-RWByteAddressBuffer HZB : register(u9);
+[[vk::binding(9, 0)]] RWByteAddressBuffer HZB  : register(u9);
 #define NANITE_HZB_MAX_LEVEL 7
 
 // ── BVH 下降用的无锁队列（GPU 写、GPU 读）与去重表 ─────────────────────
@@ -99,11 +99,32 @@ RWByteAddressBuffer HZB : register(u9);
 // 不需要 push constant 去传轮次。
 // 队列由**上一层**写、本层读；页按录制顺序提交 ⇒ 轮次有序。
 #define NANITE_QUEUE_HEADER 1u
-RWStructuredBuffer<uint> BvhQueueIn  : register(u10);
-RWStructuredBuffer<uint> BvhQueueOut : register(u11);
+[[vk::binding(10, 0)]] RWStructuredBuffer<uint> BvhQueueIn   : register(u10);
+[[vk::binding(11, 0)]] RWStructuredBuffer<uint> BvhQueueOut  : register(u11);
 // 去重表：这个 DAG 是**多父**的（同一个组会被多条路径到达），不判重就会重复入队 → 重复绘制。
 // [0] = 本帧帧号（主机每帧 +1），[1 + node] = 最近一次访问它的帧号；命中即已访问（不需要每帧清缓冲）。
-RWStructuredBuffer<uint> BvhVisited  : register(u12);
+[[vk::binding(12, 0)]] RWStructuredBuffer<uint> BvhVisited   : register(u12);
+
+// 半精度 → 单精度：手写位解码，刻意**不用** HLSL 的 f16tof32。
+// 原因：f16tof32 会让 Slang 在 SPIR-V 里声明 Float16 / Int16 能力集，而它们分别要求设备开启
+// shaderFloat16（Vulkan 1.2）与 shaderInt16 —— 这里只是把两个打包进 uint 的 half 解出来，
+// 却要给整个 Nanite 示例再添两道设备门槛。手写解码只用整数位运算，任何 Vulkan 1.0 设备都能跑。
+float HalfToFloat(uint h) {
+	const uint sign     = (h & 0x8000u) << 16;
+	const uint exponent = (h >> 10) & 0x1Fu;
+	const uint mantissa = h & 0x3FFu;
+
+	if (exponent == 0u) {
+		// 零 / 次正规数：half 次正规数 = mantissa × 2⁻²⁴，用一次浮点乘精确还原
+		const float subnormal = (float)mantissa * (1.0f / 16777216.0f);
+		return (sign != 0u) ? -subnormal : subnormal;
+	}
+	if (exponent == 31u) {
+		return asfloat(sign | 0x7F800000u | (mantissa << 13));   // Inf / NaN
+	}
+	// 正常数：阶码偏置由 -15 换成 +127（127 - 15 = 112），尾数左移 13 位补齐单精度 23 位
+	return asfloat(sign | ((exponent + 112u) << 23) | (mantissa << 13));
+}
 
 HierarchyNodeSlice UnPackHierarchyNodeSlice(uint4 RawData0, uint4 RawData1, uint4 RawData2, uint RawData3) {
 	const uint4 Misc0 = RawData1;   // BoxBoundsCenter.xyz + MinLODError_MaxParentLODError（两个 half 打包）
@@ -118,8 +139,8 @@ HierarchyNodeSlice UnPackHierarchyNodeSlice(uint4 RawData0, uint4 RawData1, uint
 	// LOD 误差打包为两个 half：低 16 位 = MinLODError（本槽这一层自身的误差 ε_d），
 	// 高 16 位 = MaxParentLODError（本组被简化成的那一版、更粗一级的误差 ε_{d+1}
 	// = clodGroup::simplified.error；最粗的终端组为 +Inf，表示「没有更粗的一级」）
-	Res.MinLODError = f16tof32(Misc0.w);
-	Res.MaxParentLODError = f16tof32(Misc0.w >> 16);
+	Res.MinLODError = HalfToFloat(Misc0.w);
+	Res.MaxParentLODError = HalfToFloat(Misc0.w >> 16);
 
 	Res.ChildStartReference = Misc1.w;
 
@@ -234,7 +255,7 @@ bool CullSphere(float4 LODBounds) {
 	const float3 center = LODBounds.xyz;
 	const float  radius = LODBounds.w;
 
-	// VPMatrix 是行向量约定（与 NaniteRender.hlsl 一致）；clip.w = 沿视线的距离，正数在相机前方
+	// VPMatrix 是行向量约定（与 NaniteRender.slang 一致）；clip.w = 沿视线的距离，正数在相机前方
 	const float4 clip = mul(float4(center, 1.0f), VPMatrix);
 	// 整个球都在相机背后 → 直接剔除。**这一条必须单独判**：背对物体时所有球的 clip.w 都是负数，
 	// 若只写成 clip.w <= radius 就一律放行，结果整场景的簇都被选中并送去光栅化（实测背对时
@@ -295,8 +316,8 @@ ClusterPayload LoadClusterPayload(uint pageIndex, uint clusterOffset) {
 
 	uint clusterLODErrorAndEdgeLength = clusterPagesBuffer.Load(clusterBaseAddress + 24);
 
-	payload.LODError = f16tof32(clusterLODErrorAndEdgeLength & 0xFFFF);
-	payload.EdgeLength = f16tof32(clusterLODErrorAndEdgeLength >> 16);
+	payload.LODError = HalfToFloat(clusterLODErrorAndEdgeLength & 0xFFFF);
+	payload.EdgeLength = HalfToFloat(clusterLODErrorAndEdgeLength >> 16);
 
 	payload.IndexCount = clusterPagesBuffer.Load(clusterBaseAddress + 4);
 	payload.BaseVertex = clusterPagesBuffer.Load(clusterBaseAddress + 8);

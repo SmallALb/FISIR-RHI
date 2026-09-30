@@ -38,7 +38,7 @@
 // DXC 定位规则结果一致，不会因实现差异把属性错位。
 // ════════════════════════════════════════════════════════════════════════════
 static const wchar_t* ImGuiVertexShader = LR"(
-cbuffer ImGuiParams : register(b0) {
+[[vk::binding(0, 0)]] cbuffer ImGuiParams  : register(b0) {
     // row_major：C++ 侧按行主序填 16 个 float（见 BuildProjectionMatrix），
     // 配合 mul(行向量, M) 的约定，两边都不需要转置。
     row_major float4x4 ProjMatrix;
@@ -66,8 +66,8 @@ VSOutput main(VSInput input) {
 )";
 
 static const wchar_t* ImGuiPixelShader = LR"(
-Texture2D    g_FontTexture : register(t1);
-SamplerState g_FontSampler : register(s2);
+[[vk::binding(1, 0)]] Texture2D    g_FontTexture  : register(t1);
+[[vk::binding(2, 0)]] SamplerState g_FontSampler  : register(s2);
 
 struct PSInput {
     float4 pos : SV_POSITION;

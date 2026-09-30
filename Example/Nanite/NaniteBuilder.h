@@ -2,8 +2,8 @@
 // NaniteBuilder.h —— 用 meshoptimizer + clusterlod 从三角形网格离线生成 Nanite 簇与层级 BVH。
 //
 // 输出两份字节块（与运行时读取方式逐字节一致）：
-//   · BVH          -> ClusterSelection.hlsl 的 clusterSelectionBuffer (u0)
-//   · nanitemesh   -> ClusterSelection.hlsl 的 clusterPagesBuffer (u1)
+//   · BVH          -> ClusterSelection.slang 的 clusterSelectionBuffer (u0)
+//   · nanitemesh   -> ClusterSelection.slang 的 clusterPagesBuffer (u1)
 //
 // ── 生成流程 ─────────────────────────────────────────────────────
 //   1. clodBuild()（vendor/meshoptimizer/demo/clusterlod.h）聚簇 + 逐层合并简化，
@@ -57,7 +57,7 @@
 // 派生出的 vertexCount 无界 ⇒ 853 条 DrawIndirect 时 GPU TDR。page 0 恰好读成 0，
 // 所以现象是「部分正常、部分错乱」，极易误判。校验必须按着色器的方式解码读回，见文末。
 //
-// 另注：ClusterSelection.hlsl 的 EnableClusterList 是 [选中数][clusterID...] 的线性列表，
+// 另注：ClusterSelection.slang 的 EnableClusterList 是 [选中数][clusterID...] 的线性列表，
 // 一帧选中总数受该缓冲容量限制（ClisterSelection.cpp 里按簇数分配，足够）。
 
 #include <cstdint>
@@ -100,13 +100,13 @@ static inline uint16_t floatToHalf(float v) {
     return (uint16_t)h;
 }
 
-// ── 与 ClusterSelection.hlsl 严格对应的常量 ──
+// ── 与 ClusterSelection.slang 严格对应的常量 ──
 constexpr uint32_t NANITE_BVH_FANOUT           = 4;   // 每节点 4 个子槽
 constexpr uint32_t NANITE_BVH_NODE_SLICE_SIZE  = (4 + 4 + 4 + 1) * 4 * NANITE_BVH_FANOUT;   // 208
 constexpr uint32_t NANITE_INTERNAL_NODE_MARKER = 0xFFFFFFFFu;
 constexpr uint32_t NANITE_GROUP_PART_SIZE_MASK = 0xFFu;   // 叶槽低 8 位 = 簇个数
 constexpr uint32_t NANITE_CLUSTER_OFFSET_MASK = 0xFFu;    // ChildStartReference 低 8 位 = 页内簇下标
-                                                          // （与 ClusterSelection.hlsl 的宏同名同值）
+                                                          // （与 ClusterSelection.slang 的宏同名同值）
 
 // ── 槽 = 一个完整的 clusterlod group（LOD 判定的原子单位）──
 // 判据「本层误差 ≤ 阈值 < 更粗一层误差」必须是**组一级原子**的：
@@ -554,7 +554,7 @@ static NaniteBuildResult BuildNaniteData(
             // 高 half = MaxParentLODError = 本组被简化成的那一版（更粗一级）的误差 ε_{d+1}
             //                              = clodGroup::simplified.error（clusterlod 文档里
             //                              「the group it's in」对应的那个值）
-            // 运行时逐簇判据（见 ClusterSelection.hlsl）：ε_d ≤ T < ε_{d+1}，
+            // 运行时逐簇判据（见 ClusterSelection.slang）：ε_d ≤ T < ε_{d+1}，
             // 即「本层够精细，且更粗一层还不够精细」——DAG 多父结构下唯一自洽的判据。
             // 终端组 ε_{d+1} = FLT_MAX → half 溢出成 +Inf → 右半边恒成立（最粗一层总能画）。
             misc0[c * 4 + 3] = (uint32_t)floatToHalf(recs[g].own) | ((uint32_t)floatToHalf(recs[g].error) << 16);

@@ -1,4 +1,4 @@
-// Simulation.hlsl —— 兔子刚体碰撞仿真（全在 compute shader 上跑）
+// Simulation.slang —— 兔子刚体碰撞仿真（全在 compute shader 上跑）
 //
 // 每帧一个 dispatch，numthreads(64,1,1)，N 只兔子各占一个线程：
 //   1. 积分：位置 += 速度·dt；绕自旋轴旋转角速度·dt（脚本自旋）
@@ -21,9 +21,9 @@ struct Bunny {
     float4 color;
 };
 
-RWStructuredBuffer<Bunny> Bunnies : register(u1);
+[[vk::binding(1, 0)]] RWStructuredBuffer<Bunny> Bunnies  : register(u1);
 
-cbuffer SimParams : register(b0) {
+[[vk::binding(0, 0)]] cbuffer SimParams  : register(b0) {
     float dt;            // 帧步长（秒）
     float boxHalf;       // 大盒体半边长
     float restitution;   // 恢复系数 e

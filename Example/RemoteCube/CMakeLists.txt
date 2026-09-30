@@ -12,7 +12,6 @@ target_include_directories(RemoteCube
         ${CMAKE_CURRENT_SOURCE_DIR}         # local: stb_image_write.h
         ${CMAKE_CURRENT_SOURCE_DIR}/..      # Example/glm（共享的 glm）
         ${Vulkan_INCLUDE_DIRS}
-        ${Vulkan_INCLUDE_DIRS}/dxc
 )
 
 target_compile_definitions(RemoteCube
@@ -31,27 +30,11 @@ target_link_libraries(RemoteCube
 )
 
 # ── 运行时依赖 ───────────────────────────────────────────────────────────────
-# dxcompiler 由 ShaderComplier 在运行期加载（HLSL→SPIR-V）
-set(VK_BIN_DIR ${Vulkan_INCLUDE_DIRS}/../Bin)
 
 if(WIN32)
-    set(DXC_LIBRARY_NAME "dxcompiler.dll")
-    set(DXC_LIBRARY_PATH "${VK_BIN_DIR}/${DXC_LIBRARY_NAME}")
 
     set_target_properties(RemoteCube PROPERTIES
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-    )
-elseif(UNIX)
-    set(DXC_LIBRARY_NAME "libdxcompiler.so")
-    set(DXC_LIBRARY_PATH "${VK_BIN_DIR}/${DXC_LIBRARY_NAME}")
-endif()
-
-if(DXC_LIBRARY_PATH AND EXISTS "${DXC_LIBRARY_PATH}")
-    add_custom_command(TARGET RemoteCube POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DXC_LIBRARY_PATH}"
-            "$<TARGET_FILE_DIR:RemoteCube>"
-        COMMENT "Copying ${DXC_LIBRARY_NAME} -> RemoteCube output"
     )
 endif()
 
