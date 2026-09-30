@@ -6,6 +6,9 @@
 #include <array>
 #include <chrono>
 #include <ctime>
+#ifdef __ANDROID__
+#include <android/log.h>   // __android_log_print：把日志发到 logcat（tag=FISIR）
+#endif
 
 namespace FISIR {
 	static std::atomic_bool stopTag = false;
@@ -124,7 +127,9 @@ namespace FISIR {
 				if (!MessageQue->pop(Data)) continue;
 				if (stopTag.load()) break;
 
+#ifndef __ANDROID__
 				printf("%s", colors[(int)Data.level]);
+#endif
 				const char* levelName = "????";
 				switch (Data.level) {
 					case LogLevel::INFO_:  levelName = "INFO";  break;
@@ -150,6 +155,23 @@ namespace FISIR {
 #endif
 
 				std::array<char, 5*1024> buffer;
+#ifdef __ANDROID__
+				// Android：走 logcat。原生的 printf 在 logcat 里只会显示成 tag=stdout 的裸行、
+				// 丢掉等级，所以这里按等级发到 "FISIR" tag（同时去掉 ANSI 颜色码）。
+				snprintf(buffer.data(), buffer.size(),
+					"[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s]: %s",
+					local_tm.tm_year + 1900,
+					local_tm.tm_mon + 1,
+					local_tm.tm_mday,
+					local_tm.tm_hour,
+					local_tm.tm_min,
+					local_tm.tm_sec,
+					Data.file, Data.function, levelName, Data.Msg);
+				static const int androidPrio[] = {
+					ANDROID_LOG_INFO, ANDROID_LOG_WARN, ANDROID_LOG_ERROR, ANDROID_LOG_DEBUG
+				};
+				__android_log_print(androidPrio[(int)Data.level], "FISIR", "%s", buffer.data());
+#else
 				snprintf(buffer.data(), buffer.size(),
 					"\033[0m[%04d-%02d-%02d %02d:%02d:%02d][%s][%s][%s%s\033[0m]: %s",
 					local_tm.tm_year + 1900,
@@ -162,6 +184,7 @@ namespace FISIR {
 					colors[(int)Data.level], levelName, Data.Msg);
 				printf("%s\n", buffer.data());
 				fflush(stdout);
+#endif
 			}
 			});
 		}

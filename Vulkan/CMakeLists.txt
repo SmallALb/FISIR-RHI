@@ -56,4 +56,12 @@ if(WIN32)
     )
     # MinGW adds "lib" prefix — suppress it on Windows
     set_target_properties(RHIVK PROPERTIES PREFIX "")
+elseif(ANDROID)
+    # Android 的平台表面扩展：VkAndroidSurfaceCreateInfoKHR / ANativeWindow
+    # （RHICreator 会以 "libRHIVK.so" 动态加载它，见 RHICreator.h 的 Android 分支）
+    target_compile_definitions(RHIVK PRIVATE
+        VK_USE_PLATFORM_ANDROID_KHR
+        NOMINMAX
+    )
+    target_link_libraries(RHIVK PRIVATE android)
 endif()

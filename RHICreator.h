@@ -20,7 +20,13 @@ namespace FISIR{
 			std::string res = "RHI/";
 			switch (api) {
 			case RHIAPI::Vulkan:
+#ifdef __ANDROID__
+				// Android：后端就是一个共享库，动态链接器会在 APK 的 lib/<abi>/ 里找它
+				// （Gradle/打包脚本把 libRHIVK.so 放到那里）。
+				return "libRHIVK.so";
+#else
 				return res + "Vulkan/RHIVK.dll";
+#endif
 			default:
 				return res;
 			}

@@ -59,10 +59,15 @@ namespace FISIR {
 		// 只为 Win32Window 建 surface；句柄布局 = Win32DisplayHandle{ hinstance, hwnd }
 		void CreateWin32Surface();
 
+		// 只为 AndroidWindow 建 surface；句柄布局 = AndroidDisplayHandle{ nativeWindow }
+		// （ANativeWindow* → vkCreateAndroidSurfaceKHR，需要实例扩展 VK_KHR_android_surface）
+		void CreateAndroidSurface();
+
 		uint32_t SwapChainSlotCount{ DEFAULT_SWAPCHAIN_SLOT_COUNT };
 		DisplayDeviceType DisplayType{ DisplayDeviceType::Win32Window };
 		// 建 surface 用到的句柄副本（按 DisplayType 解释；Headless/未实现类型不填）
 		struct Win32Data { void* hinstance; void* hwnd; } WindowHandle{ nullptr, nullptr };
+		struct AndroidData { void* nativeWindow; } AndroidWindowHandle{ nullptr };
 	};
 
 }

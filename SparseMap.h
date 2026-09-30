@@ -20,8 +20,10 @@
 
     private:
       static constexpr int32_t INVALID_INDEX = -1;
-      static constexpr SizeType_ PAGE_SIZE = (1<<PAGE_SHIFT);
-      static constexpr SizeType_ PAGE_MASK = PAGE_SIZE-1;
+      // 名字刻意不叫 PAGE_SIZE / PAGE_MASK：Android（Bionic）的 <bits/page_size.h> 把这两个名字
+      // 定义成了宏（4096 / ~(PAGE_SIZE-1)），撞上就会变成「expected member name」之类的解析错误。
+      static constexpr SizeType_ kPageSize = (1<<PAGE_SHIFT);
+      static constexpr SizeType_ kPageMask = kPageSize-1;
 
     public:
       sparse_map() = default;
@@ -31,8 +33,8 @@
         mSparse.resize(other.mSparse.size(), nullptr);
         for (SizeType_ i = 0; i < other.mSparse.size(); ++i) {
           if (other.mSparse[i]) {
-            mSparse[i] = new int32_t[PAGE_SIZE];
-            std::copy_n(other.mSparse[i], PAGE_SIZE, mSparse[i]);
+            mSparse[i] = new int32_t[kPageSize];
+            std::copy_n(other.mSparse[i], kPageSize, mSparse[i]);
           }
         }
       }
@@ -53,8 +55,8 @@
           mSparse.resize(other.mSparse.size(), nullptr);
           for (SizeType_ i = 0; i < other.mSparse.size(); ++i) {
             if (other.mSparse[i]) {
-              mSparse[i] = new int32_t[PAGE_SIZE];
-              std::copy_n(other.mSparse[i], PAGE_SIZE, mSparse[i]);
+              mSparse[i] = new int32_t[kPageSize];
+              std::copy_n(other.mSparse[i], kPageSize, mSparse[i]);
             }
           }
         }
@@ -83,7 +85,7 @@
 
       bool contains(EntityType_ entity) const {
         const SizeType_ pageIndex = entity >> PAGE_SHIFT;
-        const SizeType_ pageOffset = entity & PAGE_MASK;
+        const SizeType_ pageOffset = entity & kPageMask;
         if (pageIndex >= mSparse.size() || !mSparse[pageIndex]) return false;
         const int32_t dense_index = mSparse[pageIndex][pageOffset];
         return dense_index != INVALID_INDEX &&
@@ -94,49 +96,49 @@
       void reverse(SizeType_ capacity) {
         mDense.reserve(capacity);
         SizeType_ maxEntity = capacity << 1;
-        SizeType_ required_pages = (maxEntity + PAGE_MASK) / PAGE_SIZE;
+        SizeType_ required_pages = (maxEntity + kPageMask) / kPageSize;
         if (mSparse.size() < required_pages) mSparse.resize(required_pages);
       }
 
       DataType_& insert(EntityType_ entity, DataType_ data = DataType_{}) {
-        if (contains(entity)) return mDense[mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK]].second;
+        if (contains(entity)) return mDense[mSparse[entity >> PAGE_SHIFT][entity & kPageMask]].second;
         make_valid_sparePage(entity);
         if (mSize < mDense.size())
           mDense[mSize] = Entry{entity, data};
         else
           mDense.emplace_back(entity, data);
 
-        mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK] = static_cast<int32_t>(mSize);
+        mSparse[entity >> PAGE_SHIFT][entity & kPageMask] = static_cast<int32_t>(mSize);
         mSize++;
         return mDense[mSize - 1].second;
       }
 
       template<class ...Args>
       DataType_& emplace(EntityType_ entity, Args&&... args) {
-        if (contains(entity)) return mDense[mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK]].second;
+        if (contains(entity)) return mDense[mSparse[entity >> PAGE_SHIFT][entity & kPageMask]].second;
         make_valid_sparePage(entity);
         if (mSize < mDense.size())
           mDense[mSize] = Entry{entity, DataType_(std::forward<Args>(args)...)};
         else
           mDense.emplace_back(entity, DataType_(std::forward<Args>(args)...));
-        mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK] = static_cast<int32_t>(mSize);
+        mSparse[entity >> PAGE_SHIFT][entity & kPageMask] = static_cast<int32_t>(mSize);
         mSize++;
         return mDense[mSize - 1].second;
       }
 
       DataType_& get(EntityType_ entity) {
         make_valid_sparePage(entity);
-        int32_t dense_index = mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK];
+        int32_t dense_index = mSparse[entity >> PAGE_SHIFT][entity & kPageMask];
         if (dense_index == INVALID_INDEX) {
           if (mSize < mDense.size()) {
             mDense[mSize] = Entry{entity, DataType_{}};
             dense_index = static_cast<int32_t>(mSize);
-            mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK] = dense_index;
+            mSparse[entity >> PAGE_SHIFT][entity & kPageMask] = dense_index;
             mSize++;
           } else {
             mDense.emplace_back(entity, DataType_{});
             dense_index = static_cast<int32_t>(mDense.size() - 1);
-            mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK] = dense_index;
+            mSparse[entity >> PAGE_SHIFT][entity & kPageMask] = dense_index;
             mSize++;
           }
         }
@@ -145,18 +147,18 @@
 
       const DataType_& get(EntityType_ entity) const {
         assert(contains(entity));
-        return mDense[mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK]].second;
+        return mDense[mSparse[entity >> PAGE_SHIFT][entity & kPageMask]].second;
       }
 
       void erase(EntityType_ entity) {
         if (!contains(entity)) return;
         const SizeType_ page_index = entity >> PAGE_SHIFT;
-        const SizeType_ page_offset = entity & PAGE_MASK;
+        const SizeType_ page_offset = entity & kPageMask;
         const int32_t dense_index = mSparse[page_index][page_offset];
         if (static_cast<size_t>(dense_index) != mSize - 1) {
           const EntityType_ lstEntity = mDense[mSize - 1].first;
           mDense[dense_index] = std::move(mDense[mSize - 1]);
-          mSparse[lstEntity >> PAGE_SHIFT][lstEntity & PAGE_MASK] = dense_index;
+          mSparse[lstEntity >> PAGE_SHIFT][lstEntity & kPageMask] = dense_index;
         }
         mSparse[page_index][page_offset] = INVALID_INDEX;
         mSize--;
@@ -165,7 +167,7 @@
       void clear() {
         for (SizeType_ i = 0; i < mSize; ++i) {
           const EntityType_ entity = mDense[i].first;
-          mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK] = INVALID_INDEX;
+          mSparse[entity >> PAGE_SHIFT][entity & kPageMask] = INVALID_INDEX;
         }
         mSize = 0;
         mDense.clear();
@@ -181,12 +183,12 @@
 
       auto find(EntityType_ entity) {
         if (!contains(entity)) return end();
-        return begin() + mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK];
+        return begin() + mSparse[entity >> PAGE_SHIFT][entity & kPageMask];
       }
 
       auto find(EntityType_ entity) const {
         if (!contains(entity)) return end();
-        return begin() + mSparse[entity >> PAGE_SHIFT][entity & PAGE_MASK];
+        return begin() + mSparse[entity >> PAGE_SHIFT][entity & kPageMask];
       }
 
       EntityType get_entity(SizeType_ index) const {
@@ -208,7 +210,7 @@
 
       SizeType_ get_allocated_sparse_size() const {
         SizeType_ t = 0;
-        for (const auto& page : mSparse) if (page) t += PAGE_SIZE;
+        for (const auto& page : mSparse) if (page) t += kPageSize;
         return t;
       }
 
@@ -217,8 +219,8 @@
         const SizeType_ page_index = entity >> PAGE_SHIFT;
         if (page_index >= mSparse.size()) mSparse.resize(page_index + 1, nullptr);
         if (!mSparse[page_index]) {
-          mSparse[page_index] = new int32_t[PAGE_SIZE];
-          std::fill_n(mSparse[page_index], PAGE_SIZE, INVALID_INDEX);
+          mSparse[page_index] = new int32_t[kPageSize];
+          std::fill_n(mSparse[page_index], kPageSize, INVALID_INDEX);
         }
       }
 

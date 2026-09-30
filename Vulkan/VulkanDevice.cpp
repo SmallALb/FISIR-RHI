@@ -502,6 +502,29 @@ namespace FISIR {
 			NumProrities += Prpos.queueCount;
 		}
 
+		// ── Pass 2：把 Pass 1 没认领到的角色回填到已有族上 ────────────────────────
+		// Pass 1 是「一个族只认领一个角色」，在桌面驱动上正好（G/C/T 各自有独立族）。
+		// 但移动 GPU（Adreno / Mali）通常只有**一个** GRAPHICS|COMPUTE|TRANSFER 族：
+		// Pass 1 认领了 G 之后就不再认领 C/T，于是它们一直是 -1，下面那个检查便直接报
+		// "The Graphic Que haven't found" 让整个设备初始化失败 —— 一个只在手机上暴露的 bug。
+		// 这里按「支持该位的最小族号」回填（多族设备不受影响，因为首选角色已在前一轮定好）。
+		if (mData->CQueFamilyIndex == -1 || mData->TQueFamilyIndex == -1) {
+			for (uint32_t FamilyIndex = 0; FamilyIndex < mData->mQueueFamilyProperties.size(); FamilyIndex++) {
+				const auto& Prpos = mData->mQueueFamilyProperties[FamilyIndex];
+				if (mData->CQueFamilyIndex == -1 && (Prpos.queueFlags & VK_QUEUE_COMPUTE_BIT))
+					mData->CQueFamilyIndex = FamilyIndex;
+				// 传输能力由 GRAPHICS / COMPUTE **隐含**：Vulkan 只在"专用传输族"上置
+				// VK_QUEUE_TRANSFER_BIT，图形/计算族不置也算支持传输。Adreno 的族 0 就是
+				// GRAPHICS|COMPUTE（没置 TRANSFER 位），只认标志位的话 T 会一直是 -1。
+				if (mData->TQueFamilyIndex == -1 &&
+					((Prpos.queueFlags & VK_QUEUE_TRANSFER_BIT) ||
+					 (Prpos.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))))
+					mData->TQueFamilyIndex = FamilyIndex;
+			}
+			Info("[Vulkan] 单队列族设备：C/T 回填到族 {} / {}（G={}）",
+				mData->CQueFamilyIndex, mData->TQueFamilyIndex, mData->GQueFamilyIndex);
+		}
+
 		// ── 队列：设备创建时一次性要足，并按用途分三档优先级 ────────────────────
 		//
 		// 为什么这么做：视口/交换链改成**初始化之后**才创建（运行期随时会多出窗口），而 Vulkan 的
@@ -540,8 +563,11 @@ namespace FISIR {
 		if (totalQueues < kMinTotalQueues)
 			Warn("[Vulkan] hardware offers only {} queues (target >= {}); runtime viewport count is limited", totalQueues, kMinTotalQueues);
 
-		if (mData->CQueFamilyIndex == -1) {
-			Error("Error Device The Graphic Que haven't found");
+		// 缺任何一个角色都不行：缺 G 没法渲染，缺 C/T 会让 mComputeQue/mTransferQueue 拿不到队列
+		// （注意这里必须检查 G，原实现检查的是 C 却打印 "Graphic Que"）。
+		if (mData->GQueFamilyIndex == -1 || mData->CQueFamilyIndex == -1 || mData->TQueFamilyIndex == -1) {
+			Error("Error Device: 找不到队列族 G={} C={} T={}",
+				mData->GQueFamilyIndex, mData->CQueFamilyIndex, mData->TQueFamilyIndex);
 			return false;
 		}
 

@@ -25,6 +25,8 @@ namespace FISIR {
 	};
 #ifdef _WIN32
 	static PFN_vkCreateWin32SurfaceKHR vkWind32SurfaceCreate = nullptr;
+#elif defined(__ANDROID__)
+	static PFN_vkCreateAndroidSurfaceKHR vkAndroidSurfaceCreate = nullptr;
 #endif //  _WIN32
 
 	
@@ -50,6 +52,17 @@ namespace FISIR {
 			WindowHandle = { win32->hinstance, win32->hwnd };
 			mData->WindowHandle = &WindowHandle;
 			CreateWin32Surface();
+			break;
+		}
+		case DisplayDeviceType::AndroidWindow: {
+			if (!deviceHandle) {
+				Error("VulkanViewport: AndroidWindow 需要 AndroidDisplayHandle{ nativeWindow }，收到 nullptr");
+				return;
+			}
+			auto* android = static_cast<FISIR::AndroidDisplayHandle*>(deviceHandle);
+			AndroidWindowHandle = { android->nativeWindow };
+			mData->WindowHandle = &AndroidWindowHandle;
+			CreateAndroidSurface();
 			break;
 		}
 		case DisplayDeviceType::Headless:
@@ -90,6 +103,31 @@ namespace FISIR {
 
 		Info("Create Win32 Vulkan Surface Successed!");
 	#endif //  _WIN32
+	}
+
+	// 只为 AndroidWindow 设备建 surface。句柄布局 = AndroidDisplayHandle{ nativeWindow }，
+	// 真身是 ANativeWindow*（Android 上唯一能拿到 VkSurfaceKHR 的途径）。
+	void VulkanViewport::CreateAndroidSurface() {
+	#ifdef __ANDROID__
+		auto* android = static_cast<AndroidData*>(mData->WindowHandle);
+		vkAndroidSurfaceCreate = reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(
+			vkGetInstanceProcAddr(GetGlobalInstance(), "vkCreateAndroidSurfaceKHR"));
+		if (!vkAndroidSurfaceCreate) {
+			Error("vkCreateAndroidSurfaceKHR 不可用：实例扩展 VK_KHR_android_surface 没开？");
+			return;
+		}
+		VkAndroidSurfaceCreateInfoKHR androidSurfaceCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+			.pNext = nullptr,
+			.flags = 0,
+			.window = static_cast<ANativeWindow*>(android->nativeWindow),
+		};
+		if (vkAndroidSurfaceCreate(GetGlobalInstance(), &androidSurfaceCreateInfo, nullptr, &mData->Surface) != VK_SUCCESS) {
+			Error("Could Not Create Android Surface");
+			return;
+		}
+		Info("Create Android Vulkan Surface Successed!");
+	#endif // __ANDROID__
 	}
 
 	VulkanViewport::~VulkanViewport() {

@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <numeric>
 #include <atomic>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <thread>
 #include "RHITypes.h"
 #include "RHICreator.h"
@@ -31,14 +33,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include "PerformanceTest.h"
-
-// 窗口回调
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-    case WM_DESTROY: PostQuitMessage(0); return 0;
-    default: return DefWindowProc(hwnd, uMsg, wParam, lParam);
-    }
-}
+#include "Platform.h"   // 平台层：窗口/事件/资源读取（Win32 与 Android 二选一实现）
 
 // 将 RGBA8 像素缓冲写为 24-bit BMP（BGR、自底向上）。截图读回用。
 static void WriteBMP(const char* path, uint32_t width, uint32_t height, const unsigned char* rgba) {
@@ -81,8 +76,16 @@ struct FrameUniforms {
     glm::vec4 gridParams;  // x=列数, y=行数, z=列间距, w=行间距
 };
 
+// 平台入口：
+//   · 桌面（Win32）：main(argc, argv)
+//   · Android      ：PlatformAndroid.cpp 的 android_main(app) → RunTextureCube()
+// 渲染主体两边共用，差异全在 Platform::* 里。
+#ifdef __ANDROID__
+int RunTextureCube() {
+#else
 int main(int argc, char* argv[]) {
-#ifdef _DEBUG
+#endif
+#if defined(_DEBUG) && !defined(__ANDROID__)
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
 #endif
@@ -106,6 +109,10 @@ int main(int argc, char* argv[]) {
     // 呈现设备：--display=win32|hidden|headless（见 RHIDisplay.h）；-ExitAfter N：跑 N 帧后干净退出
     std::string displayName = "win32";
     uint64_t exitAfterFrames = 0;
+#ifdef __ANDROID__
+    // Android 没有命令行：全部取默认值，呈现设备固定 AndroidWindow
+    displayName = "android";
+#else
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-Test" || arg == "-test" || arg == "/Test") {
@@ -134,6 +141,7 @@ int main(int argc, char* argv[]) {
             displayName = argv[++i];
         }
     }
+#endif // !__ANDROID__
     if (drawCallCounts.empty()) drawCallCounts.push_back(1);
     if (instanceCounts.empty()) instanceCounts.push_back(1);
 
@@ -147,6 +155,11 @@ int main(int argc, char* argv[]) {
     //                  并自动退化成离屏渲染"，而不是崩在空 surface 上。
     FISIR::DisplayDeviceType displayType = FISIR::DisplayDeviceType::DisplayPlane;
     bool hiddenWindow = false;
+#ifdef __ANDROID__
+    // Android：呈现设备固定是 AndroidWindow（ANativeWindow 由 NativeActivity 交给平台层），
+    // 上面那些 --display 选项只在桌面有意义。
+    displayType = FISIR::DisplayDeviceType::AndroidWindow;
+#else
     if (displayName == "headless") {
         displayType = FISIR::DisplayDeviceType::Headless;
     } else if (displayName == "hidden") {
@@ -157,6 +170,7 @@ int main(int argc, char* argv[]) {
         Error("未知的 --display={}（可用：win32 | hidden | headless | displayplane）", displayName);
         return 1;
     }
+#endif
     Info("==== display device: {} ====", FISIR::DisplayDeviceTypeName(displayType));
 
     if (runPerfTest) {
@@ -172,35 +186,22 @@ int main(int argc, char* argv[]) {
     FISIR::RHICreator::setRenderInterfaceApi(FISIR::RHIAPI::Vulkan);
     FISIR::DynamicRHI* rhi = FISIR::RHICreator::getCurrentRenderInterface();
 
-    // 2. 按设备类型准备句柄：只有 Win32Window（含 hidden）需要窗口；headless / displayplane 不碰窗口系统。
-    HINSTANCE hInstance = GetModuleHandle(NULL);
-    HWND hwnd = nullptr;
-    FISIR::Win32DisplayHandle win32Data{ nullptr, nullptr };
-    FISIR::DisplayPlaneHandle planeData{ 0, 0, 0 };   // 直连显示器：display / plane / mode 下标
+    // 2. 平台窗口 / 呈现句柄：Win32 建窗口；Android 取 NativeActivity 的 ANativeWindow。
+    //    实现见 PlatformWin32.cpp / PlatformAndroid.cpp，句柄布局都是 RHIDisplay.h 里那套 void* 结构。
+    Platform::Window window{};
+    window.width = 800;
+    window.height = 600;
     void* deviceHandle = nullptr;
-    if (displayType == FISIR::DisplayDeviceType::Win32Window) {
-        const char CLASS_NAME[] = "CubeDemo";
-        WNDCLASSA wc = { 0 };
-        wc.lpfnWndProc = WindowProc;
-        wc.hInstance = hInstance;
-        wc.lpszClassName = CLASS_NAME;
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        RegisterClassA(&wc);
-
-        hwnd = CreateWindowExA(
-            0, CLASS_NAME, "Textured Cube (Single Pass)",
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT, CW_USEDEFAULT,
-            800, 600,
-            NULL, NULL, hInstance, NULL
-        );
-        if (!hwnd) { Error("CreateWindowExA failed ({})", GetLastError()); return 1; }
-        if (!hiddenWindow) ShowWindow(hwnd, SW_SHOW);
-        win32Data = { hInstance, hwnd };
-        deviceHandle = &win32Data;
-        Info("Win32Window: hwnd=0x{:x} 可见={}", (size_t)hwnd, !hiddenWindow);
+    if (displayType == FISIR::DisplayDeviceType::Win32Window ||
+        displayType == FISIR::DisplayDeviceType::AndroidWindow) {
+        if (!Platform::Init(window, hiddenWindow, "Textured Cube (Single Pass)")) {
+            Error("Platform::Init 失败：拿不到可用的呈现目标");
+            return 1;
+        }
+        displayType = window.type;
+        deviceHandle = window.deviceHandle;
     } else if (displayType == FISIR::DisplayDeviceType::DisplayPlane) {
+        static FISIR::DisplayPlaneHandle planeData{ 0, 0, 0 };   // 直连显示器：display / plane / mode 下标
         deviceHandle = &planeData;
         Info("DisplayPlane: 句柄 = {{ displayIndex={}, planeIndex={}, modeIndex={} }}"
              "（本机拿不到 display，预期被后端拒绝）", planeData.displayIndex, planeData.planeIndex, planeData.modeIndex);
@@ -208,8 +209,14 @@ int main(int argc, char* argv[]) {
         Info("Headless: 不创建任何窗口");
     }
 
-    auto viewport = rhi->RHICreateViewport(800, 600, FISIR::TextureCOLORType::RGBA_8, displayType, deviceHandle, 3);
-    rhi->Init();
+    auto viewport = rhi->RHICreateViewport(window.width ? window.width : 800, window.height ? window.height : 600,
+                                           FISIR::TextureCOLORType::RGBA_8, displayType, deviceHandle, 3);
+    if (!rhi->Init()) {
+        // 设备初始化失败必须在这里停住：继续往下走会拿空的逻辑设备去调 vkCreateShaderModule，
+        // 在手机上（无验证层）表现为直接 SIGSEGV，看不出真正原因。
+        Error("RHI Init 失败（设备初始化不通过），退出");
+        return 1;
+    }
 
     // ---------- 3. 顶点着色器 ----------
     const wchar_t* vsCode = LR"(
@@ -338,9 +345,15 @@ int main(int argc, char* argv[]) {
     }
 
     // ---------- 8. 加载纹理 ----------
-    int texWidth, texHeight, texChannels;
+    // 平台差异在 Platform::LoadAsset：桌面按相对路径读磁盘，Android 从 APK 的 assets 里读。
+    int texWidth = 0, texHeight = 0, texChannels = 0;
     const char* texturePath = "Test3.png";
-    unsigned char* textureData = stbi_load(texturePath, &texWidth, &texHeight, &texChannels, 4);
+    std::vector<unsigned char> textureBytes;
+    unsigned char* textureData = nullptr;
+    if (Platform::LoadAsset(texturePath, textureBytes) && !textureBytes.empty()) {
+        textureData = stbi_load_from_memory(textureBytes.data(), (int)textureBytes.size(),
+                                            &texWidth, &texHeight, &texChannels, 4);
+    }
     FISIR::RHIBuffer* uploadBuffer = nullptr;
     FISIR::RHITexture* inputTexture = nullptr;
     if (textureData) {
@@ -581,7 +594,6 @@ int main(int argc, char* argv[]) {
     glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 1.0f, 3.0f), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
     glm::mat4 viewProj = proj * view; // 自旋模式下 Model 在 shader 单独应用，view*proj 每帧不变
 
-    MSG msg = { 0 };
     uint64_t frameCount = 0;
     Warn("Begin Main Loop");
     std::vector<std::pair<uint32_t, uint32_t>> testGroups;
@@ -618,11 +630,9 @@ int main(int argc, char* argv[]) {
         while (true) {
             auto now = std::chrono::steady_clock::now();
 
-            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                if (msg.message == WM_QUIT) goto cleanup;
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
+            // 平台事件：Win32 抽 PeekMessage（拿到 WM_QUIT 就结束）；Android 抽 looper
+            // 并处理 APP_CMD_* 生命周期（窗口被系统回收 → 结束，见 PlatformAndroid.cpp 说明）。
+            if (!Platform::PumpEvents(window)) goto cleanup;
             //Warn("Main Running");
             // 更新 Model（自旋）
             glm::mat4 model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
@@ -649,14 +659,14 @@ int main(int argc, char* argv[]) {
             static_cast<FISIR::RHIBuffer*>(mvpBuffers[infoid])->updateBufferData(&uniforms, sizeof(FrameUniforms));
 
             ++frameCount;
-            if (hwnd && frameCount % 100 == 0) {
+            if (frameCount % 100 == 0) {
                 float elapsed = std::chrono::duration<float>(now - fpsStart).count();
                 float fps = 100.0f / elapsed;
                 fpsStart = now;
                 char title[128];
                 snprintf(title, sizeof(title),
                     "Test Cube |%.1f FPS", fps);
-                SetWindowTextA(hwnd, title);
+                Platform::SetTitle(window, title);   // Win32 改标题；Android 是空实现
             }
 
 
@@ -860,5 +870,7 @@ cleanup:
     Info("Destroy RHI Done!");
     FISIR::RHICreator::destroyRenderInterface();
     FISIR::RHICreator::freeCurrentRenderInterfaceApi();
+    // 窗口/ANativeWindow 必须活到交换链销毁之后，所以放到最后收尾。
+    Platform::Shutdown(window);
     return 0;
 }

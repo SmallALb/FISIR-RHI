@@ -15,3 +15,8 @@ if(WIN32)
     # MinGW adds "lib" prefix — suppress it on Windows
     set_target_properties(Log PROPERTIES PREFIX "")
 endif()
+
+if(ANDROID)
+    # __android_log_print 在 liblog.so 里（见 Logger.cpp 的 Android 分支）
+    target_link_libraries(Log PRIVATE log)
+endif()

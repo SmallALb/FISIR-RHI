@@ -18,8 +18,13 @@ static const char* EnableExtensions[] = {
     VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef _WIN32
   VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#elif defined(__ANDROID__)
+  // Android 的呈现 surface：ANativeWindow → VkSurfaceKHR（句柄见 RHIDisplay.h 的 AndroidDisplayHandle）
+  VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
 #endif
-#ifdef _DEBUG
+#if defined(_DEBUG) && !defined(__ANDROID__)
+    // 注意：Android 上系统不带 VK_EXT_debug_utils（要自带校验层 .so 才有），
+    // 无条件请求它会让 vkCreateInstance 直接失败 —— 所以这里显式排除。
     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
 #endif
 };
@@ -36,7 +41,9 @@ static VkPhysicalDevice SelectDevice(VkInstance instance) {
             vkGetPhysicalDeviceProperties2(mPhysicalDevice, &mPhysicalDeviceProperties2);
         }
 
-        bool operator< (GpuInfo& info) const {
+        // 注意 const：std::sort 比较的是 const GpuInfo&，参数少了 const 在 libc++（Android）
+        // 上直接编不过，MSVC 却能通过 —— 属于典型的"只在 Windows 上能编"的写法。
+        bool operator< (const GpuInfo& info) const {
             if (mPhysicalDeviceProperties2.properties.deviceType == info.mPhysicalDeviceProperties2.properties.deviceType) {
                 return mIndex < info.mIndex;
             }
@@ -71,13 +78,25 @@ static VkPhysicalDevice SelectDevice(VkInstance instance) {
 static VkInstance gInstance = VK_NULL_HANDLE;
 static bool gIsShuttingDown = 0;
 static bool MakeVkInstance() {
+    // 请求的实例版本必须 ≤ loader 支持的版本：否则 vkCreateInstance 直接返回
+    // VK_ERROR_INCOMPATIBLE_DRIVER。桌面 LunarG loader 通常到 1.4，而手机系统 loader 常见 1.1/1.3
+    // （Vulkan 1.4 是 2024 底才出的），所以这里先问 loader 再取 min。
+    uint32_t loaderVersion = VK_API_VERSION_1_0;
+    auto vkEnumerateInstanceVersionPtr =
+        reinterpret_cast<PFN_vkEnumerateInstanceVersion>(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    if (vkEnumerateInstanceVersionPtr) vkEnumerateInstanceVersionPtr(&loaderVersion);
+    const uint32_t requestVersion = loaderVersion < VK_API_VERSION_1_4 ? loaderVersion : VK_API_VERSION_1_4;
+    Info("Vulkan loader version {}.{}.{}, requesting instance apiVersion {}.{}.{}",
+         VK_VERSION_MAJOR(loaderVersion), VK_VERSION_MINOR(loaderVersion), VK_VERSION_PATCH(loaderVersion),
+         VK_VERSION_MAJOR(requestVersion), VK_VERSION_MINOR(requestVersion), VK_VERSION_PATCH(requestVersion));
+
     VkApplicationInfo vkApplicationInfo = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
       .pApplicationName = "FISIR Engine APP",
       .applicationVersion = VK_MAKE_VERSION(1,0,0),
       .pEngineName = "FISIR Engine",
       .engineVersion = VK_MAKE_VERSION(1,0,0),
-      .apiVersion = VK_API_VERSION_1_4
+      .apiVersion = requestVersion
     };
     //Init Layer
     uint32_t layerCount;
@@ -168,7 +187,9 @@ static bool MakeDebugReportCallback() {
 }
 
 static void DestroyDebugReportCallback() {
+#ifdef _WIN32
     if (gDebugMessenger) {
         __DestroyDebugUtilsMessenger(gInstance, gDebugMessenger, nullptr);
     }
+#endif
 }

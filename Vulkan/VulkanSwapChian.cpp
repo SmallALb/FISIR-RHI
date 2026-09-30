@@ -497,9 +497,28 @@ namespace FISIR {
 
         Info("Actual viewport size: {} x {}", actualExtent.height, actualExtent.width);
 
-        VkSurfaceFormatKHR choiceFormat;
-        for (auto& F : vkSurfaceFormats) if (F.format == (VkFormat)Surfaceviewport->getVulkanColorFormat() && F.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
-            choiceFormat = F;
+        // 选表面格式：优先「viewport 要的格式 + SRGB_NONLINEAR」；找不到就退回列表第一个。
+        // 原实现是「循环里命中才赋值」，一个都没命中时 choiceFormat 是**未初始化**的，
+        // 直接喂给 vkCreateSwapchainKHR —— 桌面驱动恰好总有得选才没暴露，Android 上
+        // 各家 surface 的格式/色彩空间组合不一样（B8G8R8A8 / R8G8B8A8，色彩空间也可能不同），
+        // 所以这里必须有个确定性的兜底。
+        VkSurfaceFormatKHR choiceFormat{};
+        if (!vkSurfaceFormats.empty()) {
+            choiceFormat = vkSurfaceFormats[0];
+            for (auto& F : vkSurfaceFormats) {
+                if (F.format == (VkFormat)Surfaceviewport->getVulkanColorFormat() &&
+                    F.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+                    choiceFormat = F;
+                }
+            }
+            if (choiceFormat.format != (VkFormat)Surfaceviewport->getVulkanColorFormat()) {
+                Warn("Surface 不提供想要的格式 {}，退用 {} / {}",
+                     (uint32_t)Surfaceviewport->getVulkanColorFormat(),
+                     (uint32_t)choiceFormat.format, (uint32_t)choiceFormat.colorSpace);
+            }
+        }
+        else {
+            Error("Surface 没有任何可用格式，交换链无法创建");
         }
         Surfaceviewport->setViewportResize(actualExtent.width, actualExtent.height);
 
@@ -524,12 +543,16 @@ namespace FISIR {
             .imageFormat = choiceFormat.format,
             .imageColorSpace = choiceFormat.colorSpace,
             .imageExtent = {actualExtent.width, actualExtent.height},
-            .imageArrayLayers = vkSurfaceCapabilitiesKHR.maxImageArrayLayers,
+            // 普通窗口表面就是单层 2D：maxImageArrayLayers 是**上限**不是应当请求的值
+            // （某些平台会给 >1，直接用它就会建出分层交换链，与后面的 framebuffer 假设不符）。
+            .imageArrayLayers = 1,
             .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             .imageSharingMode = isCxclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
             .queueFamilyIndexCount = 2,
             .pQueueFamilyIndices = QuefamilyIndex,
-            .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+            // 必须用 surface 当前的变换（Android 上横屏应用可能拿到 ROTATE_90/270；
+            // 写死 IDENTITY 在只支持旋转的设备上会直接创建失败）。
+            .preTransform = vkSurfaceCapabilitiesKHR.currentTransform,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
             .presentMode = presentMode,
             .oldSwapchain = oldSwapChain,

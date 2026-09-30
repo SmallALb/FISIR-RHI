@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FISIR RHI · TextureCube 示例的 Android 壳。
+
+  纯原生应用：android:hasCode="false" + android.app.NativeActivity，不需要任何 Java 代码 ——
+  系统加载 libTextureCube.so 后调用 native_app_glue 的 ANativeActivity_onCreate，
+  再由它调起我们自己的 android_main（见 Example/TextureCube/PlatformAndroid.cpp）。
+
+  android.app.lib_name 必须与打包进 lib/arm64-v8a/ 的库名一致（这里 = TextureCube → libTextureCube.so）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fisir.texturecube"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <!-- Vulkan 1.1 起步（0x00401000）。注意：RHI 运行期还会用到 1.2 的特性
+         （timeline 信号量、buffer device address 等），设备不支持时会在设备创建阶段报错。 -->
+    <uses-feature android:name="android.hardware.vulkan.version"
+        android:version="0x00401000" android:required="true" />
+
+    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="36" />
+
+    <application
+        android:label="FISIR TextureCube"
+        android:hasCode="false"
+        android:extractNativeLibs="true">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:label="FISIR TextureCube"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|uiMode|density">
+            <meta-data android:name="android.app.lib_name" android:value="TextureCube" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

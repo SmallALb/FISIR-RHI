@@ -40,7 +40,14 @@ if(NOT Slang_FOUND)
             ${Slang_ROOT}
             ${CMAKE_CURRENT_SOURCE_DIR}/vendor/slang
             ${CMAKE_CURRENT_SOURCE_DIR}/vendor/slang/cmake
+            # 上游 SDK 的 config 装在 <SDK>/lib/cmake/slang/ 下，交叉编译时 CMake 的
+            # 默认搜索路径未必会走到那里，这里显式给上。
+            ${SLANG_SDK_DIR}/lib/cmake/slang
+            ${SLANG_SDK_DIR}/cmake/slang
         PATH_SUFFIXES cmake
+        # 交叉编译（Android/NDK）时 CMAKE_FIND_ROOT_PATH 会被设成 sysroot，HINTS 里的宿主路径
+        # 会被"重新挂"到 sysroot 下从而找不到 —— 这里明确按原样搜索。
+        NO_CMAKE_FIND_ROOT_PATH
     )
 
     if(slang_FOUND)
@@ -77,12 +84,14 @@ if(NOT Slang_FOUND)
         NAMES slang.h
         HINTS ${_slang_search_paths}
         PATH_SUFFIXES include
+        NO_CMAKE_FIND_ROOT_PATH
     )
 
     find_library(Slang_LIBRARY
-        NAMES slang
+        NAMES slang slang-compiler
         HINTS ${_slang_search_paths}
         PATH_SUFFIXES lib
+        NO_CMAKE_FIND_ROOT_PATH
     )
 
     if(WIN32)
