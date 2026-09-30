@@ -1,4 +1,4 @@
-﻿{
+{
 	"configurations": [
 		{
 			"name": "x64-Debug",
@@ -22,6 +22,76 @@
 			"ctestCommandArgs": "",
 			"inheritEnvironments": [ "msvc_x64_x64" ],
 			"intelliSenseMode": "windows-msvc-x64"
+		},
+		{
+			"name": "Android-ARM64-Debug",
+			"generator": "Ninja",
+			"configurationType": "Debug",
+			"inheritEnvironments": [ "android_arm64" ],
+			"buildRoot": "${projectDir}\\out\\build\\${name}",
+			"installRoot": "${projectDir}\\out\\install\\${name}",
+			"cmakeToolchain": "C:/Program Files (x86)/Android/AndroidNDK/android-ndk-r27c/build/cmake/android.toolchain.cmake",
+			"cmakeCommandArgs": "",
+			"buildCommandArgs": "",
+			"ctestCommandArgs": "",
+			"intelliSenseMode": "android-clang-arm64",
+			"variables": [
+				{
+					"name": "ANDROID_ABI",
+					"value": "arm64-v8a",
+					"type": "STRING"
+				},
+				{
+					"name": "ANDROID_PLATFORM",
+					"value": "android-31",
+					"type": "STRING"
+				},
+				{
+					"name": "ANDROID_STL",
+					"value": "c++_shared",
+					"type": "STRING"
+				},
+				{
+					"name": "SLANG_SDK_DIR",
+					"value": "${projectDir}/vendor/slang-android-arm64",
+					"type": "PATH"
+				}
+			]
+		},
+		{
+			"name": "Android-ARM64-Release",
+			"generator": "Ninja",
+			"configurationType": "Release",
+			"inheritEnvironments": [ "android_arm64" ],
+			"buildRoot": "${projectDir}\\out\\build\\${name}",
+			"installRoot": "${projectDir}\\out\\install\\${name}",
+			"cmakeToolchain": "C:/Program Files (x86)/Android/AndroidNDK/android-ndk-r27c/build/cmake/android.toolchain.cmake",
+			"cmakeCommandArgs": "",
+			"buildCommandArgs": "",
+			"ctestCommandArgs": "",
+			"intelliSenseMode": "android-clang-arm64",
+			"variables": [
+				{
+					"name": "ANDROID_ABI",
+					"value": "arm64-v8a",
+					"type": "STRING"
+				},
+				{
+					"name": "ANDROID_PLATFORM",
+					"value": "android-31",
+					"type": "STRING"
+				},
+				{
+					"name": "ANDROID_STL",
+					"value": "c++_shared",
+					"type": "STRING"
+				},
+				{
+					"name": "SLANG_SDK_DIR",
+					"value": "${projectDir}/vendor/slang-android-arm64",
+					"type": "PATH"
+				}
+			]
 		}
 	]
 }
