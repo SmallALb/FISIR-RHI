@@ -49,6 +49,8 @@ namespace {
 		int pendingTouchCount = 0;
 		int32_t width = 0;
 		int32_t height = 0;
+		int32_t viewportW = 0;   // surface/交换链视口尺寸（可能与窗口 frame 不同坐标系）
+		int32_t viewportH = 0;
 	};
 
 	AndroidImpl* g_Impl = nullptr;
@@ -148,6 +150,12 @@ namespace {
 		}
 		impl->touch.down = down;
 		if (push) {
+			// 每次触摸都记一条（点击很稀疏，代价可忽略）：排查「点不动」时这是最直接的证据 ——
+			// 有没有事件、坐标落在哪个空间（窗口 frame 与 surface 坐标系可能不一致，见下）。
+			Info("[Android] 触摸: action={} 坐标=({}, {}) down={} | 窗口={}x{} surface视口={}x{}",
+				 action, tx, ty, down ? 1 : 0,
+				 impl->width, impl->height,
+				 impl->viewportW, impl->viewportH);
 			if (impl->pendingTouchCount < kMaxPendingTouch) {
 				impl->pendingTouch[impl->pendingTouchCount++] = Platform::TouchEvent{ tx, ty, down };
 			} else {
@@ -283,6 +291,8 @@ namespace Platform {
 		window.deviceHandle = &impl.handle;
 		window.width = (uint32_t)ANativeWindow_getWidth(impl.app->window);
 		window.height = (uint32_t)ANativeWindow_getHeight(impl.app->window);
+		impl.viewportW = (int32_t)window.width;    // 供触摸日志对比坐标系（窗口 frame vs surface）
+		impl.viewportH = (int32_t)window.height;
 		window.impl = &impl;
 		Info("Platform(Android): ANativeWindow=0x{:x} {}x{}", (size_t)impl.handle.nativeWindow, window.width, window.height);
 		return true;
@@ -300,12 +310,21 @@ namespace Platform {
 		if (impl.app && impl.app->inputQueue) {
 			AInputEvent* ev = nullptr;
 			while (AInputQueue_getEvent(impl.app->inputQueue, &ev) >= 0) {
+				const int32_t evType = AInputEvent_getType(ev);
 				if (AInputQueue_preDispatchEvent(impl.app->inputQueue, ev)) {
 					// 已被系统预派发消费（手势/输入法窗口等）：按文档不能再 finishEvent
+					Info("[Android] 输入: type={} 被预派发消费（未投递给我们）", evType);
 					continue;
 				}
 				int32_t handled = 0;
 				if (impl.app->onInputEvent) handled = impl.app->onInputEvent(impl.app, ev);
+				// 安卓的关键点：**所有**事件都必须 finishEvent，包括 FOCUS 类型。
+				// dumpsys input 里出现过「Waited 5000ms for FocusEvent(hasFocus=...)」——
+				// 应用没把焦点事件了结掉时，派发器会把该窗口标记为不响应并停止投递，
+				// 现象就是「点哪儿都没反应、队列恒空」。这里把非触摸事件也记下来便于确认。
+				if (evType != AINPUT_EVENT_TYPE_MOTION) {
+					Info("[Android] 输入: type={} handled={}（非触摸，仅记录）", evType, handled);
+				}
 				AInputQueue_finishEvent(impl.app->inputQueue, ev, handled);
 			}
 		}
