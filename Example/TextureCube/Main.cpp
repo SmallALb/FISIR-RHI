@@ -547,6 +547,15 @@ int main(int argc, char* argv[]) {
     uint64_t imguiFrames = 0;
     float    imguiMinMs  = 1e9f;
     float    imguiMaxMs  = 0.0f;
+    // CPU 侧耗时拆解累加（微秒）。全屏与非全屏在 Android 上走的是**不同的合成路径**
+    //（全屏更容易被提升为 direct scanout / 硬件 overlay，非全屏走 GPU 合成），
+    // 「慢」到底是慢在 acquire（等交换链图像，被合成器或显示管线节流）还是慢在我们自己的录制，
+    // 只有这组数据能区分 —— 单看帧率分不出来。
+    double   imguiAccAcquireUs = 0.0;
+    double   imguiAccRecordUs  = 0.0;
+    double   imguiAccWaitUs    = 0.0;
+    double   imguiAccOtherUs   = 0.0;
+    uint64_t imguiBreakdownFrames = 0;
 #endif
 
     // 无交换链（headless）时自建的槽围栏：每个缓冲槽一个、跨帧复用；收尾时等 GPU 完成再销毁。
@@ -748,6 +757,25 @@ int main(int argc, char* argv[]) {
                 ImGui::Text("ms    %.2f", imguiMs);
                 ImGui::Text("min/max %.2f/%.2f", imguiMinMs, imguiMaxMs);
                 ImGui::Text("frames %llu", (unsigned long long)imguiFrames);
+                // CPU 侧拆解（累计平均）：全屏 vs 非全屏的差别几乎总出现在 acquire 一栏
+                //（等图像 = 被合成器/显示管线节流），而 record 一栏基本不变。
+                if (imguiBreakdownFrames > 0) {
+                    const double bf = (double)imguiBreakdownFrames * 1000.0;   // us → ms（累计和 / 帧数）
+                    const double acqMs = imguiAccAcquireUs / bf, recMs = imguiAccRecordUs / bf;
+                    const double wtMs = imguiAccWaitUs / bf, othMs = imguiAccOtherUs / bf;
+                    ImGui::Text("cpu   acq %.2f  rec %.2f", acqMs, recMs);
+                    ImGui::Text("      wait %.2f  other %.2f", wtMs, othMs);
+                    // 每 300 帧把同一组数据写进日志：手机上不用截图 OCR，adb 就能读
+                    if (imguiFrames % 300 == 1) {
+                        Info("[Android] 帧统计: avg {:.1f} fps | 帧 {:.2f} ms (min {:.2f}/max {:.2f}) | "
+                             "CPU: acquire {:.2f} / record {:.2f} / waitSubmit {:.2f} / other {:.2f} ms | "
+                             "extent {}x{} | frames {}",
+                             (float)imguiAvgFps, imguiMs, imguiMinMs, imguiMaxMs,
+                             acqMs, recMs, wtMs, othMs,
+                             viewport->getViewportWidth(), viewport->getViewportHeight(),
+                             (unsigned long long)imguiFrames);
+                    }
+                }
                 ImGui::End();
                 ImGui::Render();
                 // 安卓下没有平台窗口，这个函数是 no-op；保留调用是为了和桌面的每帧序列一致。
@@ -863,6 +891,19 @@ int main(int argc, char* argv[]) {
                 accFrames++;
                 if (frameTimes.size() >= testFrameCount) break;
             }
+
+#ifdef __ANDROID__
+            // 安卓端常开的耗时拆解：与 -Test 模式共用同一组测量点（tAcq/tRec/tWt/tPr）。
+            {
+                auto frameEnd = std::chrono::steady_clock::now();
+                auto us = [](auto a, auto b){ return std::chrono::duration<double, std::micro>(b - a).count(); };
+                imguiAccAcquireUs += us(tAcq0, tAcq1);   // 等「下一条可写图像」= 被呈现节奏节流的量
+                imguiAccRecordUs  += us(tRec0, tRec1);   // 录制命令缓冲（CPU 侧，与屏幕大小关系不大）
+                imguiAccWaitUs    += us(tRec1, tWt1);    // 等本帧提交完成
+                imguiAccOtherUs   += us(now, tAcq0) + us(tAcq1, tRec0) + us(tPr1, frameEnd);
+                imguiBreakdownFrames++;
+            }
+#endif
 
             // 无窗口模式（hidden / headless）没有"点叉关窗口"这个出口：跑够 -ExitAfter 帧就收尾。
             if (exitAfterFrames && frameCount >= exitAfterFrames) {

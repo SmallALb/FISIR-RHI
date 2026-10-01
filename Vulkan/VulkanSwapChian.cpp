@@ -612,6 +612,14 @@ namespace FISIR {
             return false;
         }
 
+        // 全屏 / 非全屏可能落到**不同的表面格式与色彩空间**（受 overlay / direct scanout 的约束影响），
+        // 而格式决定了每帧写入是否还能用压缩（AFBC/UBWC）—— 带宽差几倍很常见。
+        // 排查「全屏明显比非全屏慢」时，这行是必须能看到的上下文。
+        Info("交换链参数: extent={}x{} format={} colorSpace={} presentMode={} 图像数={} preTransform=0x{:x}",
+             actualExtent.width, actualExtent.height,
+             (uint32_t)choiceFormat.format, (uint32_t)choiceFormat.colorSpace,
+             (uint32_t)presentMode, desiredImageCount, (uint32_t)preTransform);
+
         uint32_t imageCount = 0;
         vkGetSwapchainImagesKHR(mDevice->getLogicalDevice(), mData->swapchain, &imageCount, nullptr);
         MaxSwapChianFramCount = imageCount;
