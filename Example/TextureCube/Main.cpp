@@ -565,6 +565,10 @@ int main(int argc, char* argv[]) {
     double   imguiAccWaitUs    = 0.0;
     double   imguiAccOtherUs   = 0.0;
     uint64_t imguiBreakdownFrames = 0;
+    // 触摸诊断（常驻面板）：区分「事件根本没到达」与「到达了但坐标不在预期空间」。
+    uint64_t imguiTouchCount = 0;
+    float    imguiLastTouchX = 0.0f, imguiLastTouchY = 0.0f;
+    bool     imguiTouchDown = false;
 #endif
 
     // 无交换链（headless）时自建的槽围栏：每个缓冲槽一个、跨帧复用；收尾时等 GPU 完成再销毁。
@@ -751,6 +755,10 @@ int main(int argc, char* argv[]) {
                 for (int i = 0; i < touchCount; ++i) {
                     imguiIO.AddMousePosEvent(touchEvents[i].x, touchEvents[i].y);
                     imguiIO.AddMouseButtonEvent(0, touchEvents[i].down);
+                    ++imguiTouchCount;
+                    imguiLastTouchX = touchEvents[i].x;
+                    imguiLastTouchY = touchEvents[i].y;
+                    imguiTouchDown  = touchEvents[i].down;
                 }
                 // 触摸时画个指示点（松手即消失），方便确认触点位置
                 imguiIO.MouseDrawCursor = touchState.available && touchState.down;
@@ -792,6 +800,21 @@ int main(int argc, char* argv[]) {
                          vsyncOn ? "FIFO 垂直同步" : "MAILBOX 不限帧");
                 }
                 ImGui::Text("present: %s", swapchain->isSyncEnabled() ? "FIFO" : "MAILBOX");
+
+                // ── 触摸诊断 + 超大按钮 ──────────────────────────────────────────────
+                // 目的：一眼判断「事件到底有没有到达」（n 不涨 = 没到）以及「坐标落在哪个空间」
+                //（last 与 size 对不上就是坐标空间不一致，那种情况下小控件永远点不中）。
+                ImGui::Separator();
+                ImGui::Text("touch n=%llu%s", (unsigned long long)imguiTouchCount, imguiTouchDown ? " (down)" : "");
+                if (imguiTouchCount > 0) {
+                    ImGui::Text("last (%.0f, %.0f) of %.0fx%.0f", imguiLastTouchX, imguiLastTouchY,
+                                (float)viewport->getViewportWidth(), (float)viewport->getViewportHeight());
+                }
+                if (ImGui::Button("TOGGLE VSYNC", ImVec2(430.0f, 96.0f))) {
+                    const bool next = !swapchain->isSyncEnabled();
+                    swapchain->sync(next);
+                    Info("[Android] 呈现模式切换（大按钮）→ {}", next ? "FIFO 垂直同步" : "MAILBOX 不限帧");
+                }
 
                 // CPU 侧拆解（累计平均）：全屏 vs 非全屏的差别几乎总出现在 acquire 一栏
                 //（等图像 = 被合成器/显示管线节流），而 record 一栏基本不变。
