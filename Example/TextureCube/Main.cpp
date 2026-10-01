@@ -742,6 +742,20 @@ int main(int argc, char* argv[]) {
                 imguiIO.DisplaySize = ImVec2((float)viewport->getViewportWidth(), (float)viewport->getViewportHeight());
                 imguiIO.DeltaTime = (imguiDt > 0.0f && imguiDt < 1.0f) ? imguiDt : (1.0f / 60.0f);
 
+                // 触摸 → ImGui「鼠标左键」：安卓没有系统指针，面板上的控件（垂直同步开关）要用它。
+                // 必须**按事件**在 NewFrame() 之前喂进去：一次快速点击的 DOWN/UP 很可能落在同一帧，
+                // 只喂「当前状态」会把按下压成抬起，控件永远点不动（实测踩过）。
+                Platform::TouchEvent touchEvents[16];
+                Platform::TouchState touchState;
+                const int touchCount = Platform::PollTouchEvents(touchEvents, 16, touchState);
+                for (int i = 0; i < touchCount; ++i) {
+                    imguiIO.AddMousePosEvent(touchEvents[i].x, touchEvents[i].y);
+                    imguiIO.AddMouseButtonEvent(0, touchEvents[i].down);
+                }
+                // 触摸时画个指示点（松手即消失），方便确认触点位置
+                imguiIO.MouseDrawCursor = touchState.available && touchState.down;
+                // TEMP 诊断：确认 ImGui 实际收到的事件与判定
+
                 // 会话级统计：io.Framerate 只是**滚动**平均（约最近 60 帧），看不出整体水平与抖动。
                 // 这里另外累加「自启动以来的平均帧率」和帧时间的极值 —— 对比不同设备/不同场景
                 // （例如 8+ Gen 1 上的 400+）时，看的是这几项，而不是某一瞬间的读数。
@@ -755,17 +769,30 @@ int main(int argc, char* argv[]) {
                 const double imguiAvgFps = (imguiSumDt > 0.0) ? ((double)imguiFrames / imguiSumDt) : 0.0;
 
                 ImGui::NewFrame();
-                ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_Always);
+                ImGui::SetNextWindowPos(ImVec2(24.0f, 120.0f), ImGuiCond_Always);   // 下移，避开状态栏
                 ImGui::SetNextWindowBgAlpha(0.55f);
                 ImGui::Begin("##fisir_fps", nullptr,
                              ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                             ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove);
+                             ImGuiWindowFlags_NoMove);   // 注意：不能带 NoInputs —— 面板上有开关要能点
                 ImGui::Text("FPS   %.1f", imguiIO.Framerate);                 // 滚动（约最近 60 帧）
                 ImGui::Text("avg   %.1f", (float)imguiAvgFps);                // 会话平均
                 ImGui::Text("ms    %.2f", imguiMs);
                 ImGui::Text("min/max %.2f/%.2f", imguiMinMs, imguiMaxMs);
                 ImGui::Text("frames %llu", (unsigned long long)imguiFrames);
+                // ── 垂直同步开关（触摸可点）──────────────────────────────────────────
+                // FIFO = 帧率锁到屏幕刷新率（全屏/小窗表现一致、不空转省电）
+                // MAILBOX = 不限帧（用来看吞吐；数字只在全屏可见时才有意义）
+                // sync() 只是登记目标模式并请求重建，真正的呈现模式在下一次 acquire 时生效。
+                ImGui::Separator();
+                bool vsyncOn = swapchain->isSyncEnabled();
+                if (ImGui::Checkbox("VSync (FIFO)", &vsyncOn)) {
+                    swapchain->sync(vsyncOn);
+                    Info("[Android] 呈现模式切换 → {}（下一次交换链重建后生效，见后续日志）",
+                         vsyncOn ? "FIFO 垂直同步" : "MAILBOX 不限帧");
+                }
+                ImGui::Text("present: %s", swapchain->isSyncEnabled() ? "FIFO" : "MAILBOX");
+
                 // CPU 侧拆解（累计平均）：全屏 vs 非全屏的差别几乎总出现在 acquire 一栏
                 //（等图像 = 被合成器/显示管线节流），而 record 一栏基本不变。
                 if (imguiBreakdownFrames > 0) {

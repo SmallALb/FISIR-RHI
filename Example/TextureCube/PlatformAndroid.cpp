@@ -17,6 +17,7 @@
 #include "Platform.h"
 
 #include <android/asset_manager.h>
+#include <android/input.h>
 #include <android/looper.h>
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
@@ -31,6 +32,9 @@ extern int RunTextureCube();
 
 namespace {
 
+	// 触摸事件队列容量：宿主每帧都会取走，正常远远用不满；给个上限只是防止宿主卡住时无界增长。
+	constexpr int kMaxPendingTouch = 32;
+
 	struct AndroidImpl {
 		android_app* app = nullptr;
 		FISIR::AndroidDisplayHandle handle{ nullptr };
@@ -38,6 +42,11 @@ namespace {
 		bool windowLost = false;
 		bool destroyRequested = false;
 		bool paused = false;   // PAUSE/STOP：不可见（切后台、任务被划走、挂起过渡）→ 停止渲染
+		Platform::TouchState touch;   // 主触点当前状态（仅用于「触摸时画指示点」）
+		// 触摸事件队列：**必须按事件喂 ImGui**，不能只取当前状态 —— 快速点击的 DOWN/UP
+		// 常常落在同一帧，按状态采样会把按下压成抬起，控件永远收不到点击。
+		Platform::TouchEvent pendingTouch[kMaxPendingTouch];
+		int pendingTouchCount = 0;
 		int32_t width = 0;
 		int32_t height = 0;
 	};
@@ -105,6 +114,51 @@ namespace {
 		}
 	}
 
+	// 触摸 → ImGui 的「鼠标」：安卓没有系统指针，把主触点当作左键即可让面板上的控件可用。
+	// 坐标就是窗口/表面坐标（与交换链 extent 同一套，也正是 ImGui 的 DisplaySize 空间）。
+	// 返回 0：不消费事件，交给系统继续处理（否则会吃掉边缘返回手势等系统手势）。
+	int32_t HandleInput(android_app* app, AInputEvent* event) {
+		AndroidImpl* impl = static_cast<AndroidImpl*>(app->userData);
+		if (!impl || !event) return 0;
+
+		const int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
+		// 只取主触点：面板按钮不需要多指
+		const float tx = AMotionEvent_getX(event, 0);
+		const float ty = AMotionEvent_getY(event, 0);
+		impl->touch.x = tx;
+		impl->touch.y = ty;
+		impl->touch.available = true;
+
+		bool down = impl->touch.down;
+		bool push = true;
+		switch (action) {
+		case AMOTION_EVENT_ACTION_DOWN:
+		case AMOTION_EVENT_ACTION_MOVE:
+			down = true;
+			break;
+		case AMOTION_EVENT_ACTION_UP:
+		case AMOTION_EVENT_ACTION_CANCEL:
+			down = false;
+			break;
+		case AMOTION_EVENT_ACTION_POINTER_DOWN:
+		case AMOTION_EVENT_ACTION_POINTER_UP:
+		default:
+			push = false;   // 多指变化 / 其它动作：不动主触点
+			break;
+		}
+		impl->touch.down = down;
+		if (push) {
+			if (impl->pendingTouchCount < kMaxPendingTouch) {
+				impl->pendingTouch[impl->pendingTouchCount++] = Platform::TouchEvent{ tx, ty, down };
+			} else {
+				// 队列满（宿主卡住或事件洪水）：丢掉最旧的一条，保住最新状态，避免积压爆掉。
+				for (int i = 1; i < kMaxPendingTouch; ++i) impl->pendingTouch[i - 1] = impl->pendingTouch[i];
+				impl->pendingTouch[kMaxPendingTouch - 1] = Platform::TouchEvent{ tx, ty, down };
+			}
+		}
+		return 0;
+	}
+
 	// 非阻塞地抽干 looper 队列（用 ALooper_pollOnce：r27 起 ALooper_pollAll 已废弃）
 	void DrainLooper(AndroidImpl& impl) {
 		android_app* app = impl.app;
@@ -126,6 +180,7 @@ void android_main(struct android_app* app) {
 	g_Impl = &impl;
 	app->userData = &impl;
 	app->onAppCmd = HandleAppCmd;
+	app->onInputEvent = HandleInput;   // 触摸 → ImGui（面板上的开关按钮要用）
 	app->onInputEvent = nullptr;   // 不处理输入事件（ImGui 里只用 io.DisplaySize 与 io.DeltaTime）
 
 	// SPIR-V 磁盘缓存目录：Android 上唯一稳定可写的是应用的私有数据目录
@@ -182,6 +237,19 @@ void android_main(struct android_app* app) {
 
 namespace Platform {
 
+	int PollTouchEvents(TouchEvent* out, int maxCount, TouchState& state) {
+		if (!g_Impl) return 0;
+		AndroidImpl& impl = *g_Impl;
+		state = impl.touch;
+		int n = 0;
+		while (n < maxCount && impl.pendingTouchCount > 0) {
+			out[n++] = impl.pendingTouch[0];
+			for (int i = 1; i < impl.pendingTouchCount; ++i) impl.pendingTouch[i - 1] = impl.pendingTouch[i];
+			--impl.pendingTouchCount;
+		}
+		return n;
+	}
+
 	bool Init(Window& window, bool hidden, const char* title) {
 		if (!g_Impl) { Error("Platform::Init 必须在 android_main 里调用"); return false; }
 		AndroidImpl& impl = *g_Impl;
@@ -217,6 +285,24 @@ namespace Platform {
 	bool PumpEvents(Window& window) {
 		AndroidImpl& impl = *static_cast<AndroidImpl*>(window.impl);
 		DrainLooper(impl);
+
+		// ── 直接抽干输入队列 ────────────────────────────────────────────────────
+		// native_app_glue 的正规路径是把事件通过 looper 的 process_input 交给我们注册的
+		// onInputEvent。但实测在某些设备/窗口布局下这些事件根本到不了回调（日志里能看到队列非空、
+		// 却一次 HandleInput 都没触发），面板就永远点不动。这里在同一线程（就是持有该 looper 的
+		// 线程）上自己抽一次队列是安全的，也绕开了那条不投递的路径。
+		if (impl.app && impl.app->inputQueue) {
+			AInputEvent* ev = nullptr;
+			while (AInputQueue_getEvent(impl.app->inputQueue, &ev) >= 0) {
+				if (AInputQueue_preDispatchEvent(impl.app->inputQueue, ev)) {
+					// 已被系统预派发消费（手势/输入法窗口等）：按文档不能再 finishEvent
+					continue;
+				}
+				int32_t handled = 0;
+				if (impl.app->onInputEvent) handled = impl.app->onInputEvent(impl.app, ev);
+				AInputQueue_finishEvent(impl.app->inputQueue, ev, handled);
+			}
+		}
 		if (impl.destroyRequested) { Info("[Android] destroyRequested：退出主循环"); return false; }
 		// 暂停期间阻塞在 looper 上：主线程 0 占用；一旦 RESUME/START（或被系统回收窗口、
 		// 或应用要退出）立刻醒来。这样「快要挂起 / 变成小窗」时不会继续满速空转。

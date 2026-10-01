@@ -101,6 +101,10 @@ namespace Platform {
 		if (impl && impl->hwnd) SetWindowTextA(impl->hwnd, title);
 	}
 
+	// 桌面没有触摸：ImGui 由 Win32 后端（ImGui_ImplFISIR_Win32_NewFrame）喂鼠标与键盘，
+	// 这里只给出空事件，让示例侧那段安卓专属代码在桌面也能编译、且不做任何事。
+	int PollTouchEvents(TouchEvent*, int, TouchState&) { return 0; }
+
 	void Shutdown(Window& window) {
 		auto* impl = static_cast<Win32Impl*>(window.impl);
 		if (impl) {
