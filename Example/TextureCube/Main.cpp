@@ -499,6 +499,15 @@ int main(int argc, char* argv[]) {
     if (hasSwapChain) {
         // 呈现资源包改由 swapchain 管理：登记离屏纹理（纹理模式，BufferEnable=0，PS 采样纹理）。
         swapchain->enableTextureInput(colorTexture, swapSampler);
+
+#ifdef __ANDROID__
+        // 安卓默认仍用 MAILBOX（不限帧），便于观察吞吐；但想得到「和屏幕刷新率一致、稳定且省电」
+        // 的行为（也让全屏/小窗表现一致），设 FISIR_ANDROID_VSYNC=1 即可切到 FIFO（垂直同步）。
+        if (const char* vs = getenv("FISIR_ANDROID_VSYNC"); vs && vs[0] == '1') {
+            swapchain->sync(true);
+            Info("[Android] FISIR_ANDROID_VSYNC=1 → 切 FIFO（帧率锁定到屏幕刷新率）");
+        }
+#endif
     } else {
         Info("无交换链：跳过 present，离屏结果由 -GetFrames 读回");
     }

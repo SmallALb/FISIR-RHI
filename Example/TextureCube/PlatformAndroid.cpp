@@ -37,6 +37,7 @@ namespace {
 		bool windowReady = false;
 		bool windowLost = false;
 		bool destroyRequested = false;
+		bool paused = false;   // PAUSE/STOP：不可见（切后台、任务被划走、挂起过渡）→ 停止渲染
 		int32_t width = 0;
 		int32_t height = 0;
 	};
@@ -77,8 +78,24 @@ namespace {
 			UpdateWindowSize(*impl);
 			Info("[Android] 窗口尺寸变化: {}x{}", impl->width, impl->height);
 			break;
+		case APP_CMD_PAUSE:
+		case APP_CMD_STOP:
+			// 不可见（切后台、任务被划走、进入挂起过渡）：**停止渲染**。
+			// 这个主循环是 present-bound 的：系统一旦不再按显示节奏节流，它会以 1000+ fps 空转
+			//（渲染只占 0.02ms，帧率完全由 acquire 决定），纯粹烧 CPU/带宽/电。
+			// 注意这里**不拆 RHI**：窗口还在，恢复时应当立刻接着画（拆 RHI 是 TERM_WINDOW 的事）。
+			impl->paused = true;
+			Info("[Android] APP_CMD_{}: 不可见 → 暂停渲染（等 RESUME/START）",
+				 cmd == APP_CMD_PAUSE ? "PAUSE" : "STOP");
+			break;
+		case APP_CMD_RESUME:
+		case APP_CMD_START:
+			impl->paused = false;
+			Info("[Android] APP_CMD_{}: 恢复可见 → 继续渲染", cmd == APP_CMD_RESUME ? "RESUME" : "START");
+			break;
 		case APP_CMD_GAINED_FOCUS:
 		case APP_CMD_LOST_FOCUS:
+			// 失焦 ≠ 不可见：分屏/小窗里仍然看得见，照常渲染；真正的「停」由 PAUSE/STOP 决定。
 			break;
 		case APP_CMD_DESTROY:
 			impl->destroyRequested = true;
@@ -109,6 +126,7 @@ void android_main(struct android_app* app) {
 	g_Impl = &impl;
 	app->userData = &impl;
 	app->onAppCmd = HandleAppCmd;
+	app->onInputEvent = nullptr;   // 不处理输入事件（ImGui 里只用 io.DisplaySize 与 io.DeltaTime）
 
 	// SPIR-V 磁盘缓存目录：Android 上唯一稳定可写的是应用的私有数据目录
 	// （APK 里的 assets 只读、TMPDIR 不保证）。命中缓存时连 Slang 运行时都不会加载，
@@ -200,6 +218,15 @@ namespace Platform {
 		AndroidImpl& impl = *static_cast<AndroidImpl*>(window.impl);
 		DrainLooper(impl);
 		if (impl.destroyRequested) { Info("[Android] destroyRequested：退出主循环"); return false; }
+		// 暂停期间阻塞在 looper 上：主线程 0 占用；一旦 RESUME/START（或被系统回收窗口、
+		// 或应用要退出）立刻醒来。这样「快要挂起 / 变成小窗」时不会继续满速空转。
+		while (impl.paused && !impl.destroyRequested && !impl.windowLost) {
+			int events = 0;
+			android_poll_source* source = nullptr;
+			ALooper_pollOnce(-1, nullptr, &events, reinterpret_cast<void**>(&source));
+			if (source) source->process(impl.app, source);
+			if (impl.app->destroyRequested) { impl.destroyRequested = true; }
+		}
 		if (impl.windowLost || !impl.windowReady) {
 			// 窗口被系统回收：结束**这一轮**渲染主体（它会干净拆掉 RHI），
 			// 由 android_main 等待下一个窗口后整体重建。进程不退出。
