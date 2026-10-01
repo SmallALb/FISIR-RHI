@@ -42,6 +42,7 @@
 #include "imgui.h"
 #include "ImGui_Impl_FISIR.h"
 #include <chrono>
+#include <sys/system_properties.h>   // 运行时开关：setprop debug.fisir.vsync 1/0
 #endif
 
 // 将 RGBA8 像素缓冲写为 24-bit BMP（BGR、自底向上）。截图读回用。
@@ -788,6 +789,27 @@ int main(int argc, char* argv[]) {
                 ImGui::Text("ms    %.2f", imguiMs);
                 ImGui::Text("min/max %.2f/%.2f", imguiMinMs, imguiMaxMs);
                 ImGui::Text("frames %llu", (unsigned long long)imguiFrames);
+                // ── 运行时开关（不依赖触摸）────────────────────────────────────────────
+                // 触摸链路在部分设备上完全不通（实测本机：adb 注入与手指点击都收不到事件，
+                // 而 dumpsys 显示窗口就是焦点输入目标），所以留一条必定可用的控制通道：
+                //     adb shell setprop debug.fisir.vsync 1    → FIFO（锁屏幕刷新率）
+                //     adb shell setprop debug.fisir.vsync 0    → MAILBOX（不限帧）
+                // 每帧读一次系统属性（代价极小），变化即切换呈现模式并写日志。
+                {
+                    char propBuf[PROP_VALUE_MAX] = { 0 };
+                    __system_property_get("debug.fisir.vsync", propBuf);
+                    const bool want = (propBuf[0] == '1');
+                    static int applied = -1;
+                    if (applied != (want ? 1 : 0)) {
+                        applied = want ? 1 : 0;
+                        if (swapchain->isSyncEnabled() != want) {
+                            swapchain->sync(want);
+                            Info("[Android] debug.fisir.vsync={} → 切到 {}", applied ? 1 : 0,
+                                 want ? "FIFO 垂直同步" : "MAILBOX 不限帧");
+                        }
+                    }
+                }
+
                 // ── 垂直同步开关（触摸可点）──────────────────────────────────────────
                 // FIFO = 帧率锁到屏幕刷新率（全屏/小窗表现一致、不空转省电）
                 // MAILBOX = 不限帧（用来看吞吐；数字只在全屏可见时才有意义）
@@ -805,7 +827,8 @@ int main(int argc, char* argv[]) {
                 // 目的：一眼判断「事件到底有没有到达」（n 不涨 = 没到）以及「坐标落在哪个空间」
                 //（last 与 size 对不上就是坐标空间不一致，那种情况下小控件永远点不中）。
                 ImGui::Separator();
-                ImGui::Text("touch n=%llu%s", (unsigned long long)imguiTouchCount, imguiTouchDown ? " (down)" : "");
+                ImGui::Text("touch n=%llu%s  q=%d", (unsigned long long)imguiTouchCount, imguiTouchDown ? " (down)" : "",
+                            Platform::PendingInputEvents());
                 if (imguiTouchCount > 0) {
                     ImGui::Text("last (%.0f, %.0f) of %.0fx%.0f", imguiLastTouchX, imguiLastTouchY,
                                 (float)viewport->getViewportWidth(), (float)viewport->getViewportHeight());

@@ -61,6 +61,11 @@ namespace Platform {
 	// 返回写入 out 的事件个数（最多 maxCount），同时把 state 填成最新状态。
 	int PollTouchEvents(TouchEvent* out, int maxCount, TouchState& state);
 
+	// 输入队列里还积压着多少事件（安卓：AInputQueue_hasEvents；桌面恒 0）。
+	// 用来区分「事件根本没进队列」（= 系统没往我们窗口派发）与「进了队列但没被取走」
+	// （= 我们的抽取路径有问题）—— 面板上会显示它，排查触摸不响应时是决定性的判据。
+	int PendingInputEvents();
+
 	// 设置窗口标题（Win32 有用；Android 是空实现）。
 	void SetTitle(Window& window, const char* title);
 

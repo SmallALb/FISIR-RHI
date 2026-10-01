@@ -237,6 +237,12 @@ void android_main(struct android_app* app) {
 
 namespace Platform {
 
+	// 输入队列里是否还有事件：区分「系统没往我们窗口派发」（恒 0）与「派发了但没被取走」（非 0）。
+	int PendingInputEvents() {
+		if (!g_Impl || !g_Impl->app || !g_Impl->app->inputQueue) return 0;
+		return AInputQueue_hasEvents(g_Impl->app->inputQueue) ? 1 : 0;
+	}
+
 	int PollTouchEvents(TouchEvent* out, int maxCount, TouchState& state) {
 		if (!g_Impl) return 0;
 		AndroidImpl& impl = *g_Impl;
